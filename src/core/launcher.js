@@ -19,19 +19,45 @@ function execFileP(cmd, args, opts = {}) {
   });
 }
 
-/** PIDs of running programs whose executable is inside `dir`. Returns null if the check itself failed. */
-async function processesUnder(dir, platform = process.platform) {
-  if (platform === 'win32') {
-    const script = "$d=$env:VNS_DIR.TrimEnd('\\')+'\\'; " +
-      'Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($d, [System.StringComparison]::OrdinalIgnoreCase) } | ' +
-      'ForEach-Object { $_.ProcessId }';
-    const out = await execFileP('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
-      env: { ...process.env, VNS_DIR: dir },
+/**
+ * Windows: one long-running PowerShell that reports, every 2 s, the PIDs of programs whose
+ * .exe is inside `dir`. Cheaper than starting PowerShell on every check.
+ */
+function windowsWatcher(dir, intervalMs) {
+  const script = "$d=$env:VNS_DIR.TrimEnd('\\')+'\\'; [Console]::Out.AutoFlush=$true; " +
+    'while ($true) { ' +
+    '$p = Get-CimInstance Win32_Process -Property ProcessId,ExecutablePath | ' +
+    'Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($d, [System.StringComparison]::OrdinalIgnoreCase) } | ' +
+    'ForEach-Object { $_.ProcessId }; ' +
+    "[Console]::Out.WriteLine('PIDS ' + ($p -join ',')); " +
+    `Start-Sleep -Milliseconds ${intervalMs} }`;
+  const w = { pids: null, failed: false, proc: null };
+  try {
+    w.proc = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], {
+      env: { ...process.env, VNS_DIR: dir }, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'],
     });
-    if (out === null) return null;
-    return out.split(/\s+/).filter(Boolean).map(Number);
+  } catch {
+    w.failed = true;
+    return w;
   }
-  // Linux (incl. games under Wine): match the exe link or the command line.
+  let buf = '';
+  w.proc.stdout.on('data', (d) => {
+    buf += d.toString();
+    let i;
+    while ((i = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, i).trim();
+      buf = buf.slice(i + 1);
+      if (line.startsWith('PIDS')) w.pids = line.slice(4).split(',').map((x) => Number(x.trim())).filter(Boolean);
+    }
+  });
+  w.proc.on('error', () => { w.failed = true; });
+  w.proc.on('exit', () => { w.failed = true; });
+  w.stop = () => { try { w.proc.kill(); } catch { /* gone */ } };
+  return w;
+}
+
+/** Linux (incl. games under Wine): PIDs whose exe or command line points inside `dir`. */
+async function linuxProcessesUnder(dir) {
   const pids = [];
   let entries;
   try { entries = await fsp.readdir('/proc'); } catch { return null; }
@@ -76,11 +102,13 @@ function launch({ exePath, installDir, args = '', localeEmulatorPath = '', useLo
   const startedAt = Date.now();
   let lastSeen = startedAt;
   let timer = null;
+  let watcher = null;
 
   const finish = (reason, error) => {
     if (done) return;
     done = true;
     clearTimeout(timer);
+    if (watcher && watcher.stop) watcher.stop();
     ev.emit('exit', { reason, error, durationMs: Date.now() - startedAt });
   };
 
@@ -95,12 +123,20 @@ function launch({ exePath, installDir, args = '', localeEmulatorPath = '', useLo
   child.unref();
   setImmediate(() => ev.emit('started'));
 
+  watcher = platform === 'win32' ? windowsWatcher(installDir, Math.min(pollMs, 2000)) : null;
+
   const tick = async () => {
     if (done) return;
-    const pids = await processesUnder(installDir, platform);
+    let pids;
+    if (watcher) {
+      // Until the watcher reports, assume running. If PowerShell isn't usable, fall back
+      // to the process we started (launchers that exit early then need "Stop tracking").
+      pids = watcher.failed ? [] : watcher.pids;
+    } else {
+      pids = await linuxProcessesUnder(installDir);
+    }
     const now = Date.now();
     if (childAlive || (pids && pids.length) || pids === null) {
-      // pids === null means the check failed; keep waiting rather than end early.
       lastSeen = now;
       if (pids && pids.length) ev.emit('running', pids);
     }
@@ -113,4 +149,4 @@ function launch({ exePath, installDir, args = '', localeEmulatorPath = '', useLo
   return ev;
 }
 
-module.exports = { launch, processesUnder };
+module.exports = { launch, linuxProcessesUnder, windowsWatcher };

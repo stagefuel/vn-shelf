@@ -64,7 +64,7 @@ async function changedSince(roots, gameDir, sinceMs, { extraSkip = [], maxFiles 
           if (SKIP_EXT.has(path.extname(e.name).toLowerCase())) continue;
           try {
             const st = await fsp.stat(abs);
-            if (st.mtimeMs >= sinceMs || st.birthtimeMs >= sinceMs) {
+            if (st.mtimeMs >= sinceMs) {
               changed.push({ abs, token, root, size: st.size, mtime: st.mtimeMs });
             }
           } catch { /* vanished */ }

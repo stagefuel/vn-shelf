@@ -16,6 +16,7 @@
     "productName": "VN Shelf",
     "files": [
       "src/**/*",
+      "build/icon.png",
       "package.json"
     ],
     "directories": {
@@ -30,19 +31,24 @@
           "target": "zip"
         }
       ],
-      "signAndEditExecutable": false
+      "signAndEditExecutable": true,
+      "icon": "build/icon.ico"
     },
     "portable": {
       "artifactName": "VN-Shelf-${version}-portable.exe"
     },
     "linux": {
       "target": "AppImage",
-      "category": "Game"
+      "category": "Game",
+      "icon": "build/icon.png"
     }
   },
   "devDependencies": {
     "electron": "^33.4.11",
     "electron-builder": "^25.1.8",
     "playwright-core": "^1.64.0"
+  },
+  "author": {
+    "name": "stagefuel"
   }
 }

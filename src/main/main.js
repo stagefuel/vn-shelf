@@ -474,6 +474,7 @@ async function createWindow() {
     width: 1280, height: 820, minWidth: 820, minHeight: 560,
     backgroundColor: '#0f1115',
     title: 'VN Shelf',
+    icon: path.join(__dirname, '..', '..', 'build', 'icon.png'),
     autoHideMenuBar: true,
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
