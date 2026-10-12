@@ -435,7 +435,7 @@ const api = {
     startGame(game, 'saveonce', async () => {
       setState(id, 'scanning', { message: 'Looking for new save files…' });
       const changed = await snapshot.changedSince(roots, l.installDir, since, {
-        extraSkip: [config.data.cloudDir, app.getPath('userData'), app.getPath('temp')],
+        extraSkip: [config.data.cloudDir, app.getPath('userData')],
       });
       const candidates = snapshot.rank(changed, { game, roots, gameDir: l.installDir });
       setState(id, 'idle');

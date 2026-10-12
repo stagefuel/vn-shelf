@@ -21,9 +21,15 @@ function makePc(name) {
   fs.mkdirSync(game, { recursive: true });
   fs.writeFileSync(path.join(game, 'data.xp3'), '');
   const exe = path.join(game, 'kkk.sh');
-  fs.writeFileSync(exe, `#!/bin/sh\nmkdir -p "$(dirname "$0")/savedata"\necho "progress from ${name} $(date +%s%N)" > "$(dirname "$0")/savedata/save001.dat"\nsleep 3\n`);
+  fs.writeFileSync(exe, `#!/bin/sh\nmkdir -p "$(dirname "$0")/savedata"\necho "progress from ${name} $(date +%s%N)" >> "$(dirname "$0")/savedata/save001.dat"\nsleep 3\n`);
   fs.chmodSync(exe, 0o755);
-  return { name, home, game, exe };
+  // A game with no recognisable engine that saves into AppData (~/.config on Linux).
+  const g2 = path.join(home, 'Games', 'Mystery');
+  fs.mkdirSync(g2, { recursive: true });
+  const exe2 = path.join(g2, 'mystery.sh');
+  fs.writeFileSync(exe2, `#!/bin/sh\nmkdir -p "$HOME/.config/StudioX/Mystery" "$HOME/.config/discord/Cache"\necho slot > "$HOME/.config/StudioX/Mystery/sav01.sav"\necho noise > "$HOME/.config/discord/Cache/data_0"\nsleep 3\n`);
+  fs.chmodSync(exe2, 0o755);
+  return { name, home, game, exe, exe2 };
 }
 
 async function start(pc) {
@@ -46,6 +52,7 @@ async function mockDialog(app, file) {
 const shot = (page, n) => page.screenshot({ path: path.join(shots, `${n}.png`) });
 
 (async () => {
+  let saveOncePath = null;
   const A = makePc('Desktop');
   const B = makePc('Laptop');
 
@@ -74,6 +81,21 @@ const shot = (page, n) => page.screenshot({ path: path.join(shots, `${n}.png`) }
   await page.waitForSelector('.toast.good:has-text("uploaded")', { timeout: 30000 });
   await page.waitForTimeout(800);
   await shot(page, '05-after-play');
+  // Save-once on an unknown game
+  await page.evaluate((exe) => { addGameFromExe(exe); }, A.exe2);
+  await page.waitForSelector('dialog[open] button:has-text("Skip")', { timeout: 20000 });
+  await page.click('dialog button:has-text("Skip")');
+  await page.waitForSelector('#detailView:not(.hidden) button:has-text("Save once")');
+  await page.waitForTimeout(800);
+  await page.click('button:has-text("Save once")');
+  await page.click('dialog button:has-text("Start the game")');
+  await page.waitForSelector('dialog[open] .choice', { timeout: 30000 });
+  await page.waitForTimeout(300);
+  await shot(page, '06a-saveonce');
+  await page.click('dialog button:has-text("Use selected")');
+  await page.waitForTimeout(1200);
+  saveOncePath = await page.$eval('.panel .row .path', (e) => e.textContent);
+  await shot(page, '06b-saveonce-added');
   await page.click('#backBtn');
   await page.waitForTimeout(1500);
   await shot(page, '06-library');
@@ -89,7 +111,7 @@ const shot = (page, n) => page.screenshot({ path: path.join(shots, `${n}.png`) }
   await page.waitForTimeout(1200);
   await shot(page, '07-laptop-library');
   await mockDialog(app, B.exe);
-  await page.click('.card');
+  await page.click('.card:has-text("Kajiri")');
   await page.waitForSelector('#playBtn');
   await page.click('#playBtn');
   await page.click('dialog button:has-text("Find the .exe")');
@@ -104,7 +126,7 @@ const shot = (page, n) => page.screenshot({ path: path.join(shots, `${n}.png`) }
   fs.writeFileSync(path.join(A.game, 'savedata', 'save001.dat'), 'desktop offline progress');
   ({ app, page } = await start(A));
   await page.waitForSelector('.card');
-  await page.click('.card');
+  await page.click('.card:has-text("Kajiri")');
   await page.waitForSelector('#playBtn');
   await page.waitForTimeout(800);
   await page.click('button:has-text("Sync now")');
@@ -116,5 +138,5 @@ const shot = (page, n) => page.screenshot({ path: path.join(shots, `${n}.png`) }
   await shot(page, '10-history');
   await app.close();
 
-  console.log(JSON.stringify({ shots, pulledOnLaptop: pulledFirst.trim(), cloud: fs.readdirSync(path.join(cloudRoot, 'VNShelf', 'games')), historyRowsOnLaptop: hist }, null, 1));
+  console.log(JSON.stringify({ shots, saveOncePath, pulledOnLaptop: pulledFirst.trim(), cloud: fs.readdirSync(path.join(cloudRoot, 'VNShelf', 'games')), historyRowsOnLaptop: hist }, null, 1));
 })().catch((e) => { console.error('SMOKE FAILED', e); process.exit(1); });
