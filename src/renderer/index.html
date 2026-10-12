@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' file: data: https://t.vndb.org; style-src 'self' 'unsafe-inline'; script-src 'self'">
+  <title>VN Shelf</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">VN Shelf</div>
+    <button class="ghost back hidden" id="backBtn" title="Back to library">← Library</button>
+    <input id="search" class="search" type="search" placeholder="Search your library" autocomplete="off">
+    <div class="spacer"></div>
+    <button id="addBtn" class="primary">+ Add game</button>
+    <button id="settingsBtn" class="ghost icon" title="Settings" aria-label="Settings">⚙</button>
+  </header>
+
+  <main>
+    <section id="libraryView">
+      <div id="grid" class="grid"></div>
+      <div id="empty" class="empty hidden">
+        <h2>Your shelf is empty</h2>
+        <p>Drag a game's .exe onto this window, or use <b>Add game</b>.</p>
+      </div>
+    </section>
+    <section id="detailView" class="hidden"></section>
+  </main>
+
+  <div id="dropHint" class="drop-hint hidden">Drop a game .exe to add it</div>
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+
+  <dialog id="dlg"><form method="dialog" id="dlgBody"></form></dialog>
+
+  <script src="app.js"></script>
+</body>
+</html>
