@@ -12,33 +12,61 @@ const base = fs.mkdtempSync(path.join(os.tmpdir(), 'vns-ui-'));
 const cloudRoot = path.join(base, 'shared-dropbox');
 fs.mkdirSync(cloudRoot, { recursive: true });
 
+const WIN = process.platform === 'win32';
+
 function makePc(name) {
   const home = path.join(base, name);
   fs.mkdirSync(path.join(home, '.config'), { recursive: true });
-  // Point "Dropbox" in this home at the shared folder so provider detection finds it.
-  fs.symlinkSync(cloudRoot, path.join(home, 'Dropbox'));
+  const env = WIN
+    ? { APPDATA: path.join(home, 'Roaming'), LOCALAPPDATA: path.join(home, 'Local'), VNS_USER_DATA: path.join(home, 'vnshelf-settings') }
+    : { HOME: home, XDG_CONFIG_HOME: path.join(home, '.config'), XDG_DATA_HOME: path.join(home, '.local/share') };
+  if (WIN) {
+    // Dropbox records its folder in %APPDATA%\Dropbox\info.json; point it at the shared folder.
+    fs.mkdirSync(path.join(env.APPDATA, 'Dropbox'), { recursive: true });
+    fs.mkdirSync(env.LOCALAPPDATA, { recursive: true });
+    fs.writeFileSync(path.join(env.APPDATA, 'Dropbox', 'info.json'), JSON.stringify({ personal: { path: cloudRoot } }));
+  } else {
+    fs.symlinkSync(cloudRoot, path.join(home, 'Dropbox'));
+  }
   const game = path.join(home, 'Games', '[light] 神咒神威神楽');
   fs.mkdirSync(game, { recursive: true });
   fs.writeFileSync(path.join(game, 'data.xp3'), '');
-  const exe = path.join(game, 'kkk.sh');
-  fs.writeFileSync(exe, `#!/bin/sh\nmkdir -p "$(dirname "$0")/savedata"\necho "progress from ${name} $(date +%s%N)" >> "$(dirname "$0")/savedata/save001.dat"\nsleep 3\n`);
-  fs.chmodSync(exe, 0o755);
+  let exe;
+  if (WIN) {
+    exe = path.join(game, 'kkk.cmd');
+    fs.writeFileSync(exe, `@echo off\r\nif not exist "%~dp0savedata" mkdir "%~dp0savedata"\r\necho progress from ${name} %RANDOM%>> "%~dp0savedata\\save001.dat"\r\nping -n 4 127.0.0.1 > nul\r\n`);
+  } else {
+    exe = path.join(game, 'kkk.sh');
+    fs.writeFileSync(exe, `#!/bin/sh\nmkdir -p "$(dirname "$0")/savedata"\necho "progress from ${name} $(date +%s%N)" >> "$(dirname "$0")/savedata/save001.dat"\nsleep 3\n`);
+    fs.chmodSync(exe, 0o755);
+  }
   // A game with no recognisable engine that saves into AppData (~/.config on Linux).
   const g2 = path.join(home, 'Games', 'Mystery');
   fs.mkdirSync(g2, { recursive: true });
-  const exe2 = path.join(g2, 'mystery.sh');
-  fs.writeFileSync(exe2, `#!/bin/sh\nmkdir -p "$HOME/.config/StudioX/Mystery" "$HOME/.config/discord/Cache"\necho slot > "$HOME/.config/StudioX/Mystery/sav01.sav"\necho noise > "$HOME/.config/discord/Cache/data_0"\nsleep 3\n`);
-  fs.chmodSync(exe2, 0o755);
-  return { name, home, game, exe, exe2 };
+  let exe2;
+  if (WIN) {
+    exe2 = path.join(g2, 'mystery.cmd');
+    fs.writeFileSync(exe2, '@echo off\r\nmkdir "%APPDATA%\\StudioX\\Mystery" 2>nul\r\nmkdir "%APPDATA%\\discord\\Cache" 2>nul\r\necho slot> "%APPDATA%\\StudioX\\Mystery\\sav01.sav"\r\necho noise> "%APPDATA%\\discord\\Cache\\data_0"\r\nping -n 4 127.0.0.1 > nul\r\n');
+  } else {
+    exe2 = path.join(g2, 'mystery.sh');
+    fs.writeFileSync(exe2, `#!/bin/sh\nmkdir -p "$HOME/.config/StudioX/Mystery" "$HOME/.config/discord/Cache"\necho slot > "$HOME/.config/StudioX/Mystery/sav01.sav"\necho noise > "$HOME/.config/discord/Cache/data_0"\nsleep 3\n`);
+    fs.chmodSync(exe2, 0o755);
+  }
+  return { name, home, game, exe, exe2, env };
 }
 
 async function start(pc) {
+  // VNS_EXE = a packaged build to test (e.g. "VN Shelf.exe" on Windows); otherwise run from source.
+  const packaged = process.env.VNS_EXE;
+  const env = { ...process.env, ...pc.env };
+  delete env.ELECTRON_RUN_AS_NODE;
   const app = await electron.launch({
-    executablePath: require('electron'),
-    args: [path.join(__dirname, '..'), '--no-sandbox'],
-    env: { ...process.env, HOME: pc.home, XDG_CONFIG_HOME: path.join(pc.home, '.config'), XDG_DATA_HOME: path.join(pc.home, '.local/share') },
+    executablePath: packaged || require('electron'),
+    args: packaged ? [] : [path.join(__dirname, '..'), '--no-sandbox'],
+    env,
   });
   const page = await app.firstWindow();
+  lastPage = page;
   await page.setViewportSize({ width: 1280, height: 820 });
   page.on('console', (m) => { if (m.type() === 'error') console.log(`[${pc.name} console]`, m.text()); });
   page.on('pageerror', (e) => console.log(`[${pc.name} pageerror]`, e.message));
@@ -49,6 +77,7 @@ async function mockDialog(app, file) {
   await app.evaluate(({ dialog }, f) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [f] }); }, file);
 }
 
+let lastPage = null;
 const shot = (page, n) => page.screenshot({ path: path.join(shots, `${n}.png`) });
 
 (async () => {
@@ -139,4 +168,8 @@ const shot = (page, n) => page.screenshot({ path: path.join(shots, `${n}.png`) }
   await app.close();
 
   console.log(JSON.stringify({ shots, saveOncePath, pulledOnLaptop: pulledFirst.trim(), cloud: fs.readdirSync(path.join(cloudRoot, 'VNShelf', 'games')), historyRowsOnLaptop: hist }, null, 1));
-})().catch((e) => { console.error('SMOKE FAILED', e); process.exit(1); });
+})().catch(async (e) => {
+  console.error('SMOKE FAILED', e);
+  if (lastPage) await lastPage.screenshot({ path: path.join(shots, 'FAILED.png') }).catch(() => {});
+  process.exit(1);
+});

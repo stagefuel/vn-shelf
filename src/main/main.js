@@ -22,6 +22,9 @@ let engine = null;
 let roots = null;
 const running = new Map(); // id -> { ev, watchers, liveTimer, mode }
 
+// Lets tests (and a future portable mode) keep settings somewhere other than %APPDATA%.
+if (process.env.VNS_USER_DATA) app.setPath('userData', process.env.VNS_USER_DATA);
+
 if (!app.requestSingleInstanceLock()) app.quit();
 app.on('second-instance', () => { if (win) { if (win.isMinimized()) win.restore(); win.focus(); } });
 

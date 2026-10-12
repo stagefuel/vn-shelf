@@ -32,3 +32,37 @@ test('a program that cannot start reports failure', async () => {
   });
   assert.strictEqual(info.reason, 'failed');
 });
+
+// ---- Windows: uses a copy of ping.exe as a stand-in "game" (ping -n N waits ~N-1 seconds).
+function winGameDir() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vns-lw-'));
+  fs.copyFileSync(path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'PING.EXE'), path.join(dir, 'game.exe'));
+  return dir;
+}
+
+test('Windows: tracks a game exe until it exits', { skip: process.platform !== 'win32' }, async () => {
+  const dir = winGameDir();
+  const t0 = Date.now();
+  let sawPids = false;
+  const info = await new Promise((resolve) => {
+    const ev = launch({ exePath: path.join(dir, 'game.exe'), installDir: dir, args: '-n 6 127.0.0.1', pollMs: 500, graceMs: 2500 });
+    ev.on('running', () => { sawPids = true; });
+    ev.on('exit', resolve);
+  });
+  const secs = (Date.now() - t0) / 1000;
+  assert.strictEqual(info.reason, 'closed');
+  assert.ok(sawPids, 'PowerShell watcher reported the game process');
+  assert.ok(secs >= 5 && secs < 15, `ended after ${secs}s`);
+});
+
+test('Windows: a .cmd launcher that starts the game and exits is followed to the real game', { skip: process.platform !== 'win32' }, async () => {
+  const dir = winGameDir();
+  fs.writeFileSync(path.join(dir, 'launch.cmd'), '@start "" "%~dp0game.exe" -n 8 127.0.0.1\r\n@exit /b 0\r\n');
+  const t0 = Date.now();
+  const info = await new Promise((resolve) => {
+    launch({ exePath: path.join(dir, 'launch.cmd'), installDir: dir, pollMs: 500, graceMs: 2500 }).on('exit', resolve);
+  });
+  const secs = (Date.now() - t0) / 1000;
+  assert.strictEqual(info.reason, 'closed');
+  assert.ok(secs >= 7, `ended after ${secs}s, before the real game closed`);
+});

@@ -21,6 +21,30 @@ async function readText(p) {
 
 const ENGINES = [
   {
+    // age's rUGP: saves go to Documents/<vendor>/<name>/Vmreg; that folder holds "<archive>.rio.ici".
+    id: 'rugp', name: 'rUGP',
+    match: (c) => c.hasFile('rugp.exe') || c.hasExt('.rio'),
+    saves: async (c) => {
+      const rios = c.filesWithExt('.rio');
+      const out = [];
+      if (!c.roots['<documents>']) return out;
+      for (const vendor of await listNames(c.roots['<documents>'])) {
+        if (!vendor.isDirectory()) continue;
+        for (const d of await listNames(path.join(c.roots['<documents>'], vendor.name))) {
+          if (!d.isDirectory()) continue;
+          const kids = (await listNames(path.join(c.roots['<documents>'], vendor.name, d.name))).map((k) => k.name.toLowerCase());
+          if (rios.some((r) => kids.includes(`${r.toLowerCase()}.ici`))) out.push({ path: `<documents>/${vendor.name}/${d.name}` });
+        }
+      }
+      return out;
+    },
+  },
+  {
+    id: 'rpg2k', name: 'RPG Maker 2000/2003',
+    match: (c) => c.hasFile('rpg_rt.ldb') || c.hasFile('rpg_rt.exe'),
+    saves: () => [{ path: '<game>', include: ['Save*.lsd'] }],
+  },
+  {
     id: 'kirikiri', name: 'KiriKiri',
     match: (c) => c.hasExt('.xp3'),
     saves: () => [{ path: '<game>/savedata' }],
@@ -98,7 +122,18 @@ const ENGINES = [
   },
 ];
 
-const SAVE_DIR_NAMES = new Set(['save', 'saves', 'savedata', 'save_data', 'savedat', 'userdata', 'sav']);
+// Folder names that hold saves: save, Saves, savedata, faterealtanua_savedata, UserData, Vmreg (age), ...
+const SAVE_DIR_RE = /^(?:.*[_\-\s])?(?:save|saves|savedata|save_data|savedat|sav|userdata|vmreg)$/i;
+// Loose save files in the game folder.
+const SAVE_FILE_EXT = ['.sav', '.save', '.savedata'];
+// Words too generic to identify a game when matching folder names (common .exe names, engines).
+const GENERIC = new Set(['game', 'games', 'start', 'launcher', 'launch', 'main', 'play', 'player', 'system', 'setup',
+  'data', 'app', 'default', 'rugp', 'malie', 'rpgrt', 'nw', 'nwjs', 'mygame', 'config', 'sakura', 'siglusengine',
+  'bgi', 'cs2', 'system40', 'artemis', 'unity', 'unitycrashhandler64', 'renpy', 'kirikiri', 'krkr', 'tyrano', 'tyranoscript', 'easyrpg', 'translate']);
+
+// Big app folders that never hold VN saves; skipped to keep the search quick.
+const SKIP_VENDOR = new Set(['microsoft', 'packages', 'google', 'mozilla', 'nvidia', 'nvidia corporation', 'temp', 'steam',
+  'discord', 'code', 'adobe', 'programs', 'package cache', 'crashdumps', 'd3dscache', 'virtualstore']);
 
 function normName(s) {
   return String(s || '').normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
@@ -113,7 +148,7 @@ function namesMatch(a, b) {
 }
 
 /** Build the file-listing context the engine checks use. */
-async function context(dir) {
+async function context(dir, roots = {}) {
   const top = await listNames(dir);
   const files = new Set();
   const dirs = new Set();
@@ -126,6 +161,8 @@ async function context(dir) {
   }
   return {
     dir,
+    roots,
+    filesWithExt: (x) => top.filter((e) => e.isFile() && path.extname(e.name).toLowerCase() === x).map((e) => e.name),
     hasFile: (n) => files.has(n.toLowerCase()),
     hasDir: (n) => dirs.has(n.toLowerCase()),
     hasExt: (x) => exts.has(x.toLowerCase()),
@@ -134,8 +171,8 @@ async function context(dir) {
   };
 }
 
-async function detectEngine(dir) {
-  const c = await context(dir);
+async function detectEngine(dir, roots) {
+  const c = await context(dir, roots);
   for (const e of ENGINES) if (e.match(c)) return { engine: e, ctx: c };
   return null;
 }
@@ -155,7 +192,7 @@ async function suggest(game, installDir, { roots, platform = process.platform })
   // 1. Engine
   let engineName = null;
   if (installDir && (await fsu.isDir(installDir))) {
-    const found = await detectEngine(installDir);
+    const found = await detectEngine(installDir, roots);
     if (found) {
       engineName = found.engine.name;
       for (const s of await found.engine.saves(found.ctx)) {
@@ -169,18 +206,26 @@ async function suggest(game, installDir, { roots, platform = process.platform })
       for (const e of await listNames(abs)) {
         if (!e.isDirectory()) continue;
         const r = rel ? `${rel}/${e.name}` : e.name;
-        if (SAVE_DIR_NAMES.has(e.name.toLowerCase())) all.push(r);
+        if (SAVE_DIR_RE.test(e.name)) all.push(r);
         if (depth < 3) await rec(path.join(abs, e.name), r, depth + 1);
       }
     })(installDir, '', 1);
     for (const r of all) push({ path: `<game>/${r}`, reason: 'Folder named like a save folder', score: 4 });
+    const loose = new Set();
+    for (const e of await listNames(installDir)) {
+      const ext = path.extname(e.name).toLowerCase();
+      if (e.isFile() && (SAVE_FILE_EXT.includes(ext) || /save$/i.test(ext))) loose.add(`*${path.extname(e.name)}`);
+    }
+    if (loose.size) push({ path: '<game>', include: [...loose], reason: 'Save files in the game folder', score: 4 });
   }
 
-  // 3. Folders named after the game elsewhere
+  // 3. Folders named after the game elsewhere: either directly (AppData/<Game>) or one level
+  //    down inside a developer folder (AppData/枕/サクラノ刻, Saved Games/WillPlus/CROSS†CHANNEL).
   const exeBase = game.exe ? path.basename(game.exe).replace(/\.[^.]+$/, '') : '';
-  const titleTerms = [game.title, game.titleAlt, exeBase, installDir ? path.basename(installDir) : '']
-    .map(normName).filter((t) => t.length >= 3);
-  const devTerms = [game.developer].map(normName).filter((t) => t.length >= 3);
+  const titleTerms = [game.title, game.titleAlt, exeBase, installDir ? path.basename(installDir).replace(/[\[(【].*?[\])】]/g, '') : '']
+    .map(normName).filter((t) => t.length >= 3 && !GENERIC.has(t));
+  const devTerms = String(game.developer || '').split(/,\s*/).map(normName).filter((t) => t.length >= 3 && !GENERIC.has(t));
+  const titleHit = (name) => { const n = normName(name); return !GENERIC.has(n) && titleTerms.some((t) => namesMatch(n, t)); };
   const places = [
     ['<appdata>', ''], ['<localappdata>', ''], ['<locallow>', ''],
     ['<documents>', ''], ['<documents>', 'My Games'], ['<savedgames>', ''],
@@ -190,18 +235,19 @@ async function suggest(game, installDir, { roots, platform = process.platform })
     const base = sub ? path.join(roots[token], sub) : roots[token];
     const prefix = sub ? `${token}/${sub}` : token;
     for (const e of await listNames(base)) {
-      if (!e.isDirectory()) continue;
-      const n = normName(e.name);
-      if (titleTerms.some((t) => namesMatch(n, t))) {
+      if (!e.isDirectory() || SKIP_VENDOR.has(e.name.toLowerCase())) continue;
+      const isDev = devTerms.some((t) => namesMatch(normName(e.name), t));
+      if (titleHit(e.name)) {
         push({ path: `${prefix}/${e.name}`, reason: 'Named after the game', score: 5 });
-      } else if (devTerms.some((t) => namesMatch(n, t))) {
-        // A developer folder usually holds one subfolder per game: pick the one named after this game.
-        const kids = (await listNames(path.join(base, e.name))).filter((k) => k.isDirectory());
-        const hit = kids.filter((k) => titleTerms.some((t) => namesMatch(normName(k.name), t)));
-        for (const k of hit) push({ path: `${prefix}/${e.name}/${k.name}`, reason: 'In the developer\'s folder, named after the game', score: 5 });
-        if (!hit.length && kids.length === 1) {
-          push({ path: `${prefix}/${e.name}/${kids[0].name}`, reason: 'Only folder in the developer\'s folder', score: 3 });
-        }
+        continue;
+      }
+      const kids = (await listNames(path.join(base, e.name))).filter((k) => k.isDirectory());
+      const hit = kids.filter((k) => titleHit(k.name));
+      for (const k of hit) {
+        push({ path: `${prefix}/${e.name}/${k.name}`, reason: isDev ? 'In the developer\'s folder, named after the game' : 'Named after the game', score: isDev ? 6 : 5 });
+      }
+      if (isDev && !hit.length && kids.length === 1) {
+        push({ path: `${prefix}/${e.name}/${kids[0].name}`, reason: 'Only folder in the developer\'s folder', score: 3 });
       }
     }
   }
@@ -218,6 +264,16 @@ async function suggest(game, installDir, { roots, platform = process.platform })
     if (c.exists && c.fileCount > 0) c.score += 3;
     else if (c.exists) c.score += 1;
     delete c.key;
+  }
+  // A folder found by name must never be the game's own folder (or contain it, or sit inside it):
+  // e.g. a game installed under Documents/Games/<title> matches its own title.
+  if (installDir) {
+    const { relativeInside } = require('./paths');
+    for (let i = out.length - 1; i >= 0; i--) {
+      const c = out[i];
+      if (c.path.startsWith('<game>') || !c.abs) continue;
+      if (relativeInside(installDir, c.abs, platform) !== null || relativeInside(c.abs, installDir, platform) !== null) out.splice(i, 1);
+    }
   }
   out.sort((a, b) => b.score - a.score);
   return { engine: engineName, candidates: out };

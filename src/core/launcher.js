@@ -91,6 +91,10 @@ function launch({ exePath, installDir, args = '', localeEmulatorPath = '', useLo
   if (useLocaleEmulator && localeEmulatorPath) {
     cmd = localeEmulatorPath;
     argv = ['-run', exePath, ...extra];
+  } else if (platform === 'win32' && /\.(bat|cmd)$/i.test(exePath)) {
+    // Node refuses to spawn batch files directly; run them through cmd.
+    cmd = process.env.ComSpec || 'cmd.exe';
+    argv = ['/d', '/c', exePath, ...extra];
   } else if (platform !== 'win32' && /\.exe$/i.test(exePath)) {
     cmd = 'wine';
     argv = [exePath, ...extra];

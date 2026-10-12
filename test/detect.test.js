@@ -112,3 +112,73 @@ test('save-once: loose save files in the game folder become an include list', as
   assert.strictEqual(ranked[0].path, '<game>');
   assert.deepStrictEqual(ranked[0].include.sort(), ['gloval.sav', 'save1.dat']);
 });
+
+// ---- cases taken from real installs
+test('rUGP (age): finds Documents/age/<name> by its .rio.ici marker', async () => {
+  const home = tmp();
+  const dir = path.join(home, 'g');
+  touch(path.join(dir, 'rugp.exe'));
+  touch(path.join(dir, '君望LE.rio'));
+  touch(path.join(home, 'Documents', 'age', '君が望む永遠LE', '君望LE.rio.ici'));
+  touch(path.join(home, 'Documents', 'age', '君が望む永遠LE', 'Vmreg', 'gdb.uuc'));
+  touch(path.join(home, 'Documents', 'Default rUGP App', 'Vmreg', 'gdb.uuc'));
+  const r = await suggest({ title: 'x', exe: 'rugp.exe' }, dir, { roots: rootsFor(home), platform: process.platform });
+  assert.strictEqual(r.engine, 'rUGP');
+  assert.strictEqual(r.candidates[0].path, '<documents>/age/君が望む永遠LE');
+  assert.ok(!r.candidates.some((c) => c.path.includes('Default rUGP App')), 'generic rugp.exe name must not match');
+});
+
+test('generic Game.exe does not match another game\'s folder', async () => {
+  const home = tmp();
+  const dir = path.join(home, 'BLACK SOULS');
+  touch(path.join(dir, 'Game.exe'));
+  touch(path.join(home, 'Roaming', 'tyranogame', 'Local Storage', 'x'));
+  const r = await suggest({ title: 'BLACK SOULS', exe: 'Game.exe' }, dir, { roots: rootsFor(home), platform: process.platform });
+  assert.ok(!r.candidates.some((c) => c.path.includes('tyranogame')));
+});
+
+test('title found one level inside a developer folder, even without knowing the developer', async () => {
+  const home = tmp();
+  const dir = path.join(home, 'サクラノ刻 ―櫻の森の下を歩む― 通常版');
+  touch(path.join(dir, 'sakuranotoki.exe'));
+  touch(path.join(dir, 'root.pfs'));
+  touch(path.join(home, 'Roaming', '枕', 'サクラノ刻', 'save0001.dat'));
+  const r = await suggest({ title: 'サクラノ刻 ―櫻の森の下を歩む― 通常版', exe: 'sakuranotoki.exe' }, dir, { roots: rootsFor(home), platform: process.platform });
+  assert.strictEqual(r.candidates[0].path, '<appdata>/枕/サクラノ刻');
+});
+
+test('folders like faterealtanua_savedata and Vmreg count as save folders; loose *.save files too', async () => {
+  const home = tmp();
+  const a = path.join(home, 'fsn');
+  touch(path.join(a, 'faterealtanua_savedata', 'x.ksd'));
+  touch(path.join(a, 'Fate.exe'));
+  const ra = await suggest({ title: 'Fate', exe: 'Fate.exe' }, a, { roots: rootsFor(home), platform: process.platform });
+  assert.ok(ra.candidates.some((c) => c.path === '<game>/faterealtanua_savedata' && c.fileCount === 1));
+  const b = path.join(home, 'uta');
+  touch(path.join(b, 'utaware-dvd.exe'));
+  touch(path.join(b, 'slot01.save'));
+  const rb = await suggest({ title: 'うたわれるもの', exe: 'utaware-dvd.exe' }, b, { roots: rootsFor(home), platform: process.platform });
+  assert.ok(rb.candidates.some((c) => c.path === '<game>' && c.include.includes('*.save')));
+});
+
+test('RPG Maker 2000/2003 saves are Save*.lsd in the game folder', async () => {
+  const home = tmp();
+  const dir = path.join(home, 'g');
+  touch(path.join(dir, 'RPG_RT.exe'));
+  touch(path.join(dir, 'RPG_RT.ldb'));
+  touch(path.join(dir, 'Save01.lsd'));
+  const r = await suggest({ title: 'kaze' }, dir, { roots: rootsFor(home), platform: process.platform });
+  assert.strictEqual(r.engine, 'RPG Maker 2000/2003');
+  assert.deepStrictEqual(r.candidates[0].include, ['Save*.lsd']);
+  assert.strictEqual(r.candidates[0].fileCount, 1);
+});
+
+test('never suggests the game\'s own folder when it is installed under Documents', async () => {
+  const home = tmp();
+  const dir = path.join(home, 'Documents', 'Games', '神咒神威神楽');
+  touch(path.join(dir, 'data.xp3'));
+  touch(path.join(dir, 'kkk.exe'));
+  const r = await suggest({ title: '神咒神威神楽', exe: 'kkk.exe' }, dir, { roots: rootsFor(home), platform: process.platform });
+  assert.ok(!r.candidates.some((c) => !c.path.startsWith('<game>') && c.path.includes('神咒神威神楽')), JSON.stringify(r.candidates.map((c) => c.path)));
+  assert.strictEqual(r.candidates[0].path, '<game>/savedata');
+});

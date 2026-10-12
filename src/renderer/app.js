@@ -688,7 +688,11 @@ vns.on('game-state', async (s) => {
   if (s.state === 'error') toast(s.message, 'bad');
   if (s.state === 'idle' || s.state === 'error') refreshStatus(s.id);
   updateCard(s.id);
-  if (view === 'detail' && currentId === s.id) updateStatusLine();
+  if (view === 'detail' && currentId === s.id) {
+    // After a game closes, save folders and history have changed: redraw the page.
+    if (s.state === 'idle' && !$('#dlg').open) renderDetail(s.id, { noAuto: true });
+    else updateStatusLine();
+  }
   if (s.state === 'conflict') {
     const v = await conflictDialog(s.info);
     if (v) syncNow(s.id, { resolution: v });
