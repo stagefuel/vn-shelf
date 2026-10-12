@@ -58,15 +58,28 @@ VNShelf/games/<game-id>/
 
 Each PC also keeps its own settings (install paths, last sync) in `%APPDATA%\VN Shelf\config.json`.
 
+## Download
+
+Get `VN-Shelf-<version>-portable.exe` from the Releases page and run it. Nothing needs installing.
+The exe isn't code-signed, so Windows SmartScreen may say "Windows protected your PC": click
+**More info**, then **Run anyway**.
+
 ## Development
 
 ```
 npm install
-npm start               # run the app
-npm test                # core tests (sync, paths, detection, launcher)
-npm run dist:win        # Windows portable .exe + zip into dist/ (works from Linux; Wine embeds the icon)
-node scripts/ui-smoke.js shots/   # drives two fake PCs through the UI (needs a display, e.g. Xvfb)
+npm start                          # run the app
+npm test                           # core tests (sync, paths, detection, launcher)
+npm run dist:win                   # Windows portable .exe + zip into dist/ (works from Linux; Wine embeds the icon)
+node scripts/ui-smoke.js shots/    # drives two fake PCs through the UI (needs a display, e.g. Xvfb)
 ```
 
 Layout: `src/core` is plain Node with no Electron, and holds everything that touches saves.
 `src/main` is the Electron main process and API. `src/renderer` is the UI (no framework).
+
+Releases are built by GitHub Actions (`.github/workflows/release.yml`). Every push runs the tests on
+Windows and Linux, and pushing a `v*` tag builds the Windows exe and publishes a release.
+
+## License
+
+MIT
