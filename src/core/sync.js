@@ -14,6 +14,7 @@ const path = require('path');
 const crypto = require('crypto');
 const fsu = require('./fsutil');
 const { expand } = require('./paths');
+const limits = require('./limits');
 
 class SyncError extends Error {
   constructor(code, message, info) {
@@ -94,14 +95,45 @@ class SyncEngine {
     });
   }
 
+  /**
+   * The files in one save location that would sync, after the safety filters (no programs, video,
+   * archives, caches, logs or huge single files). Stops counting just past the hard limit.
+   */
+  async listRuleFiles(abs, rule) {
+    const match = fsu.makeMatcher(rule.include, rule.exclude);
+    const rels = await fsu.walk(abs, {
+      filter: match, prune: (_r, name) => limits.skipDir(name), limit: limits.LIMITS.hardFiles * 2,
+    });
+    const files = [];
+    const skipped = { type: 0, size: 0 };
+    let bytes = 0;
+    for (const rel of rels) {
+      let st;
+      try { st = await fsp.stat(path.join(abs, ...rel.split('/'))); } catch { continue; }
+      const why = limits.skipFile(rel, st.size);
+      if (why) { skipped[why]++; continue; }
+      files.push({ rel, size: st.size });
+      bytes += st.size;
+      if (files.length > limits.LIMITS.hardFiles || bytes > limits.LIMITS.hardBytes) break;
+    }
+    return { files, count: files.length, bytes, skipped };
+  }
+
   /** Hash every save file on this PC. Returns { files: {key: abs}, hashes: {key: sha1} }. */
   async scanLocal(game, installDir) {
     const files = {};
     const hashes = {};
     for (const { rule, abs } of this.resolveRules(game, installDir)) {
       if (!abs || !(await fsu.isDir(abs))) continue;
-      const match = fsu.makeMatcher(rule.include, rule.exclude);
-      for (const rel of await fsu.walk(abs, { filter: match })) {
+      const why = limits.rejectPath(rule.path, rule.include, { cloudDir: this.cloudDir, abs, platform: this.platform });
+      if (why) throw new SyncError('bad-path', `Save location ${rule.path} isn't allowed: ${why}`, { rule: rule.id });
+      const m = await this.listRuleFiles(abs, rule);
+      if (limits.judge({ files: m.count, bytes: m.bytes }, { confirmed: true }) === 'refuse') {
+        throw new SyncError('too-big',
+          `The save location ${rule.path} has grown too big to sync (over ${limits.describeSize({ files: limits.LIMITS.hardFiles, bytes: limits.LIMITS.hardBytes })}). ` +
+          'Narrow it to the actual save files on the game page.', { rule: rule.id });
+      }
+      for (const { rel } of m.files) {
         const key = `${rule.id}/${rel}`;
         const p = path.join(abs, ...rel.split('/'));
         try {

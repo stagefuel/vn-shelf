@@ -38,12 +38,13 @@ function makeMatcher(include, exclude) {
  * List files under `dir` as forward-slash relative paths.
  * `prune(relDir, name)` may return true to skip a directory.
  */
-async function walk(dir, { filter, prune, maxDepth = 32 } = {}) {
+async function walk(dir, { filter, prune, maxDepth = 32, limit = Infinity } = {}) {
   const out = [];
   async function rec(abs, rel, depth) {
     let entries;
     try { entries = await fsp.readdir(abs, { withFileTypes: true }); } catch { return; }
     for (const e of entries) {
+      if (out.length >= limit) return;
       const r = rel ? `${rel}/${e.name}` : e.name;
       const a = path.join(abs, e.name);
       if (e.isDirectory()) {

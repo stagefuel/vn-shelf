@@ -8,8 +8,8 @@
   "scripts": {
     "start": "electron .",
     "test": "node scripts/run-tests.js",
-    "dist:win": "electron-builder --win --x64",
-    "dist:linux": "electron-builder --linux AppImage"
+    "dist:win": "node scripts/write-oauth-config.js && electron-builder --win --x64",
+    "dist:linux": "node scripts/write-oauth-config.js && electron-builder --linux AppImage"
   },
   "build": {
     "appId": "com.ychiku.vnshelf",

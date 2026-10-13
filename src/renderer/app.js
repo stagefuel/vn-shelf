@@ -254,6 +254,26 @@ async function play(id, opts = {}) {
       if (v) return play(id, { ...opts, resolution: v });
       return;
     }
+    case 'too-big': {
+      const v = await dialog({
+        title: 'A save location needs fixing',
+        text: r.message,
+        buttons: [{ label: 'Play without syncing', value: 'play', cls: 'ghost' }, { label: 'Open the game page', value: 'fix', cls: 'primary' }],
+      });
+      if (v === 'play') return play(id, { ...opts, offline: true });
+      if (v === 'fix') return openDetail(id, { noAuto: true });
+      return;
+    }
+    case 'signed-out': {
+      const v = await dialog({
+        title: 'Signed out of Google Drive',
+        text: `${r.message} You can also play now; saves upload after you sign in.`,
+        buttons: [{ label: 'Play anyway', value: 'play', cls: 'ghost' }, { label: 'Open Settings', value: 'settings', cls: 'primary' }],
+      });
+      if (v === 'play') return play(id, { ...opts, offline: true });
+      if (v === 'settings') return settingsDialog(false);
+      return;
+    }
     case 'incomplete': {
       const v = await dialog({
         title: 'Still downloading',
@@ -336,9 +356,13 @@ async function vndbDialog(g, isNew) {
 
 async function storageChooser(current) {
   const wrap = h('div', { style: 'display:grid;gap:8px' }, h('div', { class: 'faint' }, 'Looking for cloud storage apps…'));
-  let selected = current || null;
+  let selected = current.backend === 'gdrive' ? { backend: 'gdrive' } : (current.cloudDir ? { cloudDir: current.cloudDir } : null);
   const preview = h('div', { class: 'faint mono' });
-  const setPreview = () => { preview.textContent = selected ? `Saves will be kept in: ${selected}` : ''; };
+  const setPreview = () => {
+    if (!selected) preview.textContent = '';
+    else if (selected.backend === 'gdrive') preview.textContent = `Saves will be kept in a "VN Shelf" folder in your Google Drive${setup.googleEmail ? ` (${setup.googleEmail})` : ''}.`;
+    else preview.textContent = `Saves will be kept in: ${selected.cloudDir}`;
+  };
   const list = await vns.call('detectProviders').catch(() => []);
   const choices = [];
   const pick = (el, value) => {
@@ -347,22 +371,52 @@ async function storageChooser(current) {
     selected = value;
     setPreview();
   };
+
+  const parts = [];
+  if (setup.driveAvailable) {
+    const sub = h('div', { class: 'p' });
+    const setSub = () => {
+      sub.textContent = setup.googleSignedIn
+        ? `Signed in as ${setup.googleEmail || 'your Google account'}. Nothing else to install.`
+        : 'Sign in with Google. No Drive app needed; VN Shelf can only see the files it creates.';
+    };
+    setSub();
+    const driveEl = h('div', { class: `choice${selected && selected.backend === 'gdrive' ? ' sel' : ''}`, onclick: async () => {
+      if (!setup.googleSignedIn) {
+        sub.textContent = 'Finish signing in in your browser…';
+        try {
+          await vns.call('googleSignIn');
+          setup = await vns.call('getSetup');
+        } catch (e) {
+          toast(cleanError(e), 'bad');
+          setSub();
+          return;
+        }
+        setSub();
+      }
+      pick(driveEl, { backend: 'gdrive' });
+    } }, h('div', { class: 'grow' }, h('div', {}, 'Google Drive (sign in)'), sub));
+    choices.push(driveEl);
+    parts.push(h('div', { class: 'faint' }, 'Sync directly with Google Drive:'), driveEl,
+      h('div', { class: 'faint', style: 'margin-top:6px' }, 'Or keep saves in a folder that a cloud app, Syncthing or a NAS keeps in sync:'));
+  }
   for (const p of list) {
     const target = joinPath(p.path, 'VNShelf');
-    const el = h('div', { class: `choice${selected === target ? ' sel' : ''}`, onclick: () => pick(el, target) },
+    const el = h('div', { class: `choice${selected && selected.cloudDir === target ? ' sel' : ''}`, onclick: () => pick(el, { cloudDir: target }) },
       h('div', { class: 'grow' }, h('div', {}, p.label), h('div', { class: 'p' }, p.path)));
     choices.push(el);
+    parts.push(el);
   }
   const other = h('div', { class: 'choice', onclick: async () => {
     const dir = await vns.call('pickFolder', 'Choose a synced folder (Google Drive, OneDrive, Dropbox, Syncthing, NAS…)');
     if (!dir) return;
-    pick(other, baseName(dir).toLowerCase() === 'vnshelf' ? dir : joinPath(dir, 'VNShelf'));
+    pick(other, { cloudDir: baseName(dir).toLowerCase() === 'vnshelf' ? dir : joinPath(dir, 'VNShelf') });
   } }, h('div', { class: 'grow' }, h('div', {}, 'Another folder…'), h('div', { class: 'p' }, 'Any folder a cloud app or Syncthing keeps in sync, a NAS share, or a USB drive')));
   choices.push(other);
-  if (current && !list.some((p) => joinPath(p.path, 'VNShelf') === current)) other.classList.add('sel');
-  wrap.replaceChildren(
-    list.length ? h('div', { class: 'faint' }, 'Found on this PC:') : h('div', { class: 'faint' }, 'No cloud storage apps found. Install Google Drive for desktop, OneDrive, Dropbox or similar, or choose any synced folder.'),
-    ...choices, preview);
+  parts.push(other);
+  if (selected && selected.cloudDir && !list.some((p) => joinPath(p.path, 'VNShelf') === selected.cloudDir)) other.classList.add('sel');
+  if (!list.length) parts.splice(setup.driveAvailable ? 3 : 0, 0, h('div', { class: 'faint' }, 'No cloud storage apps found on this PC.'));
+  wrap.replaceChildren(...parts, preview);
   setPreview();
   return { el: wrap, get: () => selected };
 }
@@ -370,7 +424,7 @@ async function storageChooser(current) {
 async function settingsDialog(first = false) {
   const s = setup.settings;
   const name = h('input', { type: 'text', value: s.deviceName, placeholder: 'e.g. Desktop, Laptop' });
-  const chooser = await storageChooser(s.cloudDir);
+  const chooser = await storageChooser({ backend: setup.backend, cloudDir: s.cloudDir });
   const depth = h('input', { type: 'number', min: '1', max: '100', value: String(s.historyDepth) });
   const liveBox = h('input', { type: 'checkbox', checked: s.liveMode });
   const lePath = h('input', { type: 'text', value: s.localeEmulatorPath || '', placeholder: 'Path to LEProc.exe (optional)' });
@@ -387,6 +441,16 @@ async function settingsDialog(first = false) {
           const f = await vns.call('pickFile', 'Find LEProc.exe', [{ name: 'LEProc', extensions: ['exe'] }]);
           if (f) lePath.value = f;
         } }, 'Browse…'))),
+      setup.googleSignedIn ? h('div', { class: 'field' }, h('div', { class: 'lbl' }, 'Google account'),
+        h('div', { class: 'val' }, h('div', { class: 'grow' }, setup.googleEmail || 'Signed in'),
+          h('button', { type: 'button', class: 'small', onclick: async () => {
+            setup = await call('googleSignOut');
+            closeDialog(false);
+            toast('Signed out of Google. VN Shelf no longer has access to your Drive.', 'good');
+            if (!setup.configured) await settingsDialog(true);
+            await loadGames();
+          } }, 'Sign out'))) : null,
+      h('div', { class: 'faint' }, 'Switching where saves are kept doesn\'t move games already added; add them again on the new storage.'),
       h('div', { class: 'faint' }, `VN Shelf ${setup.version}`),
     );
   }
@@ -403,7 +467,7 @@ async function settingsDialog(first = false) {
     ],
   });
   if (!ok) return;
-  const patch = { deviceName: name.value, cloudDir: chooser.get() };
+  const patch = { deviceName: name.value, ...chooser.get() };
   if (!first) Object.assign(patch, { historyDepth: depth.value, liveMode: liveBox.checked, localeEmulatorPath: lePath.value.trim() });
   setup = await call('saveSettings', patch);
   await loadGames();
@@ -500,7 +564,8 @@ async function renderDetail(id, opts = {}) {
         h('div', { class: 'path' }, s.path, !s.portable ? h('span', { class: 'tag warn', style: 'margin-left:8px', title: 'This folder isn\'t under AppData, Documents or the game folder, so the other PC needs the exact same path.' }, 'this PC only') : null),
         s.abs ? h('div', { class: 'abs', title: 'Open folder', onclick: () => vns.call('openPath', s.abs) }, s.abs) : h('div', { class: 'abs' }, s.error || ''),
         h('div', { class: 'faint', style: 'font-size:12px' }, `Files: ${inc}`)),
-      h('span', { class: `count${s.fileCount ? '' : ' zero'}` }, s.exists ? `${s.fileCount} file${s.fileCount === 1 ? '' : 's'}` : 'folder not there yet'),
+      h('span', { class: `count${s.fileCount ? '' : ' zero'}`, title: s.skipped ? `${s.skipped} file(s) skipped because they aren't saves (programs, video, archives, logs, huge files)` : null },
+        s.exists ? `${s.size || `${s.fileCount} files`}${s.skipped ? ` · ${s.skipped} skipped` : ''}` : 'folder not there yet'),
       h('button', { class: 'small ghost', onclick: () => editInclude(id, s) }, 'Files…'),
       h('button', { class: 'small ghost danger', onclick: async () => {
         const ok = await dialog({ title: 'Stop syncing this folder?', text: `${s.path} will no longer sync. Nothing is deleted.`,
@@ -512,7 +577,10 @@ async function renderDetail(id, opts = {}) {
   saveBox.append(h('div', { class: 'boxactions' },
     h('button', { onclick: () => runSuggest(id, suggestBox), disabled: !g.installed }, 'Auto-detect'),
     h('button', { onclick: () => saveOnce(id), disabled: !g.installed }, 'Save once…'),
-    h('button', { onclick: async () => { const r = await call('addSaveFolder', id); if (r) { afterAdd(r); renderDetail(id); refreshStatus(id); } }, disabled: !g.installed }, 'Choose folder…'),
+    h('button', { onclick: async () => {
+      const dir = await call('pickFolder', 'Choose the folder this game saves into', g.installDir || undefined);
+      if (dir && (await addRule(id, { absPath: dir }))) { renderDetail(id, { noAuto: true }); refreshStatus(id); }
+    }, disabled: !g.installed }, 'Choose folder…'),
     h('button', { class: 'ghost', onclick: () => typePath(id) }, 'Type a path…')));
 
   // ---- launch
@@ -569,6 +637,27 @@ async function renderDetail(id, opts = {}) {
   if (opts.suggest || (!saves.length && g.installed && !opts.noAuto)) runSuggest(id, suggestBox);
 }
 
+/** Add a save location, handling "that can't be a save folder" and "that's unusually big". */
+async function addRule(id, args) {
+  let res;
+  try { res = await call('addSaveRule', id, args); } catch { return null; }
+  if (res.needsConfirm) {
+    const ok = await dialog({
+      title: 'That folder is unusually big',
+      text: `${res.path} holds ${res.size}. Save folders are normally much smaller. Only continue if you're sure this folder holds just the game's saves; otherwise pick a smaller folder or limit it to the save files.`,
+      buttons: [{ label: 'Cancel', value: false, cls: 'ghost' }, { label: 'Sync it anyway', value: true, cls: 'primary' }],
+    });
+    if (!ok) return null;
+    try { res = await call('addSaveRule', id, { ...args, confirmLarge: true }); } catch { return null; }
+  }
+  if (res.refused) {
+    await dialog({ title: 'Can\'t sync that folder', text: res.refused });
+    return null;
+  }
+  afterAdd(res);
+  return res;
+}
+
 function afterAdd(r) {
   if (r && r.portable === false) {
     toast('That folder is outside AppData, Documents and the game folder, so it only works if the other PC has the exact same path.', 'bad');
@@ -591,8 +680,7 @@ async function runSuggest(id, box) {
       h('div', { class: 'faint', style: 'font-size:12px' }, c.reason)),
     h('span', { class: `count${c.fileCount ? '' : ' zero'}` }, c.exists ? `${c.fileCount} file${c.fileCount === 1 ? '' : 's'}` : 'not there yet'),
     h('button', { class: 'small primary', onclick: async () => {
-      const res = await call('addSaveRule', id, { path: c.path, include: c.include });
-      afterAdd(res);
+      if (!(await addRule(id, { path: c.path, include: c.include }))) return;
       await renderDetail(id, { noAuto: true });
       refreshStatus(id);
     } }, 'Use'))),
@@ -630,8 +718,7 @@ async function typePath(id) {
   const envMap = { '%appdata%': '<appdata>', '%localappdata%': '<localappdata>', '%userprofile%': '<home>' };
   v = v.replace(/^%[a-z]+%/i, (m) => envMap[m.toLowerCase()] || m);
   const isToken = /^<[a-z]+>/.test(v);
-  const res = await call('addSaveRule', id, isToken ? { path: v.replace(/\\/g, '/').replace(/\/+$/, ''), include: inc.value.split(',') } : { absPath: v, include: inc.value.split(',') });
-  afterAdd(res);
+  if (!(await addRule(id, isToken ? { path: v.replace(/\\/g, '/').replace(/\/+$/, ''), include: inc.value.split(',') } : { absPath: v, include: inc.value.split(',') }))) return;
   renderDetail(id, { noAuto: true });
   refreshStatus(id);
 }
@@ -672,9 +759,8 @@ async function showSaveOnceResult({ id, candidates }) {
   if (!ok) return;
   for (const i of picks) {
     const c = candidates[i];
-    await call('addSaveRule', id, { path: c.path, include: c.include });
+    await addRule(id, { path: c.path, include: c.include });
   }
-  toast('Save location added.', 'good');
   if (view === 'detail' && currentId === id) renderDetail(id, { noAuto: true });
   refreshStatus(id);
 }

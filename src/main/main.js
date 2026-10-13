@@ -1,5 +1,5 @@
 'use strict';
-const { app, BrowserWindow, ipcMain, dialog, shell, Notification } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, Notification, safeStorage } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -14,12 +14,19 @@ const snapshot = require('../core/snapshot');
 const providers = require('../core/providers');
 const launcher = require('../core/launcher');
 const vndb = require('../core/vndb');
+const limits = require('../core/limits');
+const { ManifestSyncEngine } = require('../core/manifest-sync');
+const { StoreLibrary } = require('../core/store-library');
+const { DriveStore } = require('../core/stores');
+const { DriveClient } = require('../core/gdrive');
+const { GoogleAuth } = require('../core/google-oauth');
 
 let win = null;
 let config = null;
 let library = null;
 let engine = null;
 let roots = null;
+let googleAuth = null; // null when this build has no Google client ID
 const running = new Map(); // id -> { ev, watchers, liveTimer, mode }
 
 // Lets tests (and a future portable mode) keep settings somewhere other than %APPDATA%.
@@ -40,13 +47,70 @@ function notify(title, body) {
   if (Notification.isSupported()) new Notification({ title, body, silent: true }).show();
 }
 
+// ---------------------------------------------------------------- Google sign-in
+
+/** Client ID/secret are injected at build time (src/main/oauth-config.json), never committed. */
+function loadOAuthConfig() {
+  if (process.env.VNS_GOOGLE_CLIENT_ID && process.env.VNS_GOOGLE_CLIENT_SECRET) {
+    return { clientId: process.env.VNS_GOOGLE_CLIENT_ID, clientSecret: process.env.VNS_GOOGLE_CLIENT_SECRET };
+  }
+  try {
+    const c = JSON.parse(fs.readFileSync(path.join(__dirname, 'oauth-config.json'), 'utf8'));
+    if (c.clientId && c.clientSecret) return c;
+  } catch { /* not bundled */ }
+  return null;
+}
+
+/** Google tokens live in userData, encrypted with the OS's credential protection when available. */
+function tokenStore() {
+  const file = path.join(app.getPath('userData'), 'google-token.json');
+  let cache;
+  return {
+    load() {
+      if (cache !== undefined) return cache;
+      try {
+        const j = JSON.parse(fs.readFileSync(file, 'utf8'));
+        cache = j.enc ? JSON.parse(safeStorage.decryptString(Buffer.from(j.enc, 'base64'))) : j.plain || null;
+      } catch { cache = null; }
+      return cache;
+    },
+    save(t) {
+      cache = t;
+      const body = safeStorage.isEncryptionAvailable()
+        ? { enc: safeStorage.encryptString(JSON.stringify(t)).toString('base64') }
+        : { plain: t };
+      fs.writeFileSync(file, JSON.stringify(body), { mode: 0o600 });
+    },
+    clear() { cache = null; fs.rmSync(file, { force: true }); },
+  };
+}
+
+function backend() {
+  const d = config.data;
+  if (d.backend === 'gdrive') return googleAuth && googleAuth.signedIn() ? 'gdrive' : null;
+  return d.cloudDir ? 'folder' : null;
+}
+
 function rebuild() {
   const d = config.data;
-  library = d.cloudDir ? new Library(d.cloudDir) : null;
-  engine = d.cloudDir ? new SyncEngine({
-    cloudDir: d.cloudDir, deviceId: d.deviceId, deviceName: d.deviceName || os.hostname(),
-    roots, historyDepth: d.historyDepth,
-  }) : null;
+  const common = { deviceId: d.deviceId, deviceName: d.deviceName || os.hostname(), roots, historyDepth: d.historyDepth };
+  const b = backend();
+  if (b === 'gdrive') {
+    const client = new DriveClient({
+      getAccessToken: () => googleAuth.getAccessToken(),
+      refreshAccessToken: () => googleAuth.refreshAccessToken(),
+      apiBase: process.env.VNS_DRIVE_API, uploadBase: process.env.VNS_DRIVE_UPLOAD, // test hooks
+    });
+    const store = new DriveStore(client);
+    library = new StoreLibrary(store, path.join(app.getPath('userData'), 'covers'));
+    engine = new ManifestSyncEngine({ ...common, store, label: 'Google Drive' });
+  } else if (b === 'folder') {
+    library = new Library(d.cloudDir);
+    engine = new SyncEngine({ ...common, cloudDir: d.cloudDir });
+  } else {
+    library = null;
+    engine = null;
+  }
 }
 
 function local(id) { return config.game(id); }
@@ -71,6 +135,7 @@ function coverUrl(game) {
 
 async function decorate(game) {
   const l = local(game.id);
+  if (library && library.ensureCover) await library.ensureCover(game);
   const exeOk = !!(l.exePath && (await fsu.exists(l.exePath)));
   return {
     ...game,
@@ -101,6 +166,8 @@ async function runSync(game, opts = {}) {
       return { needs: 'offline', message: e.message };
     }
     if (e.code === 'cloud-incomplete') return { needs: 'incomplete', message: e.message };
+    if (e.code === 'too-big' || e.code === 'bad-path') return { needs: 'too-big', message: e.message };
+    if (e.code === 'signed-out') return { needs: 'signed-out', message: e.message };
     throw e;
   }
 }
@@ -173,7 +240,11 @@ function startGame(game, mode, onExit) {
 const api = {
   async getSetup() {
     return {
-      configured: !!config.data.cloudDir,
+      configured: !!backend(),
+      backend: backend(),
+      driveAvailable: !!googleAuth,
+      googleSignedIn: !!(googleAuth && googleAuth.signedIn()),
+      googleEmail: config.data.googleEmail || null,
       settings: {
         cloudDir: config.data.cloudDir,
         deviceName: config.data.deviceName || os.hostname(),
@@ -188,11 +259,40 @@ const api = {
 
   async detectProviders() { return providers.detect(); },
 
+  async googleSignIn() {
+    if (!googleAuth) throw new Error('This build of VN Shelf has no Google sign-in configured.');
+    await googleAuth.signIn();
+    let email = null;
+    try {
+      const client = new DriveClient({
+        getAccessToken: () => googleAuth.getAccessToken(), refreshAccessToken: () => googleAuth.refreshAccessToken(),
+        apiBase: process.env.VNS_DRIVE_API, uploadBase: process.env.VNS_DRIVE_UPLOAD,
+      });
+      const about = await client.about();
+      email = about && about.user ? about.user.emailAddress : null;
+    } catch { /* not essential */ }
+    await config.set({ googleEmail: email });
+    if (win) { if (win.isMinimized()) win.restore(); win.focus(); }
+    return { email };
+  },
+
+  async googleSignOut() {
+    if (googleAuth) await googleAuth.signOut();
+    await config.set({ googleEmail: null, backend: config.data.cloudDir ? 'folder' : null });
+    rebuild();
+    return api.getSetup();
+  },
+
   async saveSettings(s) {
     const patch = {};
     if (s.cloudDir !== undefined) {
       await fs.promises.mkdir(s.cloudDir, { recursive: true });
       patch.cloudDir = s.cloudDir;
+      patch.backend = 'folder';
+    }
+    if (s.backend === 'gdrive') {
+      if (!googleAuth || !googleAuth.signedIn()) throw new Error('Sign in to Google first.');
+      patch.backend = 'gdrive';
     }
     if (s.deviceName !== undefined) patch.deviceName = String(s.deviceName).trim() || os.hostname();
     if (s.historyDepth !== undefined) patch.historyDepth = Math.max(1, Math.min(100, Number(s.historyDepth) || 10));
@@ -314,21 +414,34 @@ const api = {
     for (const { rule, abs, error } of engine.resolveRules(game, dir)) {
       let exists = false;
       let fileCount = 0;
+      let size = null;
+      let skipped = 0;
       if (abs && (await fsu.isDir(abs))) {
         exists = true;
-        fileCount = (await fsu.walk(abs, { filter: fsu.makeMatcher(rule.include, rule.exclude), maxDepth: 8 })).length;
+        const m = await engine.listRuleFiles(abs, rule);
+        fileCount = m.count;
+        size = limits.describeSize({ files: m.count, bytes: m.bytes });
+        skipped = m.skipped.type + m.skipped.size;
       }
-      out.push({ ...rule, abs, error: error || null, exists, fileCount, portable: /^<[a-z]+>/.test(rule.path) });
+      const problem = limits.rejectPath(rule.path, rule.include, { cloudDir: config.data.cloudDir, abs });
+      out.push({ ...rule, abs, error: error || problem || null, exists, fileCount, size, skipped, portable: /^<[a-z]+>/.test(rule.path) });
     }
     return out;
   },
 
   async suggestSaves(id) {
     const game = await getGame(id);
-    return detect.suggest(game, installDir(id), { roots });
+    const r = await detect.suggest(game, installDir(id), { roots });
+    r.candidates = r.candidates.filter((c) => !limits.rejectPath(c.path, c.include, { cloudDir: config.data.cloudDir, abs: c.abs }));
+    return r;
   },
 
-  async addSaveRule(id, { path: p, absPath, include }) {
+  /**
+   * Add a save location after the safety checks. Returns { refused } for locations that can't be
+   * save folders, { needsConfirm, size } when it's unusually big (call again with confirmLarge),
+   * or { portable, path } once added.
+   */
+  async addSaveRule(id, { path: p, absPath, include, confirmLarge }) {
     const game = await getGame(id);
     let rulePath = p;
     let portable = true;
@@ -338,6 +451,19 @@ const api = {
       portable = t.portable;
     }
     const inc = (include || []).map((s) => s.trim()).filter(Boolean);
+    let abs = null;
+    try { abs = paths.expand(rulePath, { roots, gameDir: installDir(id) }); } catch { /* checked at sync */ }
+    const why = limits.rejectPath(rulePath, inc, { cloudDir: config.data.cloudDir, abs });
+    if (why) return { refused: why, path: rulePath };
+    if (abs && (await fsu.isDir(abs))) {
+      const m = await engine.listRuleFiles(abs, { include: inc, exclude: [] });
+      const measured = { files: m.count, bytes: m.bytes };
+      const verdict = limits.judge(measured, { confirmed: !!confirmLarge });
+      if (verdict === 'refuse') {
+        return { refused: `That folder holds ${limits.describeSize(measured)} or more, far more than saves normally take. Pick the folder that holds just the saves, or limit it to the save files.`, path: rulePath };
+      }
+      if (verdict === 'confirm') return { needsConfirm: true, size: limits.describeSize(measured), path: rulePath };
+    }
     await library.addSaveRule(game.id, { path: rulePath, include: inc });
     return { portable, path: rulePath };
   },
@@ -440,7 +566,8 @@ const api = {
       const changed = await snapshot.changedSince(roots, l.installDir, since, {
         extraSkip: [config.data.cloudDir, app.getPath('userData')],
       });
-      const candidates = snapshot.rank(changed, { game, roots, gameDir: l.installDir });
+      const candidates = snapshot.rank(changed, { game, roots, gameDir: l.installDir })
+        .filter((c) => !limits.rejectPath(c.path, c.include, { cloudDir: config.data.cloudDir, abs: c.abs }));
       setState(id, 'idle');
       send('saveonce-result', { id, candidates: candidates.slice(0, 12) });
     });
@@ -491,6 +618,13 @@ app.whenReady().then(async () => {
   roots = paths.defaultRoots({ documents: app.getPath('documents') });
   config = new LocalConfig(path.join(app.getPath('userData'), 'config.json'));
   await config.load();
+  const oauth = loadOAuthConfig();
+  if (oauth) {
+    googleAuth = new GoogleAuth({
+      clientId: oauth.clientId, clientSecret: oauth.clientSecret, tokenStore: tokenStore(),
+      openUrl: (u) => shell.openExternal(u), authUrl: process.env.VNS_GOOGLE_AUTH_URL, tokenUrl: process.env.VNS_GOOGLE_TOKEN_URL, revokeUrl: process.env.VNS_GOOGLE_REVOKE_URL,
+    });
+  }
   rebuild();
   await createWindow();
   pushPending().catch(() => {});
