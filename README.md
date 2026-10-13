@@ -2,10 +2,15 @@
 
 A small Steam-style library for visual novels that keeps save files in sync between your PCs.
 
-Saves go through a folder you already sync: Google Drive, OneDrive, Dropbox, iCloud Drive, MEGA,
-pCloud, Box, Syncthing, a NAS share, a USB stick. VN Shelf finds those on first run. There are no
-accounts, no API keys and no paid storage, and nothing AI-based runs inside the app. The only
-online lookup is VNDB, for covers and titles, and only when you search.
+There are two ways to keep saves, and you pick one on first run:
+
+- **A folder you already sync:** Google Drive, OneDrive, Dropbox, iCloud Drive, MEGA, pCloud, Box,
+  Syncthing, a NAS share, a USB stick. VN Shelf finds those on first run. No accounts or API keys.
+- **Google Drive directly:** sign in with Google, and no Drive app is needed on the PC. VN Shelf can
+  only see the Drive files it created itself (the `drive.file` permission), nothing else in your Drive.
+
+Nothing AI-based runs inside the app. The only other online lookup is VNDB, for covers and titles,
+and only when you search.
 
 ## Using it
 
@@ -36,6 +41,9 @@ Save locations are already set up, because they're stored as portable paths like
 - If the game looks open on the other PC, VN Shelf warns before launching.
 - If the shared folder isn't reachable, you can still play. Saves upload once it's back.
 - Removing a game from the library moves its shared folder to `games/.removed`. Nothing is deleted.
+- Save locations can't accidentally sweep up a whole game or drive: whole drives and system folders
+  are refused, programs, videos, archives, caches, logs and files over 64 MB are never synced, and a
+  folder over 50 MB or 1000 files asks first (over 500 MB or 5000 files is refused).
 
 ### Options
 
