@@ -4,6 +4,69 @@ All notable changes to VN Shelf. Download any version from the
 [Releases page](https://github.com/stagefuel/vn-shelf/releases). From 0.3.0 on, VN Shelf can
 update itself (Settings → Updates).
 
+## 0.7.0
+
+Setting up a new game is now just pressing Play. Registry saves sync, games get a reading status,
+colours and fonts are yours to choose, and two PCs uploading at the same moment are handled safely.
+
+**Update every PC.** 0.7.0 keeps each upload in a folder of its own in synced-folder mode. An older
+version on your other PC can't read uploads made this way: it says "Still downloading" (and loses
+nothing) until it's updated too.
+
+### New
+- **The save folder is found while you play.** For a game with no save folder, Play now just starts
+  the game. When it closes, VN Shelf asks **Where does this game save?** and lists the places that
+  changed while it ran, best match ticked:
+  - the game folder, AppData (Roaming, Local, LocalLow), Documents and Saved Games
+  - registry keys named after the game (see below)
+
+  Pick one and the first upload follows straight away. If your other PC already uploaded saves for
+  the game, you choose which to keep. **Ask me next time** if you didn't save, and **Somewhere else…**
+  to choose the folder yourself. The separate **Save once** button is gone; this replaces it.
+  Detection now also ignores more noise (browsers, LunaTranslator, Textractor, meikipop, Magpie,
+  shader caches and similar) and notices files copied in with an old date.
+- **Registry saves (Windows).** Some games keep their saves or cleared routes in the registry, under
+  `HKEY_CURRENT_USER\Software\<maker>\<game>`. These sync now, as a small file next to the save
+  files, so conflicts, History and Restore work as usual.
+  - Add one from the list after playing, or with **Type a path…** (`HKCU\Software\Maker\Game`).
+  - For safety, only keys at least two levels inside `HKEY_CURRENT_USER\Software` are allowed.
+    Windows' and Microsoft's areas and anything machine-wide are refused.
+  - An export is checked to be complete before anything is written into the registry.
+- **Reading status:** Plan to read, Reading, On hold, Finished or Dropped, chosen on the game's
+  page. It syncs between PCs.
+  - It shows under the cover and as a filter in the sidebar, and there's a **Sort by → Reading
+    status**.
+  - Playing a game for more than a minute marks it **Reading** if it had no status yet (or was
+    Plan to read).
+  - The values match VNDB's list labels, ready for syncing with your VNDB list later.
+- **Colours.** **Settings → Look** has six themes (Night, Midnight, Sakura, Matcha, Ink, and a light
+  Paper). Change any of the nine main colours with a colour picker or a `#RRGGBB` code. The window
+  updates as you go, and VN Shelf warns you if some text would be hard to read.
+- **Fonts.** Choose a font for the English interface and one for Japanese. Each fills in characters
+  the other doesn't have. Pick from the fonts installed on your PC, or add a `.ttf` / `.otf` file.
+- **Copy settings from another PC** (Settings → General). Each PC now shares its look and
+  preferences through your storage. One click copies the other PC's theme, fonts, background
+  picture, language, sorting and similar settings. Where saves are kept, the PC's name and its
+  programs and tools stay as they are.
+- **Titles from the game's window.** A game that isn't linked to VNDB, and still has the title
+  guessed from its folder name, takes the name its window shows while you play. Version numbers,
+  "trial" markers and engine names are removed. Titles you typed and VNDB titles are never replaced.
+- **Show play statistics on covers** can be turned off (Settings → Look).
+
+### Safer
+- **Two PCs uploading at the same moment.**
+  - In folder mode, each upload goes into its own folder, so a sync app merging two uploads can
+    never mix their files.
+  - Every sync record lists the uploads it grew from. If this PC's upload was replaced by the
+    other PC's, you get the "saves changed on both PCs" choice instead of a download over your saves.
+  - VN Shelf re-checks shortly after uploading, so you hear about it straight away.
+  - A replaced upload is moved into History after a day, where it can still be restored.
+- **Two games, one save folder.** Adding a location that another game on this PC already syncs (the
+  same folder, one inside or around it, or the same registry key) asks first.
+- **Wait for it to close.** When saves can't come down because the game is open (started outside VN
+  Shelf), you can let VN Shelf wait. It syncs by itself as soon as the game closes, and counts the
+  time it was open.
+
 ## 0.6.0
 
 Speed and safety. Google Drive mode now checks your whole library in a fraction of the time, VN

@@ -13,7 +13,7 @@ const fsp = require('fs').promises;
 const path = require('path');
 const crypto = require('crypto');
 const fsu = require('./fsutil');
-const { SyncEngine, SyncError, Progress, decide, totalSize, exclusive } = require('./sync');
+const { SyncEngine, SyncError, Progress, decide, totalSize, exclusive, REGISTRY_FILE, lineageAfter } = require('./sync');
 
 const sha1 = (buf) => crypto.createHash('sha1').update(buf).digest('hex');
 
@@ -49,7 +49,7 @@ class ManifestSyncEngine extends SyncEngine {
   async status(game, installDir, lastSync, { maxAge } = {}) {
     if (!maxAge) return super.status(game, installDir, lastSync);
     if (!(await this.cloudAvailable())) return { action: 'offline' };
-    const local = await this.scanLocal(game, installDir);
+    const local = await this.scanLocal(game, installDir, { fresh: false });
     const cloud = await this.store.readJson(game.id, 'state.json', { maxAge });
     return { action: decide(local.hashes, cloud, lastSync), local, cloud };
   }
@@ -137,6 +137,7 @@ class ManifestSyncEngine extends SyncEngine {
     if (prev) await this.addHistory(id, { ...prev, kind: 'pushed', at: prev.pushedAt });
     const state = {
       generation: `${Date.now()}-${crypto.randomBytes(4).toString('hex')}`,
+      lineage: lineageAfter(prev),
       hashes,
       deviceId: this.deviceId,
       deviceName: this.deviceName,
@@ -167,7 +168,17 @@ class ManifestSyncEngine extends SyncEngine {
   async applyFromStore(game, installDir, hashes, local, { onProgress } = {}) {
     const changed = Object.entries(hashes).filter(([key, h]) => local.hashes[key] !== h).length;
     const progress = new Progress(onProgress, 'download', changed);
-    for (const { rule, abs, error } of this.resolveRules(game, installDir)) {
+    for (const { rule, abs, error, registry } of this.resolveRules(game, installDir)) {
+      if (registry) {
+        const key = `${rule.id}/${REGISTRY_FILE}`;
+        if (key in hashes && local.hashes[key] !== hashes[key]) {
+          const buf = await this.store.getBlob(game.id, hashes[key]);
+          if (!buf || sha1(buf) !== hashes[key]) throw new SyncError('cloud-incomplete', `A save file in ${this.label} is missing or damaged (${key}).`);
+          await this.applyRegistry(rule, buf.toString('utf8'));
+          progress.step(buf.length);
+        }
+        continue;
+      }
       if (!abs) throw new SyncError('bad-path', `Can't resolve save location ${rule.path}: ${error}`);
       const prefix = `${rule.id}/`;
       for (const [key, p] of Object.entries(local.files)) {

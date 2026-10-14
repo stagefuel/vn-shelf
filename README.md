@@ -51,6 +51,10 @@ You pick one on first run, and the same one on every PC:
     platforms
   - tags, with spoiler tags hidden unless you choose to show them
 - **Notes:** a notes box on each game that saves as you type and syncs to your other PCs.
+- **Reading status:** Plan to read, Reading, On hold, Finished, Dropped, with a sidebar filter. It's
+  set to Reading automatically when you first play. The statuses match VNDB's list labels.
+- **Titles from the game's window** for games not linked to VNDB, tidied of version numbers and
+  engine names.
 
 ### Adding games
 - **Drag a game's `.exe`** onto the window, or use **+ Add game**, and pick the match from VNDB.
@@ -66,8 +70,10 @@ You pick one on first run, and the same one on every PC:
   BGI/Ethornell, CatSystem2, AliceSoft System 4, Artemis, YU-RIS, NScripter, Unity and age's
   rUGP. It also finds folders named after the game in AppData, Documents and Saved Games,
   including inside the developer's folder.
-- **Save once** starts the game. You save once and close it, and VN Shelf lists exactly which
-  files changed.
+- **Or just play:** for a game with no save folder yet, press Play. When you close the game, VN Shelf
+  shows where it saved (from what changed while it ran) and asks you to confirm.
+- **Registry saves:** games that keep saves in `HKEY_CURRENT_USER\Software\<maker>\<game>` sync too
+  (Windows only), with the same history and conflict handling as files.
 - **Choose folder…** or **Type a path…** if you already know it (`%APPDATA%\...` works), and
   **Files…** limits a folder to certain files (for example `Save*.rvdata2`).
 - Locations are stored as portable paths like `<appdata>/Nitroplus/Muramasa` or `<game>/savedata`,
@@ -113,7 +119,10 @@ You pick one on first run, and the same one on every PC:
   offline and saves upload later.
 - Saves never come down while that game is open, an empty or missing save folder never wipes the
   cloud copy, only one sync per game runs at a time, and quitting waits for syncs to finish.
-- Sync apps' duplicate copies ("(1)", "conflicted copy") are ignored.
+- Sync apps' duplicate copies ("(1)", "conflicted copy") are ignored. Two PCs uploading at the same
+  moment never mix files, and the replaced upload becomes a choice instead of being overwritten.
+- Adding a save folder another game already syncs asks first. If a game is open elsewhere, VN Shelf
+  can wait for it to close and then sync.
 - **Save-folder limits:**
   - whole drives, system folders and game installs are refused
   - programs, videos, archives, caches, logs and files over 64 MB are never synced
@@ -124,7 +133,10 @@ You pick one on first run, and the same one on every PC:
 ### Look and navigation
 - **One slim top bar on Windows:** the window's own title bar is merged into VN Shelf's bar. Drag it to
   move the window, double-click to maximise.
+- **Colours and fonts:** six themes (one light) and every colour adjustable, with a readability
+  check; a font for the English interface and one for Japanese, including fonts you add.
 - **Background image:** pick any picture in Settings (stored per PC), with sliders for darkness and blur.
+- **Copy settings from your other PC:** theme, fonts, background and preferences in one click.
 - **Back and forward:** the mouse's side buttons and Alt+← / Alt+→ move through Home, the library,
   filters and game pages. The Back button appears on game pages and tag lists. Clicking "VN Shelf"
   goes Home.

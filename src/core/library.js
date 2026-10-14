@@ -59,6 +59,8 @@ class Library {
       engine: fields.engine || null,
       saves: [],
       launch: { useLocaleEmulator: false, args: '' },
+      titleSource: fields.titleSource || 'user', // 'folder' | 'window' | 'vndb' | 'user'
+      status: '', // reading status (see STATUSES in main.js)
       addedAt: new Date().toISOString(),
     };
     await fsu.writeJson(path.join(this.dir(id), 'game.json'), game);
@@ -76,6 +78,11 @@ class Library {
 
   async addSaveRule(id, rule) {
     const game = await this.get(id);
+    if (rule.kind === 'registry') {
+      const key = require('./registry').normalizeKey(rule.key);
+      if ((game.saves || []).some((s) => s.kind === 'registry' && s.key.toLowerCase() === key.toLowerCase())) return game;
+      return this.update(id, { saves: [...(game.saves || []), { id: newRuleId(), kind: 'registry', key }] });
+    }
     const r = { id: newRuleId(), path: rule.path, include: rule.include || [], exclude: rule.exclude || [] };
     if ((game.saves || []).some((s) => s.path === r.path && JSON.stringify(s.include) === JSON.stringify(r.include))) {
       return game;
@@ -108,6 +115,24 @@ class Library {
   }
 
   coverPath(game) { return game.cover ? path.join(this.dir(game.id), game.cover) : null; }
+
+  // ---- each PC's shared look and preferences (devices/), for "Copy settings from another PC"
+
+  async putDeviceFile(name, buf) {
+    const p = path.join(this.cloudDir, 'devices', name);
+    await fsp.mkdir(path.dirname(p), { recursive: true });
+    const tmp = `${p}.${process.pid}.tmp`;
+    await fsp.writeFile(tmp, buf);
+    await fsp.rename(tmp, p);
+  }
+
+  async getDeviceFile(name) {
+    try { return await fsp.readFile(path.join(this.cloudDir, 'devices', name)); } catch { return null; }
+  }
+
+  async listDeviceFiles() {
+    try { return (await fsp.readdir(path.join(this.cloudDir, 'devices'))).filter((n) => !n.endsWith('.tmp') && !fsu.isSyncDuplicate(n)); } catch { return []; }
+  }
 
   /**
    * Remove from the library. The folder (saves and history included) is moved to
@@ -146,6 +171,9 @@ class LocalConfig {
     d.closeToTray = d.closeToTray !== false; // the window's X hides VN Shelf to the tray instead of quitting
     d.trayHintShown = !!d.trayHintShown;
     d.allowUmineko = !!d.allowUmineko;
+    d.showStats = d.showStats !== false; // play time and last played on covers
+    d.theme = d.theme || null; // { preset, colors: { bg, raised, line, text, dim, accent, play, warn, danger } }
+    d.fonts = d.fonts || { en: '', ja: '', custom: [] }; // interface fonts; custom = [{ family, file }] in userData/fonts
     await this.save();
     return d;
   }

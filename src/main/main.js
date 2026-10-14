@@ -16,7 +16,14 @@ const launcher = require('../core/launcher');
 const vndb = require('../core/vndb');
 const limits = require('../core/limits');
 const { ManifestSyncEngine } = require('../core/manifest-sync');
-const { exclusive, busyGames } = require('../core/sync');
+const { exclusive, busyGames, isRegistryRule } = require('../core/sync');
+const registry = require('../core/registry');
+const { cleanTitle } = require('../core/titles');
+
+// Reading status. The values follow VNDB's list labels, so they can sync with a VNDB list later:
+// playing = Playing (1), finished = Finished (2), stalled = Stalled (3), dropped = Dropped (4),
+// wishlist = Wishlist (5); '' = none.
+const STATUSES = ['', 'wishlist', 'playing', 'finished', 'stalled', 'dropped'];
 const { HashCache } = require('../core/hashcache');
 const { StoreLibrary } = require('../core/store-library');
 const { DriveStore } = require('../core/stores');
@@ -214,7 +221,8 @@ function backend() {
 function rebuild() {
   const d = config.data;
   if (!hashCache) hashCache = new HashCache(path.join(app.getPath('userData'), 'hash-cache.json'));
-  const common = { deviceId: d.deviceId, deviceName: d.deviceName || os.hostname(), roots, historyDepth: d.historyDepth, hashCache };
+  const common = { deviceId: d.deviceId, deviceName: d.deviceName || os.hostname(), roots, historyDepth: d.historyDepth, hashCache,
+    stateDir: path.join(app.getPath('userData'), 'work') };
   const b = backend();
   if (b === 'gdrive') {
     const client = new DriveClient({
@@ -254,6 +262,32 @@ async function getGame(id) {
   const g = await library.get(id);
   if (!g) throw new Error('That game is no longer in the library.');
   return g;
+}
+
+/**
+ * Another game on this PC that already syncs this folder (or one inside it, or around it), or this
+ * registry key: two games syncing the same saves would overwrite each other's. Returns its title.
+ */
+async function sharedWith(id, { abs, key }) {
+  const games = await library.list({ maxAge: STATUS_MAX_AGE }).catch(() => []);
+  const norm = (p) => { const r = path.resolve(p); return process.platform === 'win32' ? r.toLowerCase() : r; };
+  const inside = (a, b) => a === b || a.startsWith(b + path.sep);
+  for (const g of games) {
+    if (g.id === id) continue;
+    for (const r of g.saves || []) {
+      if (key) {
+        if (isRegistryRule(r) && r.key.toLowerCase() === key.toLowerCase()) return g.title;
+        continue;
+      }
+      if (isRegistryRule(r) || !abs) continue;
+      let other;
+      try { other = paths.expand(r.path, { roots, gameDir: installDir(g.id) }); } catch { continue; }
+      const x = norm(abs);
+      const y = norm(other);
+      if (inside(x, y) || inside(y, x)) return g.title;
+    }
+  }
+  return null;
 }
 
 /** The game as last listed (at most STATUS_MAX_AGE old): for showing it, never for syncing it. */
@@ -327,6 +361,7 @@ async function runSync(game, opts = {}) {
   try {
     const r = await engine.sync(game, dir, local(game.id).lastSync || null, { ...opts, beforePull, onProgress: progressSender(game.id) });
     await config.setGame(game.id, { lastSync: r.lastSync, pending: false });
+    if (r.action === 'push' && r.lastSync) verifyLater(game.id, r.lastSync.generation);
     return { ok: true, action: r.action };
   } catch (e) {
     if (e.code === 'conflict') return { needs: 'conflict', info: e.info };
@@ -339,6 +374,29 @@ async function runSync(game, opts = {}) {
     if (e.code === 'signed-out') return { needs: 'signed-out', message: e.message };
     if (e.code === 'game-running') return { needs: 'game-running', message: e.message };
     throw e;
+  }
+}
+
+/**
+ * A little after an upload, check it's still the current one. If the other PC uploaded at the same
+ * moment and replaced it, say so now (as a conflict to choose) instead of on the next sync.
+ * Google Drive answers at once; a synced folder only shows the other PC's upload once the sync
+ * app has delivered it, so it's checked twice.
+ */
+function verifyLater(id, generation) {
+  for (const ms of backend() === 'gdrive' ? [5000] : [20000, 120000]) {
+    setTimeout(async () => {
+      if (!engine || running.has(id)) return;
+      const l = local(id);
+      if (!l.lastSync || l.lastSync.generation !== generation) return; // synced again since
+      const cloud = await engine.readCloudState(id).catch(() => null);
+      if (!cloud || cloud.generation === generation || (cloud.lineage || []).includes(generation)) return;
+      const fresh = await library.get(id).catch(() => null);
+      if (!fresh) return;
+      const r = await runSync(fresh).catch(() => null);
+      if (r && r.needs === 'conflict') setState(id, 'conflict', { info: r.info });
+      send('games-changed');
+    }, ms).unref?.();
   }
 }
 
@@ -413,7 +471,7 @@ async function pollChanges() {
       lastPoll = ch.newest;
       if (!ch.unknownFolder && !ch.games.size) return;
       await store.snapshot(); // re-read only the changed records
-      send('library-changed', { ids: [...ch.games.keys()], added: ch.unknownFolder });
+      send('library-changed', { ids: [...ch.games.keys()].filter((g) => !g.startsWith('__')), added: ch.unknownFolder });
     } else {
       const now = await folderFingerprints(config.data.cloudDir);
       const prev = lastPoll instanceof Map ? lastPoll : null;
@@ -464,6 +522,76 @@ function stopLive(id) {
   for (const w of entry.watchers) try { w.close(); } catch { /* ignore */ }
 }
 
+/** Tell the window (and the owner) how a sync after a game closed went. */
+function reportSync(id, title, r) {
+  if (r.ok) {
+    setState(id, 'idle', { message: { push: 'Saves uploaded', pull: 'Saves downloaded' }[r.action] || 'No new saves' });
+    if (r.action === 'push') notify(title, 'Saves uploaded.');
+  } else if (r.needs === 'offline') {
+    setState(id, 'idle', { message: 'Shared folder not reachable — will upload when it\'s back.' });
+  } else if (r.needs === 'conflict') {
+    setState(id, 'conflict', { info: r.info });
+  } else {
+    setState(id, 'error', { message: r.message || r.error });
+  }
+}
+
+/**
+ * The game's window gave its name. A game that isn't linked to VNDB and still has the title guessed
+ * from its folder name takes it (cleaned up); a title you typed or one from VNDB is never replaced.
+ */
+async function takeWindowTitle(id, raw) {
+  try {
+    const game = await library.get(id);
+    if (!game || game.vndbId || (game.titleSource && game.titleSource !== 'folder')) return;
+    const title = cleanTitle(raw, { exe: game.exe });
+    if (!title || title === game.title) return;
+    await library.update(id, { title, titleSource: 'window' });
+    send('title-taken', { id, title });
+    send('games-changed');
+  } catch { /* not important */ }
+}
+
+/** Playing a game for the first time marks it "Reading" (unless it already has a status other than "Plan to read"). */
+async function markReading(id) {
+  try {
+    const game = await library.get(id);
+    if (game && (!game.status || game.status === 'wishlist')) {
+      await library.update(id, { status: 'playing', statusAt: new Date().toISOString() });
+      send('games-changed');
+    }
+  } catch { /* not important */ }
+}
+
+/**
+ * Where did the game save? Everything created or changed since `since` in the usual save places,
+ * grouped into ranked candidate folders, plus registry keys under HKCU\Software\<maker>\<game>
+ * written since then that are named after the game. Nothing is set until the owner picks.
+ */
+async function detectSaves(game, l, since) {
+  const changed = await snapshot.changedSince(roots, l.installDir, since, {
+    extraSkip: [config.data.cloudDir, app.getPath('userData')],
+  });
+  const candidates = snapshot.rank(changed, { game, roots, gameDir: l.installDir })
+    .filter((c) => !limits.rejectPath(c.path, c.include, { cloudDir: config.data.cloudDir, abs: c.abs }))
+    .slice(0, 12);
+  let reg = [];
+  if (engine && engine.registry) {
+    try {
+      const terms = [game.title, game.titleAlt, game.developer, game.exe ? path.basename(game.exe, path.extname(game.exe)) : '', l.installDir ? path.basename(l.installDir) : '']
+        .map(detect.normName).filter((t) => t.length >= 3);
+      const keys = (await engine.registry.writtenSince(since)).filter((k) => {
+        const [, maker, name] = k.split('\\');
+        return [maker, name].some((part) => terms.some((t) => detect.namesMatch(detect.normName(part), t)));
+      });
+      const exports = await engine.registry.exportKeys(keys);
+      reg = keys.filter((k) => exports.get(k) && registry.countValues(exports.get(k)) > 0)
+        .map((k) => ({ key: k, display: registry.display(k), values: registry.countValues(exports.get(k)) }));
+    } catch { /* registry not readable: files only */ }
+  }
+  return { candidates, registry: reg };
+}
+
 /**
  * Add a session to this PC's play time in the game's shared record (so the other PC shows the total),
  * moving over the minutes counted the old way (on this PC only) the first time.
@@ -502,15 +630,88 @@ function startGame(game, mode, onExit) {
     });
   }
   ev.on('elevating', () => setState(game.id, 'running', { message: 'Waiting for permission to run as administrator…' }));
+  ev.on('title', (t) => takeWindowTitle(game.id, t));
   ev.on('exit', async (info) => {
     stopLive(game.id);
     await tools.stopTools(entry.tools).catch(() => {});
     running.delete(game.id);
-    if (info.reason !== 'failed' && info.reason !== 'declined') await recordPlay(game.id, (info.playedMs || 0) / 1000);
+    if (info.reason !== 'failed' && info.reason !== 'declined') {
+      await recordPlay(game.id, (info.playedMs || 0) / 1000);
+      if (mode === 'play' && (info.playedMs || 0) >= 60000) await markReading(game.id);
+    }
     try { await onExit(info); } catch (e) { setState(game.id, 'error', { message: e.message }); }
     send('games-changed');
   });
   return entry;
+}
+
+// ---------------------------------------------------------------- look: theme and fonts
+
+const THEME_KEYS = ['bg', 'raised', 'line', 'text', 'dim', 'accent', 'play', 'warn', 'danger'];
+
+/** Only known colour slots with #rrggbb values, so a bad file can't inject anything into the page. */
+function cleanTheme(t) {
+  if (!t || typeof t !== 'object') return null;
+  const colors = {};
+  for (const k of THEME_KEYS) if (t.colors && /^#[0-9a-f]{6}$/i.test(t.colors[k] || '')) colors[k] = t.colors[k].toLowerCase();
+  return { preset: String(t.preset || 'night').replace(/[^a-z0-9-]/gi, '').slice(0, 30), colors };
+}
+
+function fontsDir() { return path.join(app.getPath('userData'), 'fonts'); }
+
+function fontsInfo() {
+  const f = config.data.fonts || {};
+  const custom = (f.custom || []).filter((c) => fs.existsSync(path.join(fontsDir(), c.file)))
+    .map((c) => ({ family: c.family, file: c.file, url: pathToFileURL(path.join(fontsDir(), c.file)).href }));
+  return { en: f.en || '', ja: f.ja || '', custom };
+}
+
+// ---------------------------------------------------------------- sharing this PC's look with the other PC
+
+const SHARED_KEYS = ['language', 'sort', 'showStats', 'closeToTray', 'historyDepth', 'liveMode', 'autoUpdate', 'theme'];
+let publishTimer = null;
+
+function publishSettingsSoon() {
+  clearTimeout(publishTimer);
+  publishTimer = setTimeout(() => publishSettings().catch(() => {}), 3000);
+}
+
+/**
+ * Put this PC's look and preferences (plus its background picture and added fonts) in the shared
+ * storage, so another PC can copy them (Settings → General). Only what changed is uploaded.
+ */
+async function publishSettings() {
+  if (!library || !library.putDeviceFile) return;
+  const d = config.data;
+  const id = d.deviceId;
+  const files = {};
+  const put = async (name, file) => {
+    const st = await fs.promises.stat(file).catch(() => null);
+    if (!st) return null;
+    const sig = `${st.size}:${st.mtimeMs}`;
+    if ((d.publishedFiles || {})[name] !== sig) {
+      await library.putDeviceFile(name, await fs.promises.readFile(file));
+      await config.set({ publishedFiles: { ...(config.data.publishedFiles || {}), [name]: sig } });
+    }
+    return name;
+  };
+  const bg = d.background && d.background.file ? await put(`${id}-background${path.extname(d.background.file)}`, d.background.file) : null;
+  if (bg) files.background = bg;
+  files.fonts = [];
+  for (const c of (d.fonts && d.fonts.custom) || []) {
+    const name = await put(`${id}-font-${c.file}`, path.join(fontsDir(), c.file));
+    if (name) files.fonts.push({ family: c.family, file: c.file, name });
+  }
+  const settings = Object.fromEntries(SHARED_KEYS.map((k) => [k, d[k]]));
+  settings.fonts = { en: (d.fonts && d.fonts.en) || '', ja: (d.fonts && d.fonts.ja) || '' };
+  settings.background = d.background ? { dim: d.background.dim, blur: d.background.blur } : null;
+  const body = { settings, files };
+  const sig = JSON.stringify(body);
+  if (sig === d.publishedSettings) return;
+  await library.putDeviceFile(`${id}.json`, Buffer.from(JSON.stringify({
+    deviceId: id, deviceName: d.deviceName || os.hostname(), sharedAt: new Date().toISOString(), ...body,
+  }, null, 2)));
+  await config.set({ publishedSettings: sig });
 }
 
 // ---------------------------------------------------------------- API
@@ -538,6 +739,9 @@ const api = {
         startWithSystem: config.data.startWithSystem,
         closeToTray: config.data.closeToTray,
         allowUmineko: config.data.allowUmineko,
+        showStats: config.data.showStats,
+        theme: config.data.theme,
+        fonts: fontsInfo(),
       },
       platform: process.platform,
       version: app.getVersion(),
@@ -594,6 +798,9 @@ const api = {
     if (s.startWithSystem !== undefined) patch.startWithSystem = !!s.startWithSystem;
     if (s.closeToTray !== undefined) patch.closeToTray = !!s.closeToTray;
     if (s.allowUmineko !== undefined) patch.allowUmineko = !!s.allowUmineko;
+    if (s.showStats !== undefined) patch.showStats = !!s.showStats;
+    if (s.theme !== undefined) patch.theme = cleanTheme(s.theme);
+    if (s.fonts !== undefined) patch.fonts = { ...config.data.fonts, en: String(s.fonts.en || '').slice(0, 100), ja: String(s.fonts.ja || '').slice(0, 100) };
     if (s.categories !== undefined) patch.categories = [...new Set(s.categories.map((c) => String(c).trim()).filter(Boolean))];
     if (s.tools !== undefined) {
       patch.tools = s.tools.filter((t) => t && t.path).map((t) => ({
@@ -603,11 +810,13 @@ const api = {
         closeWithGame: t.closeWithGame !== false, allGames: !!t.allGames,
       }));
     }
-    const onlyLocal = Object.keys(patch).every((k) => ['language', 'sort', 'autoUpdate', 'categories', 'tools', 'startWithSystem', 'closeToTray', 'allowUmineko'].includes(k));
+    const onlyLocal = Object.keys(patch).every((k) => ['language', 'sort', 'autoUpdate', 'categories', 'tools', 'startWithSystem', 'closeToTray', 'allowUmineko', 'showStats', 'theme', 'fonts'].includes(k));
     await config.set(patch);
+    publishSettingsSoon();
     if (patch.startWithSystem !== undefined) await applyStartWithSystem(patch.startWithSystem).catch(() => {});
     if (patch.language !== undefined && tray) tray.setContextMenu(trayMenu());
     if (onlyLocal) return api.getSetup();
+    await config.set({ publishedFiles: {}, publishedSettings: null }); // new storage: share everything again
     rebuild();
     lastPoll = null;
     autoUpload().catch(() => {});
@@ -659,7 +868,7 @@ const api = {
     const title = path.basename(dir).replace(/[\[(【].*?[\])】]/g, ' ').replace(/[_]+/g, ' ').replace(/\s+/g, ' ').trim() || path.basename(dir);
     refuseBlocked(title, path.basename(dir));
     const found = await detect.detectEngine(dir).catch(() => null);
-    const game = await library.create({ title, exe: path.basename(exePath), engine: found ? found.engine.name : null });
+    const game = await library.create({ title, exe: path.basename(exePath), engine: found ? found.engine.name : null, titleSource: 'folder' });
     await config.setGame(game.id, { exePath, installDir: dir });
     send('games-changed');
     return decorate(game);
@@ -668,6 +877,12 @@ const api = {
   async updateGame(id, patch) {
     const allowed = {};
     for (const k of ['title', 'titleAlt', 'developer', 'launch', 'notes', 'categories']) if (patch[k] !== undefined) allowed[k] = patch[k];
+    if (allowed.title !== undefined) allowed.titleSource = 'user';
+    if (patch.status !== undefined) {
+      if (!STATUSES.includes(patch.status)) throw new Error('Unknown reading status.');
+      allowed.status = patch.status;
+      allowed.statusAt = new Date().toISOString();
+    }
     if (allowed.notes !== undefined) allowed.notes = String(allowed.notes).slice(0, 100000);
     if (allowed.categories !== undefined) allowed.categories = [...new Set((allowed.categories || []).map((c) => String(c).trim()).filter(Boolean))];
     const g = await library.update(id, allowed);
@@ -714,7 +929,7 @@ const api = {
     if (!full) full = await vndb.fetchInfo(v.vndbId).catch(() => null);
     const info = full ? full.info : null;
     refuseBlocked(info && info.aliases);
-    const g = await library.update(id, { title: v.title, titleAlt: v.titleAlt, developer: v.developer, vndbId: v.vndbId, ...(info ? { vndb: info } : {}) });
+    const g = await library.update(id, { title: v.title, titleAlt: v.titleAlt, developer: v.developer, vndbId: v.vndbId, titleSource: 'vndb', ...(info ? { vndb: info } : {}) });
     if (v.image) {
       try {
         const { buf, ext } = await vndb.downloadImage(v.image);
@@ -739,7 +954,17 @@ const api = {
     const game = await peekGame(id);
     const dir = installDir(id);
     const out = [];
-    for (const { rule, abs, error } of engine.resolveRules(game, dir)) {
+    const regRules = (game.saves || []).filter(isRegistryRule);
+    const regData = regRules.length && engine.registry ? await engine.registry.exportKeys(regRules.map((r) => r.key)).catch(() => new Map()) : new Map();
+    for (const { rule, abs, error, registry: isReg } of engine.resolveRules(game, dir)) {
+      if (isReg) {
+        const data = regData.get(rule.key) || null;
+        const n = registry.countValues(data);
+        out.push({ ...rule, path: registry.display(rule.key), abs: null, registry: true, exists: !!data, fileCount: n,
+          size: null, skipped: 0, portable: true,
+          error: engine.registry ? null : 'Registry saves only sync on Windows.' });
+        continue;
+      }
       let exists = false;
       let fileCount = 0;
       let size = null;
@@ -769,8 +994,18 @@ const api = {
    * save folders, { needsConfirm, size } when it's unusually big (call again with confirmLarge),
    * or { portable, path } once added.
    */
-  async addSaveRule(id, { path: p, absPath, include, confirmLarge }) {
+  async addSaveRule(id, { path: p, absPath, include, confirmLarge, confirmShared, registryKey }) {
     const game = await getGame(id);
+    if (registryKey) {
+      let key;
+      try { key = registry.normalizeKey(registryKey); } catch (e) { return { refused: e.message, path: String(registryKey) }; }
+      if (!confirmShared) {
+        const other = await sharedWith(id, { key });
+        if (other) return { needsConfirm: true, shared: other, path: registry.display(key) };
+      }
+      await library.addSaveRule(game.id, { kind: 'registry', key });
+      return { portable: true, path: registry.display(key) };
+    }
     let rulePath = p;
     let portable = true;
     if (absPath) {
@@ -791,6 +1026,10 @@ const api = {
         return { refused: `That folder holds ${limits.describeSize(measured)} or more, far more than saves normally take. Pick the folder that holds just the saves, or limit it to the save files.`, path: rulePath };
       }
       if (verdict === 'confirm') return { needsConfirm: true, size: limits.describeSize(measured), path: rulePath };
+    }
+    if (!confirmShared) {
+      const other = await sharedWith(id, { abs });
+      if (other) return { needsConfirm: true, shared: other, path: rulePath };
     }
     await library.addSaveRule(game.id, { path: rulePath, include: inc });
     return { portable, path: rulePath };
@@ -839,7 +1078,9 @@ const api = {
     const l = local(id);
     if (!l.exePath || !(await fsu.exists(l.exePath))) return { needs: 'locate' };
     const hasSaves = (game.saves || []).length > 0;
-    if (!hasSaves && !opts.noSaves) return { needs: 'no-saves' };
+    // No save folder yet: play anyway and work out where it saves from what changed (asked after).
+    const detecting = !hasSaves && !opts.noSaves;
+    const since = Date.now() - 1000;
 
     if (hasSaves && !opts.offline) {
       if (!(await engine.cloudAvailable())) return { needs: 'offline', message: `Can't reach ${config.data.cloudDir}` };
@@ -861,22 +1102,20 @@ const api = {
           : { message: `Couldn't start the game: ${info.error}` });
         return;
       }
-      if (!hasSaves) { setState(id, 'idle'); return; }
+      if (!hasSaves) {
+        if (!detecting) { setState(id, 'idle'); return; }
+        setState(id, 'scanning', { message: 'Looking for where it saves…' });
+        const found = await detectSaves(game, l, since).catch(() => ({ candidates: [], registry: [] }));
+        setState(id, 'idle');
+        send('saveonce-result', { id, ...found, afterPlay: true });
+        return;
+      }
       setState(id, 'syncing', { message: 'Saving to the cloud…' });
       await new Promise((r) => setTimeout(r, 2000)); // let the game finish writing
       const fresh = await library.get(id);
       const r = await runSync(fresh).catch((e) => ({ error: e.message }));
       await engine.releaseLock(id).catch(() => {});
-      if (r.ok) {
-        setState(id, 'idle', { message: r.action === 'push' ? 'Saves uploaded' : 'No new saves' });
-        if (r.action === 'push') notify(fresh.title, 'Saves uploaded.');
-      } else if (r.needs === 'offline') {
-        setState(id, 'idle', { message: 'Shared folder not reachable — will upload when it\'s back.' });
-      } else if (r.needs === 'conflict') {
-        setState(id, 'conflict', { info: r.info });
-      } else {
-        setState(id, 'error', { message: r.message || r.error });
-      }
+      reportSync(id, fresh.title, r);
     });
     setState(id, 'running', { message: 'Playing' });
     startLive(game);
@@ -891,6 +1130,30 @@ const api = {
     setState(id, 'idle', r.ok ? { message: { push: 'Saves uploaded', pull: 'Saves downloaded' }[r.action] || 'Up to date' } : {});
     send('games-changed');
     return r;
+  },
+
+  /**
+   * The game is open (started outside VN Shelf): wait for it to close, then sync. Saves can't safely
+   * come down while it runs, since it could write its older saves back over them.
+   */
+  async waitAndSync(id, opts = {}) {
+    const game = await getGame(id);
+    if (running.has(id)) throw new Error('It\'s already running.');
+    const ev = launcher.launch({ exePath: null, installDir: installDir(id), graceMs: 4000 });
+    running.set(id, { ev, watchers: [], liveTimer: null, mode: 'watch', startedAt: Date.now(), tools: [] });
+    setState(id, 'running', { message: 'Waiting for the game to close…' });
+    ev.on('exit', async (info) => {
+      running.delete(id);
+      if (info.reason === 'stopped') { setState(id, 'idle'); return; }
+      await recordPlay(id, (info.playedMs || 0) / 1000);
+      setState(id, 'syncing', { message: 'Syncing…' });
+      await new Promise((r) => setTimeout(r, 2000)); // let the game finish writing
+      const fresh = await library.get(id).catch(() => game);
+      const r = await runSync(fresh, opts).catch((e) => ({ error: e.message }));
+      reportSync(id, fresh.title, r);
+      send('games-changed');
+    });
+    return { waiting: true };
   },
 
   async stopTracking(id) {
@@ -909,13 +1172,9 @@ const api = {
     const since = Date.now() - 1000;
     startGame(game, 'saveonce', async () => {
       setState(id, 'scanning', { message: 'Looking for new save files…' });
-      const changed = await snapshot.changedSince(roots, l.installDir, since, {
-        extraSkip: [config.data.cloudDir, app.getPath('userData')],
-      });
-      const candidates = snapshot.rank(changed, { game, roots, gameDir: l.installDir })
-        .filter((c) => !limits.rejectPath(c.path, c.include, { cloudDir: config.data.cloudDir, abs: c.abs }));
+      const found = await detectSaves(game, l, since).catch(() => ({ candidates: [], registry: [] }));
       setState(id, 'idle');
-      send('saveonce-result', { id, candidates: candidates.slice(0, 12) });
+      send('saveonce-result', { id, ...found });
     });
     setState(id, 'running', { message: 'Make one save, then close the game' });
     return { started: true };
@@ -972,7 +1231,7 @@ const api = {
       try {
         refuseBlocked(it.title, it.match && [it.match.title, it.match.titleAlt]);
         const found = await detect.detectEngine(it.dir, roots).catch(() => null);
-        let game = await library.create({ title: it.title, exe: path.basename(it.exe), engine: found ? found.engine.name : null });
+        let game = await library.create({ title: it.title, exe: path.basename(it.exe), engine: found ? found.engine.name : null, titleSource: 'folder' });
         await config.setGame(game.id, { exePath: it.exe, installDir: it.dir });
         if (it.match) {
           await api.applyVndb(game.id, it.match).catch(() => {});
@@ -1070,6 +1329,98 @@ const api = {
     return { restarting: true };
   },
 
+  // ---- look: fonts, and copying another PC's settings
+
+  /** Add a font file (.ttf / .otf / .ttc) for the interface. It's copied into VN Shelf's settings folder. */
+  async addFont() {
+    const f = await api.pickFile('Choose a font file', [{ name: 'Fonts', extensions: ['ttf', 'otf', 'ttc', 'woff', 'woff2'] }]);
+    if (!f) return null;
+    const file = path.basename(f).replace(/[^\w.\- ]+/g, '_');
+    await fs.promises.mkdir(fontsDir(), { recursive: true });
+    await fs.promises.copyFile(f, path.join(fontsDir(), file));
+    const family = `VNS ${path.basename(file, path.extname(file))}`;
+    const custom = ((config.data.fonts && config.data.fonts.custom) || []).filter((c) => c.file !== file);
+    custom.push({ family, file });
+    await config.set({ fonts: { ...config.data.fonts, custom } });
+    publishSettingsSoon();
+    return { setup: await api.getSetup(), family };
+  },
+
+  async removeFont(file) {
+    const f = config.data.fonts || {};
+    const gone = (f.custom || []).find((c) => c.file === file);
+    const custom = (f.custom || []).filter((c) => c.file !== file);
+    const next = { ...f, custom };
+    if (gone && next.en === gone.family) next.en = '';
+    if (gone && next.ja === gone.family) next.ja = '';
+    await config.set({ fonts: next });
+    await fs.promises.rm(path.join(fontsDir(), file), { force: true }).catch(() => {});
+    publishSettingsSoon();
+    return api.getSetup();
+  },
+
+  /** Other PCs that shared their settings: [{ deviceId, deviceName, sharedAt }], newest first. */
+  async otherDevices() {
+    requireLibrary();
+    await publishSettings().catch(() => {});
+    const out = [];
+    for (const name of (await library.listDeviceFiles()).filter((n) => /^[\w-]+\.json$/.test(n))) {
+      if (name === `${config.data.deviceId}.json`) continue;
+      try {
+        const j = JSON.parse((await library.getDeviceFile(name)).toString('utf8'));
+        if (j && j.deviceId && j.settings) out.push({ deviceId: j.deviceId, deviceName: j.deviceName, sharedAt: j.sharedAt });
+      } catch { /* damaged or still syncing */ }
+    }
+    return out.sort((a, b) => String(b.sharedAt).localeCompare(String(a.sharedAt)));
+  },
+
+  /** Replace this PC's look and preferences with another PC's (background picture and fonts too). */
+  async copySettingsFrom(deviceId) {
+    requireLibrary();
+    if (!/^[\w-]+$/.test(deviceId)) throw new Error('Unknown PC.');
+    const buf = await library.getDeviceFile(`${deviceId}.json`);
+    if (!buf) throw new Error('That PC\'s settings aren\'t available yet. Let the shared storage finish syncing, then try again.');
+    const j = JSON.parse(buf.toString('utf8'));
+    const s = j.settings || {};
+    const patch = {};
+    for (const k of SHARED_KEYS) if (s[k] !== undefined) patch[k] = s[k];
+    if (patch.theme !== undefined) patch.theme = cleanTheme(patch.theme);
+    // Fonts: copy the other PC's added fonts here, then use the same choices.
+    const missing = [];
+    const custom = [...((config.data.fonts && config.data.fonts.custom) || [])];
+    for (const f of (j.files && j.files.fonts) || []) {
+      const data = await library.getDeviceFile(f.name).catch(() => null);
+      if (!data) { missing.push(f.family.replace(/^VNS /, '')); continue; }
+      const file = path.basename(f.file).replace(/[^\w.\- ]+/g, '_');
+      await fs.promises.mkdir(fontsDir(), { recursive: true });
+      await fs.promises.writeFile(path.join(fontsDir(), file), data);
+      if (!custom.some((c) => c.file === file)) custom.push({ family: f.family, file });
+    }
+    const fontsOk = (name) => !name || !/^VNS /.test(name) || custom.some((c) => c.family === name);
+    patch.fonts = {
+      ...config.data.fonts, custom,
+      en: fontsOk(s.fonts && s.fonts.en) ? (s.fonts && s.fonts.en) || '' : config.data.fonts.en,
+      ja: fontsOk(s.fonts && s.fonts.ja) ? (s.fonts && s.fonts.ja) || '' : config.data.fonts.ja,
+    };
+    // Background picture.
+    if (j.files && j.files.background) {
+      const data = await library.getDeviceFile(j.files.background).catch(() => null);
+      if (data) {
+        const dest = path.join(app.getPath('userData'), `background${path.extname(j.files.background)}`);
+        const old = config.data.background;
+        if (old && old.file && old.file !== dest) await fs.promises.rm(old.file, { force: true }).catch(() => {});
+        await fs.promises.writeFile(dest, data);
+        patch.background = { file: dest, dim: (s.background && s.background.dim) ?? 0.72, blur: (s.background && s.background.blur) ?? 0, version: Date.now() };
+      }
+    } else if (s.background === null) {
+      patch.background = null;
+    }
+    await config.set(patch);
+    if (patch.closeToTray !== undefined || patch.language !== undefined) { if (tray) tray.setContextMenu(trayMenu()); }
+    publishSettingsSoon();
+    return { setup: await api.getSetup(), missingFonts: missing, from: j.deviceName };
+  },
+
   // ---- background
 
   async chooseBackground() {
@@ -1081,6 +1432,7 @@ const api = {
     if (old && old.file && old.file !== dest) await fs.promises.rm(old.file, { force: true }).catch(() => {});
     await fs.promises.copyFile(f, dest);
     await config.set({ background: { file: dest, dim: old ? old.dim ?? 0.72 : 0.72, blur: old ? old.blur ?? 0 : 0, version: Date.now() } });
+    publishSettingsSoon();
     return api.getSetup();
   },
 
@@ -1088,6 +1440,7 @@ const api = {
     const b = config.data.background;
     if (!b) return api.getSetup();
     await config.set({ background: { ...b, dim: Math.max(0, Math.min(0.95, Number(dim))), blur: Math.max(0, Math.min(30, Number(blur) || 0)) } });
+    publishSettingsSoon();
     return api.getSetup();
   },
 
@@ -1095,6 +1448,7 @@ const api = {
     const b = config.data.background;
     if (b && b.file) await fs.promises.rm(b.file, { force: true }).catch(() => {});
     await config.set({ background: null });
+    publishSettingsSoon();
     return api.getSetup();
   },
 
@@ -1178,6 +1532,7 @@ app.whenReady().then(async () => {
   if (config.data.startWithSystem) applyStartWithSystem(true).catch(() => {});
   await createWindow();
   setTimeout(() => autoUpload().catch(() => {}), 4000);
+  setTimeout(() => publishSettings().catch(() => {}), 8000);
   setInterval(() => autoUpload().catch(() => {}), 5 * 60 * 1000);
   pollChanges();
   win.on('show', schedulePoll);

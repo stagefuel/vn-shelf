@@ -33,7 +33,7 @@ function execFileP(cmd, args, opts = {}) {
  * One PowerShell for the whole session is far cheaper than starting one per check.
  */
 function windowsWatcher(dir, intervalMs, rootPids = []) {
-  const script = "$d=$env:VNS_DIR.TrimEnd('\\')+'\\'; [Console]::Out.AutoFlush=$true; " +
+  const script = "[Console]::OutputEncoding=[Text.Encoding]::UTF8; $d=$env:VNS_DIR.TrimEnd('\\')+'\\'; [Console]::Out.AutoFlush=$true; " +
     '$fam=@{}; foreach ($r in ($env:VNS_ROOTS -split \',\' | Where-Object { $_ })) { $fam[[int]$r]=1 }; ' +
     'while ($true) { ' +
     '$all = @(Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,ExecutablePath); ' +
@@ -44,8 +44,11 @@ function windowsWatcher(dir, intervalMs, rootPids = []) {
     '$out = foreach ($p in $all) { $i=[int]$p.ProcessId; $x=$p.ExecutablePath; ' +
     'if (($x -and $x.StartsWith($d, [System.StringComparison]::OrdinalIgnoreCase)) -or ($fam.ContainsKey($i) -and -not $x)) { $i } }; ' +
     "[Console]::Out.WriteLine('PIDS ' + ($out -join ',')); " +
+    // The game's window title: usually the game's real name (used to tidy up folder-name titles).
+    "$tt=''; foreach ($i in @($out)) { try { $w=[Diagnostics.Process]::GetProcessById($i).MainWindowTitle; if ($w) { $tt=$w; break } } catch {} }; " +
+    "if ($tt) { [Console]::Out.WriteLine('TITLE ' + $tt) }; " +
     `Start-Sleep -Milliseconds ${intervalMs} }`;
-  const w = { pids: null, failed: false, proc: null };
+  const w = { pids: null, failed: false, proc: null, title: null };
   try {
     w.proc = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], {
       env: { ...process.env, VNS_DIR: dir, VNS_ROOTS: rootPids.join(',') }, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'],
@@ -55,13 +58,15 @@ function windowsWatcher(dir, intervalMs, rootPids = []) {
     return w;
   }
   let buf = '';
+  w.proc.stdout.setEncoding('utf8');
   w.proc.stdout.on('data', (d) => {
-    buf += d.toString();
+    buf += d;
     let i;
     while ((i = buf.indexOf('\n')) >= 0) {
       const line = buf.slice(0, i).trim();
       buf = buf.slice(i + 1);
       if (line.startsWith('PIDS')) w.pids = line.slice(4).split(',').map((x) => Number(x.trim())).filter(Boolean);
+      else if (line.startsWith('TITLE ')) w.title = line.slice(6).trim();
     }
   });
   w.proc.on('error', () => { w.failed = true; });
@@ -128,20 +133,24 @@ async function linuxProcessesUnder(dir) {
  *   'started'   ()            the process was spawned
  *   'elevating' ()            Windows is asking the owner for administrator rights
  *   'running'   (pids)        game processes seen
+ *   'title'     (text)        the game window's title, once it has stayed the same for two checks (Windows)
  *   'exit'      ({ reason, error, durationMs, playedMs })  the game is closed
  *               reason: 'closed' | 'stopped' | 'failed' | 'declined' (No to the administrator prompt)
  *               playedMs: time the game was actually running (see the top of this file)
  * and has .stop() to stop tracking manually.
+ * With exePath null nothing is started: it only watches a game that's already running (from installDir).
  */
 function launch({ exePath, installDir, args = '', localeEmulatorPath = '', useLocaleEmulator = false,
   platform = process.platform, pollMs = 2500, graceMs = 6000, spawnImpl = spawn, elevateImpl = startElevated }) {
   const ev = new EventEmitter();
-  const cwd = path.dirname(exePath);
+  const cwd = exePath ? path.dirname(exePath) : installDir;
   const extra = args ? args.match(/"[^"]*"|\S+/g).map((a) => a.replace(/^"|"$/g, '')) : [];
 
   let cmd = exePath;
   let argv = extra;
-  if (useLocaleEmulator && localeEmulatorPath) {
+  if (!exePath) {
+    // Watch-only.
+  } else if (useLocaleEmulator && localeEmulatorPath) {
     cmd = localeEmulatorPath;
     argv = ['-run', exePath, ...extra];
   } else if (platform === 'win32' && /\.(bat|cmd)$/i.test(exePath)) {
@@ -164,6 +173,8 @@ function launch({ exePath, installDir, args = '', localeEmulatorPath = '', useLo
   let playedMs = 0;
   let lastAliveCheck = startedAt; // the start counts as a sighting: the game was just launched
   const maxGap = pollMs * 3; // longer than this between two checks = the PC slept; don't count it
+  let pendingTitle = null;
+  let lastTitle = null;
 
   const finish = (reason, error) => {
     if (done) return;
@@ -185,6 +196,10 @@ function launch({ exePath, installDir, args = '', localeEmulatorPath = '', useLo
     }
     const now = Date.now();
     const alive = childAlive || (pids && pids.length) || pids === null;
+    if (watcher && watcher.title) {
+      if (watcher.title === pendingTitle && watcher.title !== lastTitle) { lastTitle = watcher.title; ev.emit('title', lastTitle); }
+      pendingTitle = watcher.title;
+    }
     if (alive) {
       if (lastAliveCheck !== null && now - lastAliveCheck <= maxGap) playedMs += now - lastAliveCheck;
       lastAliveCheck = now;
@@ -216,6 +231,14 @@ function launch({ exePath, installDir, args = '', localeEmulatorPath = '', useLo
     lastAliveCheck = lastSeen;
     startWatching([r.pid]);
   };
+
+  if (!exePath) {
+    childAlive = false;
+    setImmediate(() => ev.emit('started'));
+    startWatching([]);
+    ev.stop = () => finish('stopped');
+    return ev;
+  }
 
   try {
     child = spawnImpl(cmd, argv, { cwd, detached: true, stdio: 'ignore', windowsHide: false });

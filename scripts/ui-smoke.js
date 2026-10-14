@@ -82,6 +82,7 @@ const shot = (page, n) => page.screenshot({ path: path.join(shots, `${n}.png`) }
 
 (async () => {
   let saveOncePath = null;
+  let copiedLook = null;
   const A = makePc('Desktop');
   const B = makePc('Laptop');
 
@@ -110,20 +111,26 @@ const shot = (page, n) => page.screenshot({ path: path.join(shots, `${n}.png`) }
   await page.waitForSelector('.toast.good:has-text("uploaded")', { timeout: 30000 });
   await page.waitForTimeout(800);
   await shot(page, '05-after-play');
-  // Save-once on an unknown game
+  // An unknown game with no save folder: just Play. When it closes, VN Shelf asks where it saved
+  // (from what changed while it ran) and does the first upload.
   await page.evaluate((exe) => { addGameFromExe(exe); }, A.exe2);
   await page.waitForSelector('dialog[open] button:has-text("Skip")', { timeout: 20000 });
   await page.click('dialog button:has-text("Skip")');
-  await page.waitForSelector('#detailView:not(.hidden) button:has-text("Save once")');
+  await page.waitForSelector('#detailView:not(.hidden) #playBtn');
   await page.waitForTimeout(800);
-  await page.click('button:has-text("Save once")');
-  await page.click('dialog button:has-text("Start the game")');
-  await page.waitForSelector('dialog[open] .choice', { timeout: 30000 });
+  await page.click('#playBtn');
+  await page.waitForSelector('dialog[open] h3:has-text("Where does this game save")', { timeout: 40000 });
   await page.waitForTimeout(300);
-  await shot(page, '06a-saveonce');
+  await shot(page, '06a-detected-after-play');
+  const detected = await page.$$eval('dialog[open] .choice .mono', (r) => r.map((x) => x.textContent));
+  if (detected.some((d) => /discord/i.test(d))) throw new Error(`noise offered as a save folder: ${detected}`);
   await page.click('dialog button:has-text("Use selected")');
+  await page.waitForSelector('.toast.good:has-text("uploaded")', { timeout: 30000 });
   await page.waitForTimeout(1200);
   saveOncePath = await page.$eval('.panel .row .path', (e) => e.textContent);
+  // Share a look for the other PC to copy later.
+  await page.evaluate(() => vns.call('saveSettings', { theme: { preset: 'midnight', colors: { accent: '#ff8800' } } }));
+  await page.waitForTimeout(4000);
   await shot(page, '06b-saveonce-added');
   await page.click('#backBtn');
   await page.waitForTimeout(1500);
@@ -149,6 +156,16 @@ const shot = (page, n) => page.screenshot({ path: path.join(shots, `${n}.png`) }
   await page.waitForTimeout(800);
   await shot(page, '08-laptop-after-play');
   const hist = await page.$$eval('.panel .box .row', (rows) => rows.length);
+  // Copy the Desktop's look onto the Laptop.
+  await page.click('#settingsBtn');
+  await page.click('dialog[open] .tab[data-tab="general"]');
+  await page.click('dialog[open] button:has-text("Copy settings from another PC")');
+  await page.waitForSelector('dialog[open] .choice:has-text("Desktop")', { timeout: 15000 });
+  await page.click('dialog[open] button:has-text("Copy settings")');
+  await page.waitForSelector('.toast.good:has-text("Desktop")', { timeout: 15000 });
+  copiedLook = await page.evaluate(() => ({ bg: getComputedStyle(document.documentElement).getPropertyValue('--bg').trim(), accent: getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() }));
+  if (copiedLook.bg !== '#0b1020' || copiedLook.accent !== '#ff8800') throw new Error(`settings not copied: ${JSON.stringify(copiedLook)}`);
+  await shot(page, '08b-laptop-copied-look');
   await app.close();
 
   // ---------------- conflict: both change
@@ -167,7 +184,7 @@ const shot = (page, n) => page.screenshot({ path: path.join(shots, `${n}.png`) }
   await shot(page, '10-history');
   await app.close();
 
-  console.log(JSON.stringify({ shots, saveOncePath, pulledOnLaptop: pulledFirst.trim(), cloud: fs.readdirSync(path.join(cloudRoot, 'VNShelf', 'games')), historyRowsOnLaptop: hist }, null, 1));
+  console.log(JSON.stringify({ shots, saveOncePath, copiedLook, pulledOnLaptop: pulledFirst.trim(), cloud: fs.readdirSync(path.join(cloudRoot, 'VNShelf', 'games')), historyRowsOnLaptop: hist }, null, 1));
 })().catch(async (e) => {
   console.error('SMOKE FAILED', e);
   if (lastPage) await lastPage.screenshot({ path: path.join(shots, 'FAILED.png') }).catch(() => {});

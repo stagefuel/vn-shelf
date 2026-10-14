@@ -16,6 +16,12 @@ const fsu = require('./fsutil');
 const { expand } = require('./paths');
 const limits = require('./limits');
 const { HashCache } = require('./hashcache');
+const reg = require('./registry');
+const os = require('os');
+
+/** The pretend file a registry save rule syncs as (see core/registry.js). */
+const REGISTRY_FILE = '__registry__.json';
+const isRegistryRule = (rule) => rule && rule.kind === 'registry';
 
 // One sync at a time per game, across every engine in the program (a new engine is made whenever
 // settings change): the startup upload, Play, Sync now, a restore or an import of the same game must
@@ -68,11 +74,19 @@ function decide(localHashes, cloudState, lastSync) {
   if (!lastSync) return sameHashes(localHashes, cloudState.hashes) ? 'adopt' : 'conflict';
   const localChanged = !sameHashes(localHashes, lastSync.hashes);
   const cloudChanged = cloudState.generation !== lastSync.generation;
+  // The version this PC last agreed on isn't among the uploads the cloud copy grew from: another PC
+  // uploaded without having seen it (both uploaded at the same moment, so one replaced the other).
+  // That's a conflict to choose, not a download that would quietly bury this PC's saves in History.
+  const skipped = cloudChanged && Array.isArray(cloudState.lineage) && !!lastSync.generation && !cloudState.lineage.includes(lastSync.generation);
   if (!localChanged && !cloudChanged) return 'nothing';
   if (localChanged && !cloudChanged) return 'push';
-  if (!localChanged && cloudChanged) return 'pull';
+  if (!localChanged && cloudChanged && !skipped) return 'pull';
   return sameHashes(localHashes, cloudState.hashes) ? 'adopt' : 'conflict';
 }
+
+/** How many earlier uploads a sync record remembers (to notice an upload that was replaced). */
+const LINEAGE = 100;
+function lineageAfter(prev) { return prev ? [prev.generation, ...(prev.lineage || [])].filter(Boolean).slice(0, LINEAGE) : []; }
 
 /**
  * Counts the files (and bytes) one step of a sync has copied, and reports them through
@@ -113,6 +127,8 @@ class SyncEngine {
    * @param {number} [o.historyDepth=10]
    * @param {string} [o.platform]
    * @param {HashCache} [o.hashCache]  remembers file hashes between checks (and runs, if it has a file)
+   * @param {object} [o.registry]  registry access for registry save rules (Windows: WindowsRegistry)
+   * @param {string} [o.stateDir]  a folder on this PC for working files (registry exports)
    */
   constructor(o) {
     this.cloudDir = o.cloudDir;
@@ -122,6 +138,9 @@ class SyncEngine {
     this.historyDepth = o.historyDepth || 10;
     this.platform = o.platform || process.platform;
     this.hashCache = o.hashCache || new HashCache(null);
+    this.registry = o.registry !== undefined ? o.registry : (this.platform === 'win32' ? new reg.WindowsRegistry() : null);
+    this.stateDir = o.stateDir || path.join(os.tmpdir(), 'vn-shelf-work');
+    this.regCache = null; // { at, map } the last registry export, reused briefly by status checks
   }
 
   gameDir(id) { return path.join(this.cloudDir, 'games', id); }
@@ -134,9 +153,10 @@ class SyncEngine {
     }
   }
 
-  /** Resolve each save rule to an absolute folder on this PC. */
+  /** Resolve each save rule to an absolute folder on this PC (registry rules: abs null, registry true). */
   resolveRules(game, installDir) {
     return (game.saves || []).map((rule) => {
+      if (isRegistryRule(rule)) return { rule, abs: null, registry: true };
       try {
         return { rule, abs: expand(rule.path, { roots: this.roots, gameDir: installDir, platform: this.platform }) };
       } catch (e) {
@@ -171,11 +191,12 @@ class SyncEngine {
   }
 
   /** Hash every save file on this PC. Returns { files: {key: abs}, hashes: {key: sha1}, sizes: {key: bytes} }. */
-  async scanLocal(game, installDir) {
+  async scanLocal(game, installDir, { fresh = true } = {}) {
     await this.hashCache.load();
     const files = {};
     const hashes = {};
     const sizes = {};
+    await this.scanRegistry(game, { files, hashes, sizes }, { fresh });
     for (const { rule, abs } of this.resolveRules(game, installDir)) {
       if (!abs || !(await fsu.isDir(abs))) continue;
       const why = limits.rejectPath(rule.path, rule.include, { cloudDir: this.cloudDir, abs, platform: this.platform });
@@ -198,6 +219,47 @@ class SyncEngine {
       }
     }
     return { files, hashes, sizes };
+  }
+
+  /**
+   * Registry save rules: export each key and stage it as a file (stateDir/<game>/<rule>.json), so it
+   * syncs like one. Status checks (fresh: false) may reuse an export up to 20 s old.
+   */
+  async scanRegistry(game, out, { fresh = true } = {}) {
+    const rules = (game.saves || []).filter(isRegistryRule);
+    if (!rules.length) return;
+    if (!this.registry) throw new SyncError('registry-unsupported', 'This game keeps saves in the Windows registry, which only syncs on Windows.');
+    const keys = rules.map((r) => r.key);
+    let map;
+    const c = this.regCache;
+    if (!fresh && c && Date.now() - c.at < 20000 && keys.every((k) => c.map.has(k))) map = c.map;
+    else {
+      map = await this.registry.exportKeys(keys);
+      this.regCache = { at: Date.now(), map: new Map([...((c && c.map) || []), ...map]) };
+    }
+    for (const rule of rules) {
+      const data = map.get(rule.key);
+      if (!data) continue; // the key doesn't exist (yet) on this PC
+      const text = reg.canonical(data);
+      const file = path.join(this.stateDir, 'registry', game.id, `${rule.id}.json`);
+      const old = await fsp.readFile(file, 'utf8').catch(() => null);
+      if (old !== text) { await fsp.mkdir(path.dirname(file), { recursive: true }); await fsp.writeFile(file, text); }
+      const key = `${rule.id}/${REGISTRY_FILE}`;
+      out.files[key] = file;
+      out.hashes[key] = reg.sha1(text);
+      out.sizes[key] = Buffer.byteLength(text);
+    }
+  }
+
+  /** Put a registry export (text of a __registry__.json) back into the registry. */
+  async applyRegistry(rule, text) {
+    if (!this.registry) throw new SyncError('registry-unsupported', 'This game keeps saves in the Windows registry, which only syncs on Windows.');
+    let data;
+    try { data = JSON.parse(text); } catch { data = null; }
+    if (!reg.valid(data)) throw new SyncError('cloud-incomplete', 'This game\'s registry save in the cloud is damaged or incomplete, so it wasn\'t applied.');
+    await fsp.mkdir(this.stateDir, { recursive: true });
+    await this.registry.importKey(rule.key, data, path.join(this.stateDir, `import-${process.pid}-${Date.now()}.json`));
+    this.regCache = null;
   }
 
   async readCloudState(id) {
@@ -229,7 +291,7 @@ class SyncEngine {
   /** Work out the sync status without changing anything. */
   async status(game, installDir, lastSync, opts = {}) { // eslint-disable-line no-unused-vars
     if (!(await this.cloudAvailable())) return { action: 'offline' };
-    const local = await this.scanLocal(game, installDir);
+    const local = await this.scanLocal(game, installDir, { fresh: false });
     const cloud = await this.readCloudState(game.id);
     return { action: decide(local.hashes, cloud, lastSync), local, cloud };
   }
@@ -304,15 +366,22 @@ class SyncEngine {
       progress.step(local.sizes && local.sizes[key]);
     }
 
-    const current = path.join(gdir, 'current');
+    // Each upload gets its own folder, named after it, so two PCs uploading at the same moment through
+    // a sync app can never end up with a mix of each other's files: the sync record says which folder
+    // is current, and the other upload's folder is kept apart (and moved to History later).
+    const generation = `${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
+    const dir = `current-${generation}`;
     const prev = await this.readCloudState(game.id);
-    if (await fsu.exists(current)) {
-      await this.archive(game.id, current, prev, 'pushed', { move: true });
+    const prevDir = path.join(gdir, (prev && prev.dir) || 'current');
+    if (await fsu.exists(prevDir)) {
+      await this.archive(game.id, prevDir, prev, 'pushed', { move: true });
     }
-    await fsu.moveDir(tmp, current);
+    await fsu.moveDir(tmp, path.join(gdir, dir));
 
     const state = {
-      generation: `${Date.now()}-${crypto.randomBytes(4).toString('hex')}`,
+      generation,
+      dir,
+      lineage: lineageAfter(prev),
       hashes,
       deviceId: this.deviceId,
       deviceName: this.deviceName,
@@ -323,20 +392,49 @@ class SyncEngine {
     return state;
   }
 
-  /** Remove upload folders left behind by a push that never finished (a crash, a power cut). */
+  /**
+   * Housekeeping, at most once a day per folder: remove upload folders left by a push that never
+   * finished (a crash, a power cut), and move uploads that another PC's upload replaced (their folder
+   * isn't the current one any more) into History, where they can still be restored.
+   */
   async cleanIncoming(gdir) {
     let names = [];
     try { names = await fsp.readdir(gdir); } catch { return; }
+    const DAY = 24 * 3600 * 1000;
+    const old = async (n) => { const st = await fsp.stat(path.join(gdir, n)).catch(() => null); return st && Date.now() - st.mtimeMs > DAY; };
     for (const n of names.filter((x) => x.startsWith('.incoming-'))) {
-      const p = path.join(gdir, n);
-      const st = await fsp.stat(p).catch(() => null);
-      if (st && Date.now() - st.mtimeMs > 24 * 3600 * 1000) await fsu.rmrf(p).catch(() => {});
+      if (await old(n)) await fsu.rmrf(path.join(gdir, n)).catch(() => {});
     }
+    const id = path.basename(gdir);
+    let state = null;
+    try { state = await this.readCloudState(id); } catch { return; }
+    if (!state) return;
+    const current = state.dir || 'current';
+    // Other copies of the sync record that sync apps made say whose upload a folder was.
+    const copies = [];
+    for (const n of names.filter((x) => x !== 'state.json' && /^state.*\.json$/.test(x) && fsu.isSyncDuplicate(x))) {
+      const j = await fsu.readJson(path.join(gdir, n));
+      if (j && j.generation) copies.push(j);
+    }
+    for (const n of names.filter((x) => (x === 'current' || x.startsWith('current-')) && x !== current)) {
+      if (!(await old(n))) continue;
+      const known = copies.find((c) => (c.dir || 'current') === n);
+      const src = path.join(gdir, n);
+      const hashes = known ? known.hashes : await this.hashTree(src);
+      await this.archive(id, src, { ...(known || {}), deviceName: (known && known.deviceName) || 'another PC', pushedAt: (known && known.pushedAt) || new Date().toISOString(), hashes }, 'replaced', { move: true }).catch(() => {});
+    }
+  }
+
+  /** {relative path: sha1} for every file under dir. */
+  async hashTree(dir) {
+    const out = {};
+    for (const rel of await fsu.walk(dir)) out[rel] = await fsu.hashFile(path.join(dir, ...rel.split('/')));
+    return out;
   }
 
   /** Copy the shared folder's current saves onto this PC, backing up what's here first. */
   async pull(game, installDir, local, cloud, { onProgress } = {}) {
-    const current = path.join(this.gameDir(game.id), 'current');
+    const current = path.join(this.gameDir(game.id), cloud.dir || 'current');
     const bad = await this.verifySnapshot(current, cloud.hashes);
     if (bad.length) {
       throw new SyncError('cloud-incomplete',
@@ -351,7 +449,16 @@ class SyncEngine {
   async apply(game, installDir, srcDir, hashes, local, { onProgress } = {}) {
     const changed = Object.entries(hashes).filter(([key, h]) => local.hashes[key] !== h).length;
     const progress = new Progress(onProgress, 'download', changed);
-    for (const { rule, abs, error } of this.resolveRules(game, installDir)) {
+    for (const { rule, abs, error, registry } of this.resolveRules(game, installDir)) {
+      if (registry) {
+        // The registry key is replaced as a whole; a key missing on the other side is left alone.
+        const key = `${rule.id}/${REGISTRY_FILE}`;
+        if (key in hashes && local.hashes[key] !== hashes[key]) {
+          await this.applyRegistry(rule, await fsp.readFile(path.join(srcDir, ...key.split('/')), 'utf8'));
+          progress.step();
+        }
+        continue;
+      }
       if (!abs) throw new SyncError('bad-path', `Can't resolve save location ${rule.path}: ${error}`);
       const prefix = `${rule.id}/`;
       // Remove files that no longer exist on the other side (they were backed up first).
@@ -468,4 +575,4 @@ class SyncEngine {
   }
 }
 
-module.exports = { SyncEngine, SyncError, Progress, decide, sameHashes, totalSize, exclusive, busyGames };
+module.exports = { SyncEngine, SyncError, Progress, decide, sameHashes, totalSize, exclusive, busyGames, REGISTRY_FILE, isRegistryRule, lineageAfter };

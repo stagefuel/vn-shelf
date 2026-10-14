@@ -191,7 +191,7 @@ let games = [];
 let view = 'home'; // home | library | detail
 let prevView = 'home';
 let currentId = null;
-const filter = { category: null, tag: null };
+const filter = { category: null, tag: null, status: null };
 const live = {};      // id -> { state, message }
 const badges = {};    // id -> gameStatus result
 let showSpoilers = false;
@@ -202,9 +202,15 @@ const BADGE_TEXT = () => ({
   'no-saves': t('No save folder'), 'not-installed': t('Not on this PC'), running: t('Playing'), syncing: t('Syncing'), error: t('Error'),
 });
 
+// Reading status, in the order shown. The values match VNDB's list labels (see STATUSES in main.js).
+const STATUS_TEXT = () => ({
+  playing: t('Reading'), wishlist: t('Plan to read'), stalled: t('On hold'), finished: t('Finished'), dropped: t('Dropped'),
+});
+const STATUS_ORDER = ['playing', 'wishlist', 'stalled', 'finished', 'dropped'];
+
 const SORTS = () => [
   ['title', t('Title')], ['played', t('Last played')], ['added', t('Recently added')], ['released', t('Release date')],
-  ['rating', t('VNDB rating')], ['length', t('Length')], ['playtime', t('Time played')],
+  ['rating', t('VNDB rating')], ['length', t('Length')], ['playtime', t('Time played')], ['status', t('Reading status')],
 ];
 
 const LENGTH_TEXT = () => ({
@@ -262,7 +268,14 @@ function renderSidebar() {
   const nav = $('#sidebar');
   replaceKids(nav,
     item(t('Home'), view === 'home', () => showHome()),
-    item(t('All games'), view === 'library' && !filter.category && !filter.tag, () => showLibrary({ category: null, tag: null }), h('span', { class: 'count' }, games.length)),
+    item(t('All games'), view === 'library' && !filter.category && !filter.tag && !filter.status, () => showLibrary({ category: null, tag: null }), h('span', { class: 'count' }, games.length)),
+    ...(() => {
+      const used = STATUS_ORDER.filter((st) => games.some((g) => g.status === st));
+      if (!used.length) return [];
+      return [h('div', { class: 'navhead' }, t('Reading status')),
+        ...used.map((st) => item(h('span', { class: 'catname' }, h('span', { class: `sdot ${st}` }), STATUS_TEXT()[st]), view === 'library' && filter.status === st,
+          () => showLibrary({ status: st, category: null, tag: null }), h('span', { class: 'count' }, games.filter((g) => g.status === st).length)))];
+    })(),
     h('div', { class: 'navhead' }, t('Categories'),
       h('button', { class: 'ghost tiny', title: t('New category'), onclick: newCategory }, '+')),
     ...cats.map((c) => item(h('span', { class: 'catname' }, c), view === 'library' && filter.category === c,
@@ -346,7 +359,13 @@ function cardFor(g) {
   if (g.installed && !(live[g.id] && ['running', 'syncing'].includes(live[g.id].state))) {
     art.append(h('button', { class: 'quickplay', onclick: (e) => { e.stopPropagation(); play(g.id); } }, t('▶ Play')));
   }
-  const sub = g.lastPlayed ? t('Played {when}', { when: ago(g.lastPlayed) }) : (g.titleAlt || g.developer || '');
+  // Reading status, then (if play statistics are shown) time played and when, else who made it.
+  const showStats = setup.settings.showStats !== false;
+  const parts = [];
+  if (g.status && STATUS_TEXT()[g.status]) parts.push(h('span', { class: `sdot ${g.status}` }), `${STATUS_TEXT()[g.status]}${showStats && g.lastPlayed ? ' · ' : ''}`);
+  if (showStats && g.lastPlayed) parts.push(g.playMinutes ? `${hours(g.playMinutes)} · ${ago(g.lastPlayed)}` : t('Played {when}', { when: ago(g.lastPlayed) }));
+  else if (!g.status) parts.push(g.titleAlt || g.developer || '');
+  const sub = parts;
   return h('div', { class: `card${g.installed ? '' : ' uninstalled'}`, tabindex: '0', 'data-id': g.id,
     onclick: () => openDetail(g.id), onkeydown: (e) => { if (e.key === 'Enter') openDetail(g.id); } },
   art,
@@ -416,7 +435,10 @@ function renderHome() {
 // ------------------------------------------------------------------ library grid
 
 function showLibrary(f) {
-  if (f) Object.assign(filter, f);
+  if (f) {
+    Object.assign(filter, f);
+    if (!('status' in f) && ('category' in f || 'tag' in f)) filter.status = null;
+  }
   setView('library');
   renderGrid();
   pushNav();
@@ -438,6 +460,7 @@ function sortGames(list, key) {
     rating: (a, b) => ((b.vndb || {}).rating || 0) - ((a.vndb || {}).rating || 0),
     length: (a, b) => ((b.vndb || {}).lengthMinutes || 0) - ((a.vndb || {}).lengthMinutes || 0),
     playtime: (a, b) => (b.playMinutes || 0) - (a.playMinutes || 0),
+    status: (a, b) => (STATUS_ORDER.indexOf(a.status) + 1 || 99) - (STATUS_ORDER.indexOf(b.status) + 1 || 99),
   }[key] || ((a, b) => a.title.localeCompare(b.title, 'ja'));
   return [...list].sort((a, b) => by(a, b) || a.title.localeCompare(b.title, 'ja'));
 }
@@ -447,6 +470,7 @@ function renderGrid() {
   let list = games.filter((g) => matchesSearch(g, q));
   if (filter.category) list = list.filter((g) => (g.categories || []).includes(filter.category));
   if (filter.tag) list = list.filter((g) => g.vndb && (g.vndb.tags || []).some((x) => x.id === filter.tag.id));
+  if (filter.status) list = list.filter((g) => g.status === filter.status);
   list = sortGames(list, setup.settings.sort);
 
   const sortSel = h('select', { class: 'sortsel', title: t('Sort by') },
@@ -458,7 +482,8 @@ function renderGrid() {
   const chips = [];
   if (filter.category) chips.push(h('span', { class: 'chip on' }, `${t('Category')}: ${filter.category}`, h('button', { class: 'x', title: t('Clear'), onclick: () => showLibrary({ category: null }) }, '×')));
   if (filter.tag) chips.push(h('span', { class: 'chip on' }, `${t('Tag')}: ${filter.tag.name}`, h('button', { class: 'x', title: t('Clear'), onclick: () => showLibrary({ tag: null }) }, '×')));
-  const heading = filter.category || (filter.tag ? filter.tag.name : t('All games'));
+  if (filter.status) chips.push(h('span', { class: 'chip on' }, `${t('Reading status')}: ${STATUS_TEXT()[filter.status]}`, h('button', { class: 'x', title: t('Clear'), onclick: () => showLibrary({ status: null }) }, '×')));
+  const heading = filter.category || (filter.tag ? filter.tag.name : filter.status ? STATUS_TEXT()[filter.status] : t('All games'));
   const extra = filter.category ? h('button', { class: 'ghost small', onclick: () => manageCategory(filter.category) }, t('Rename or delete…')) : null;
   replaceKids($('#libToolbar'),
     h('h1', {}, heading), h('span', { class: 'dim' }, plural(list.length, '{n} game', '{n} games')), extra, ...chips,
@@ -605,12 +630,7 @@ async function play(id, opts = {}) {
       return;
     }
     case 'game-running': {
-      const v = await dialog({
-        title: t('The game is open'),
-        text: t('{title} is running right now, so newer saves can\'t come down yet: the open game could write its older saves back over them. Close the game, then try again.', { title: g.title || '' }),
-        buttons: [{ label: t('Cancel'), value: null, cls: 'ghost' }, { label: t('Try again'), value: 'retry', cls: 'primary' }],
-      });
-      if (v === 'retry') return play(id, opts);
+      if ((await gameOpenDialog(id, opts)) === 'retry') return play(id, opts);
       return;
     }
     case 'incomplete': {
@@ -626,12 +646,29 @@ async function play(id, opts = {}) {
   }
 }
 
+/**
+ * The game is open (started some other way), so saves can't come down yet. Offer to wait for it to
+ * close (then VN Shelf syncs by itself), or to try again. Returns 'retry', 'wait' or null.
+ */
+async function gameOpenDialog(id, opts = {}) {
+  const g = games.find((x) => x.id === id) || {};
+  const v = await dialog({
+    title: t('The game is open'),
+    text: t('{title} is running right now, so newer saves can\'t come down yet: the open game could write its older saves back over them. Close the game, then try again, or let VN Shelf wait and sync as soon as it closes.', { title: g.title || '' }),
+    buttons: [{ label: t('Cancel'), value: null, cls: 'ghost' }, { label: t('Try again'), value: 'retry' }, { label: t('Wait for it to close'), value: 'wait', cls: 'primary' }],
+  });
+  if (v === 'wait') await call('waitAndSync', id, { resolution: opts.resolution }).catch(() => {});
+  return v;
+}
+
 async function syncNow(id, opts = {}) {
   let r;
   try { r = await call('syncNow', id, opts); } catch { return; }
   if (r.needs === 'conflict') {
     const v = await conflictDialog(r.info);
     if (v) return syncNow(id, { resolution: v });
+  } else if (r.needs === 'game-running') {
+    return gameOpenDialog(id, opts);
   } else if (r.needs) {
     toast(translateMessage(r.message) || t('Couldn\'t sync right now.'), 'bad');
   }
@@ -793,7 +830,7 @@ async function importFolderFlow() {
   await loadGames();
   await dialog({
     title: t('Imported {n} games', { n: res.length - failed.length }),
-    text: t('{saves} already have their save folder set. The rest need it set on their game page (Auto-detect or Save once).', { saves: withSaves }),
+    text: t('{saves} already have their save folder set. For the rest, just press Play: VN Shelf finds the save folder while you play.', { saves: withSaves }),
     body: failed.length ? h('div', { class: 'files' }, failed.map((f) => `${f.title}: ${translateMessage(f.error)}`).join('\n')) : null,
   });
   showLibrary({ category: null, tag: null });
@@ -962,6 +999,8 @@ async function settingsDialog(first = false) {
   const closeSel = h('select', {},
     [['tray', t('Keep running in the tray')], ['quit', t('Quit VN Shelf')]].map(([v, l]) => h('option', { value: v, selected: (s.closeToTray !== false) === (v === 'tray') }, l)));
   const allowU = h('input', { type: 'checkbox', checked: !!s.allowUmineko });
+  const statsBox = h('input', { type: 'checkbox', checked: s.showStats !== false });
+  const look = { theme: s.theme, fonts: { ...(s.fonts || {}) } };
   const lePath = h('input', { type: 'text', value: s.localeEmulatorPath || '', placeholder: t('Path to LEProc.exe (optional)') });
   const tools = toolsEditor();
   const notes = patchNotesBox();
@@ -974,6 +1013,9 @@ async function settingsDialog(first = false) {
         setup.platform === 'win32' ? t('Start VN Shelf when Windows starts') : t('Start VN Shelf when you log in')),
       h('div', { class: 'faint small' }, t('It starts in the tray and keeps your saves in sync.'))),
       field(t('When you close the window'), closeSel),
+      field(t('Your other PC'), h('div', { class: 'val wrap' },
+        h('button', { type: 'button', class: 'small', onclick: () => { closeDialog(false); copySettingsDialog(); } }, t('Copy settings from another PC…'))),
+      h('div', { class: 'faint small' }, t('Copies the theme, fonts, background and other preferences.'))),
       h('label', { class: 'check tinyopt' }, allowU, t('Allow adding Umineko no Naku Koro ni')),
     ]],
     ['saves', t('Saves & sync'), [
@@ -1000,7 +1042,10 @@ async function settingsDialog(first = false) {
       field(t('Companion tools on this PC (text hooker, meikipop, Magpie…). Pick which start with each game on its page.'), tools.el),
     ]],
     ['look', t('Look'), [
+      field(t('Colours'), themeEditor(look)),
+      field(t('Fonts'), fontsEditor(look)),
       field(t('Background (this PC)'), backgroundEditor()),
+      field(null, h('label', { class: 'check' }, statsBox, t('Show play time and when you last played on covers'))),
     ]],
     ['about', t('Updates & about'), [
       field(null, h('div', { class: 'aboutline' }, h('strong', {}, 'VN Shelf'), ` ${t('Version {version}', { version: setup.version })}`)),
@@ -1040,17 +1085,231 @@ async function settingsDialog(first = false) {
     ],
   });
   applyBackground(setup.settings.background);
-  if (!ok) return;
+  if (!ok) { applyLook(); return; } // undo previews
   setup = await call('saveSettings', {
+    showStats: statsBox.checked, theme: look.theme || null, fonts: look.fonts,
     deviceName: name.value, ...chooser.get(), language: langSel.value,
     historyDepth: depth.value, liveMode: liveBox.checked, localeEmulatorPath: lePath.value.trim(), autoUpdate: upd.checked, tools: tools.get(),
     startWithSystem: startBox.checked, closeToTray: closeSel.value === 'tray', allowUmineko: allowU.checked,
   });
   setLanguage(setup.settings.language);
   applyStaticText();
+  applyLook();
   showUpdatePill(lastUpdate);
   await loadGames();
   if (view === 'detail' && currentId) renderDetail(currentId, { noAuto: true });
+}
+
+// ------------------------------------------------------------------ look: theme colours and fonts
+
+// Each theme sets the main colours; the in-between shades are worked out from them.
+const THEMES = {
+  night: { bg: '#0f1115', raised: '#171a21', line: '#262b36', text: '#e6e8ee', dim: '#9aa1b2', accent: '#5b9cff', play: '#4cc38a', warn: '#f2b35b', danger: '#ef6b6b' },
+  midnight: { bg: '#0b1020', raised: '#121a2e', line: '#24304d', text: '#e8ecf7', dim: '#9fabc7', accent: '#7aa2ff', play: '#5cd1a0', warn: '#f2c06b', danger: '#ff7a85' },
+  sakura: { bg: '#161015', raised: '#211821', line: '#3a2a38', text: '#f3e8ee', dim: '#c3a9b8', accent: '#f28cb1', play: '#7fd6a4', warn: '#f5c26b', danger: '#ff7b7b' },
+  matcha: { bg: '#0f1410', raised: '#161d17', line: '#2a362b', text: '#e7efe6', dim: '#a2b3a0', accent: '#8fcf7a', play: '#c8e06b', warn: '#f0c060', danger: '#f07a6a' },
+  ink: { bg: '#121212', raised: '#1b1b1b', line: '#303030', text: '#ededed', dim: '#a8a8a8', accent: '#d8d8d8', play: '#4cc38a', warn: '#e9b45a', danger: '#ef6b6b' },
+  paper: { bg: '#f4f1ea', raised: '#fffdf8', line: '#d9d2c3', text: '#1f1d1a', dim: '#5b564d', accent: '#2f6fd6', play: '#2e9d6a', warn: '#b7791f', danger: '#c53b3b' },
+};
+const THEME_NAMES = () => ({ night: t('Night'), midnight: t('Midnight'), sakura: t('Sakura'), matcha: t('Matcha'), ink: t('Ink'), paper: t('Paper (light)') });
+const SWATCHES = () => [
+  ['bg', t('Main area')], ['raised', t('Panels & boxes')], ['line', t('Borders')], ['text', t('Text')], ['dim', t('Secondary text')],
+  ['accent', t('Accent')], ['play', t('Play button')], ['warn', t('Warnings')], ['danger', t('Errors & remove')],
+];
+
+const hexRgb = (hx) => [1, 3, 5].map((i) => parseInt(hx.slice(i, i + 2), 16));
+const rgbHex = (c) => `#${c.map((v) => Math.round(Math.max(0, Math.min(255, v))).toString(16).padStart(2, '0')).join('')}`;
+const mixHex = (a, b, w) => { const x = hexRgb(a); const y = hexRgb(b); return rgbHex(x.map((v, i) => v * (1 - w) + y[i] * w)); };
+function luminance(hx) {
+  return hexRgb(hx).map((v) => { const c = v / 255; return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; })
+    .reduce((s, c, i) => s + c * [0.2126, 0.7152, 0.0722][i], 0);
+}
+function contrast(a, b) { const [x, y] = [luminance(a), luminance(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); }
+/** Black or white, whichever reads better on this colour. */
+const onColor = (hx) => (contrast(hx, '#0b1220') >= contrast(hx, '#ffffff') ? '#0b1220' : '#ffffff');
+
+function themeColors(theme) {
+  const base = THEMES[(theme && theme.preset) || 'night'] || THEMES.night;
+  return { ...base, ...((theme && theme.colors) || {}) };
+}
+
+function applyTheme(theme) {
+  const c = themeColors(theme);
+  const root = document.documentElement.style;
+  const set = (k, v) => root.setProperty(k, v);
+  set('--bg', c.bg); set('--bg-raised', c.raised); set('--line', c.line); set('--text', c.text); set('--text-dim', c.dim);
+  set('--bg-hover', mixHex(c.raised, c.text, 0.06));
+  set('--text-faint', mixHex(c.dim, c.bg, 0.35));
+  set('--accent', c.accent); set('--accent-text', onColor(c.accent));
+  set('--play', c.play); set('--play-text', onColor(c.play));
+  set('--warn', c.warn); set('--danger', c.danger);
+  root.colorScheme = luminance(c.bg) > 0.4 ? 'light' : 'dark';
+}
+
+/** Places where text may be hard to read with these colours (WCAG contrast below 4.5:1). */
+function readabilityProblems(c) {
+  const out = [];
+  if (contrast(c.text, c.bg) < 4.5) out.push(t('text on the main area'));
+  if (contrast(c.text, c.raised) < 4.5) out.push(t('text in panels'));
+  if (contrast(c.dim, c.bg) < 3) out.push(t('secondary text'));
+  if (contrast(onColor(c.accent), c.accent) < 4.5) out.push(t('accent buttons'));
+  if (contrast(onColor(c.play), c.play) < 4.5) out.push(t('the Play button'));
+  return out;
+}
+
+const BUILTIN_FONTS = ['Segoe UI', 'Yu Gothic UI', 'Yu Gothic', 'Meiryo', 'Meiryo UI', 'BIZ UDPGothic', 'BIZ UDGothic', 'MS PGothic',
+  'Yu Mincho', 'BIZ UDPMincho', 'MS PMincho', 'Noto Sans JP', 'Noto Serif JP', 'M PLUS 1p', 'M PLUS Rounded 1c', 'Kosugi Maru',
+  'Zen Maru Gothic', 'Hiragino Sans', 'Arial', 'Calibri', 'Verdana', 'Tahoma', 'Georgia', 'Noto Sans', 'Ubuntu', 'Cantarell', 'DejaVu Sans'];
+
+/** Fonts from the list that are really installed (measured: a missing font falls back to the default). */
+function installedFonts() {
+  if (installedFonts.cache) return installedFonts.cache;
+  const ctx = document.createElement('canvas').getContext('2d');
+  const sample = 'mmmmmmmmmmlli 漢字かなカナ';
+  const width = (f) => { ctx.font = `20px ${f}`; return ctx.measureText(sample).width; };
+  const bases = ['monospace', 'serif', 'sans-serif'].map((b) => [b, width(b)]);
+  installedFonts.cache = BUILTIN_FONTS.filter((f) => bases.some(([b, w]) => width(`"${f}", ${b}`) !== w));
+  return installedFonts.cache;
+}
+
+const loadedFonts = new Set();
+/** Register added font files, then use the chosen fonts (the interface language's first). */
+function applyFonts(fonts) {
+  const f = fonts || {};
+  for (const c of f.custom || []) {
+    if (loadedFonts.has(c.url)) continue;
+    loadedFonts.add(c.url);
+    new FontFace(c.family, `url("${c.url}")`).load().then((face) => document.fonts.add(face)).catch(() => {});
+  }
+  const first = currentLanguage() === 'ja' ? [f.ja, f.en] : [f.en, f.ja];
+  const chosen = first.filter(Boolean).map((n) => `"${n.replace(/"/g, '')}"`);
+  const base = '"Segoe UI", system-ui, "Yu Gothic UI", "Meiryo", "Hiragino Sans", "Noto Sans CJK JP", sans-serif';
+  document.documentElement.style.setProperty('--font', chosen.length ? `${chosen.join(', ')}, ${base}` : base);
+}
+
+/** Settings → Look: theme presets and colours, with a live preview and a readability check. */
+function themeEditor(state) {
+  const wrap = h('div', { class: 'bgedit' });
+  const draw = () => {
+    const colors = themeColors(state.theme);
+    const preset = h('select', {}, Object.entries(THEME_NAMES()).map(([k, label]) => h('option', { value: k, selected: (state.theme ? state.theme.preset : 'night') === k }, label)));
+    preset.addEventListener('change', () => { state.theme = { preset: preset.value, colors: {} }; applyTheme(state.theme); draw(); });
+    const warn = h('div', { class: 'contrastwarn' });
+    const check = () => {
+      const bad = readabilityProblems(themeColors(state.theme));
+      warn.textContent = bad.length ? t('Some text may be hard to read with these colours: {where}.', { where: bad.join(', ') }) : '';
+    };
+    const swatch = ([k, label]) => {
+      const pick = h('input', { type: 'color', value: colors[k] });
+      const code = h('input', { type: 'text', value: colors[k], maxlength: '7', title: t('Colour code, e.g. #3B3B3B') });
+      const setColor = (v) => {
+        if (!/^#[0-9a-f]{6}$/i.test(v)) return;
+        state.theme = { preset: state.theme ? state.theme.preset : 'night', colors: { ...((state.theme && state.theme.colors) || {}), [k]: v.toLowerCase() } };
+        pick.value = v; code.value = v;
+        applyTheme(state.theme);
+        check();
+      };
+      pick.addEventListener('input', () => setColor(pick.value));
+      code.addEventListener('change', () => setColor(code.value.trim().startsWith('#') ? code.value.trim() : `#${code.value.trim()}`));
+      return h('label', { class: 'swatch' }, pick, h('span', { class: 'grow' }, label), code);
+    };
+    replaceKids(wrap,
+      h('div', { class: 'val wrap' }, h('span', { class: 'faint small' }, t('Theme')), preset,
+        h('button', { type: 'button', class: 'small ghost', onclick: () => { state.theme = { preset: preset.value, colors: {} }; applyTheme(state.theme); draw(); } }, t('Reset colours'))),
+      h('div', { class: 'swatches' }, SWATCHES().map(swatch)),
+      warn);
+    check();
+  };
+  draw();
+  return wrap;
+}
+
+/** Settings → Look: interface fonts for English and Japanese, added font files, and a preview. */
+function fontsEditor(state) {
+  const wrap = h('div', { class: 'bgedit' });
+  const draw = () => {
+    const f = state.fonts;
+    const options = (selected) => [
+      h('option', { value: '', selected: !selected }, t('Default')),
+      ...(f.custom || []).map((c) => h('option', { value: c.family, selected: selected === c.family }, `${c.family.replace(/^VNS /, '')} (${t('added')})`)),
+      ...installedFonts().map((n) => h('option', { value: n, selected: selected === n }, n)),
+    ];
+    const en = h('select', {}, options(f.en));
+    const ja = h('select', {}, options(f.ja));
+    const preview = h('div', { class: 'fontpreview' }, 'The quick brown fox jumps over the lazy dog. 0123456789', h('br'), '吾輩は猫である。名前はまだ無い。 かなカナ');
+    const update = () => {
+      state.fonts = { ...state.fonts, en: en.value, ja: ja.value };
+      applyFonts(state.fonts);
+      const names = [en.value, ja.value].filter(Boolean).map((n) => `"${n}"`);
+      preview.style.fontFamily = names.length ? `${names.join(', ')}, sans-serif` : '';
+    };
+    en.addEventListener('change', update);
+    ja.addEventListener('change', update);
+    replaceKids(wrap,
+      h('div', { class: 'field' }, h('div', { class: 'lbl' }, t('English font')), h('div', { class: 'fontrow' }, en),
+        h('div', { class: 'faint small' }, t('Used when the interface is in English. Characters it doesn\'t have come from the Japanese font.'))),
+      h('div', { class: 'field' }, h('div', { class: 'lbl' }, t('Japanese font')), h('div', { class: 'fontrow' }, ja),
+        h('div', { class: 'faint small' }, t('Used when the interface is in Japanese. Characters it doesn\'t have come from the English font.'))),
+      preview,
+      h('div', { class: 'val wrap' },
+        h('button', { type: 'button', class: 'small', onclick: async () => {
+          let r;
+          try { r = await call('addFont'); } catch { return; }
+          if (!r) return;
+          setup = r.setup;
+          state.fonts = { ...setup.settings.fonts, en: state.fonts.en, ja: state.fonts.ja };
+          applyFonts(state.fonts);
+          draw();
+        } }, t('Add font file…')),
+        ...(f.custom || []).map((c) => h('button', { type: 'button', class: 'small ghost danger', title: t('Remove'), onclick: async () => {
+          setup = await call('removeFont', c.file);
+          state.fonts = { ...setup.settings.fonts, en: state.fonts.en === c.family ? '' : state.fonts.en, ja: state.fonts.ja === c.family ? '' : state.fonts.ja };
+          applyFonts(state.fonts);
+          draw();
+        } }, `× ${c.family.replace(/^VNS /, '')}`))));
+    update();
+  };
+  draw();
+  return wrap;
+}
+
+/** Copy another PC's look and preferences (theme, fonts, background, language…). */
+async function copySettingsDialog() {
+  let list;
+  try { list = await call('otherDevices'); } catch { return; }
+  if (!list.length) {
+    await dialog({ title: t('Copy settings from another PC'), text: t('No other PC has shared its settings yet. Open VN Shelf on the other PC once (version 0.7 or newer) and let the shared storage finish syncing, then try again.') });
+    return;
+  }
+  let chosen = list[0].deviceId;
+  const rows = list.map((d, i) => {
+    const el = h('div', { class: `choice${i === 0 ? ' sel' : ''}`, onclick: () => { for (const r of rows) r.classList.remove('sel'); el.classList.add('sel'); chosen = d.deviceId; } },
+      h('div', { class: 'grow' }, h('div', {}, d.deviceName || t('Other PC')), h('div', { class: 'p' }, t('Last shared {when}', { when: when(d.sharedAt) }))));
+    return el;
+  });
+  const ok = await dialog({
+    title: t('Copy settings from another PC'),
+    text: t('This replaces this PC\'s look and preferences (theme, fonts, background, language, sorting and similar) with the other PC\'s. Where saves are kept, this PC\'s name, its programs and tools stay as they are.'),
+    body: rows,
+    buttons: [{ label: t('Cancel'), value: false, cls: 'ghost' }, { label: t('Copy settings'), value: true, cls: 'primary' }],
+  });
+  if (!ok) return;
+  let r;
+  try { r = await call('copySettingsFrom', chosen); } catch { return; }
+  setup = r.setup;
+  setLanguage(setup.settings.language);
+  applyStaticText();
+  applyLook();
+  await loadGames();
+  toast(t('Done: this PC now uses the settings from {name}.', { name: r.from || t('the other PC') }), 'good');
+  if (r.missingFonts && r.missingFonts.length) toast(t('These fonts couldn\'t be copied, so this PC keeps its own: {fonts}', { fonts: r.missingFonts.join(', ') }), 'bad');
+}
+
+/** Theme, fonts and background from the current settings. */
+function applyLook() {
+  applyTheme(setup.settings.theme);
+  applyFonts(setup.settings.fonts);
+  applyBackground(setup.settings.background);
 }
 
 // ------------------------------------------------------------------ background
@@ -1192,7 +1451,7 @@ function statusText(g) {
     download: { text: `${t('Newer saves are waiting from {name}; they\'ll download when you press Play.', { name: b.cloud ? b.cloud.deviceName : t('another PC') })}${lock}`, cls: '' },
     conflict: { text: t('Saves changed here and on another PC. Press Sync now to choose.'), cls: 'bad' },
     offline: { text: t('Shared folder not reachable right now.'), cls: 'warn' },
-    'no-saves': { text: t('No save folder set yet — add one below so saves can sync.'), cls: 'warn' },
+    'no-saves': { text: t('No save folder yet. Press Play: VN Shelf works out where it saves while you play (or set it below).'), cls: 'warn' },
     error: { text: t('Couldn\'t check saves.'), cls: 'bad' },
     running: { text: t('Playing'), cls: '' },
   };
@@ -1394,14 +1653,15 @@ function paintDetail(g, data, opts = {}) {
           (g.categories || []).map((c) => h('span', { class: 'tag' }, c))),
         h('div', { class: 'actions' },
           h('button', { id: 'playBtn', class: 'play playbtn', 'data-id': id, onclick: () => playOrStop(id) }, t('▶ Play')),
-          h('button', { onclick: () => syncNow(id), disabled: loading || !g.installed || !saves.length }, t('Sync now'))),
+          h('button', { onclick: () => syncNow(id), disabled: loading || !g.installed || !saves.length }, t('Sync now')),
+          statusSelect(g)),
         h('div', { id: 'statusline', class: 'statusline', 'data-id': id }))));
   const loadingNote = () => h('div', { class: 'note' }, t('Loading…'));
 
   // ---- save locations
   const saveBox = h('div', { class: 'box' });
   if (loading) saveBox.append(loadingNote());
-  else if (!saves.length) saveBox.append(h('div', { class: 'note' }, t('No save folder yet. Auto-detect usually finds it; if not, use Save once or pick the folder yourself.')));
+  else if (!saves.length) saveBox.append(h('div', { class: 'note' }, t('No save folder yet. Just press Play: when you close the game, VN Shelf shows where it saved and asks you to confirm. Auto-detect may also find it now.')));
   for (const s of saves) {
     const inc = s.include && s.include.length ? s.include.join(', ') : t('all files');
     saveBox.append(h('div', { class: 'row' },
@@ -1410,8 +1670,9 @@ function paintDetail(g, data, opts = {}) {
         s.abs ? h('div', { class: 'abs', title: t('Open folder'), onclick: () => vns.call('openPath', s.abs) }, s.abs) : h('div', { class: 'abs' }, translateMessage(s.error) || ''),
         h('div', { class: 'faint', style: 'font-size:12px' }, t('Files: {which}', { which: inc }))),
       h('span', { class: `count${s.fileCount ? '' : ' zero'}`, title: s.skipped ? t('{n} file(s) skipped because they aren\'t saves (programs, video, archives, logs, huge files)', { n: s.skipped }) : null },
-        s.exists ? `${s.size || plural(s.fileCount, '{n} file', '{n} files')}${s.skipped ? ` · ${t('{n} skipped', { n: s.skipped })}` : ''}` : t('folder not there yet')),
-      h('button', { class: 'small ghost', onclick: () => editInclude(id, s) }, t('Files…')),
+        s.registry ? (s.exists ? plural(s.fileCount, '{n} value', '{n} values') : t('not in the registry yet'))
+          : s.exists ? `${s.size || plural(s.fileCount, '{n} file', '{n} files')}${s.skipped ? ` · ${t('{n} skipped', { n: s.skipped })}` : ''}` : t('folder not there yet')),
+      s.registry ? null : h('button', { class: 'small ghost', onclick: () => editInclude(id, s) }, t('Files…')),
       h('button', { class: 'small ghost danger', onclick: async () => {
         const ok = await dialog({ title: t('Stop syncing this folder?'), text: t('{path} will no longer sync. Nothing is deleted.', { path: s.path }),
           buttons: [{ label: t('Cancel'), value: false, cls: 'ghost' }, { label: t('Remove'), value: true, cls: 'primary' }] });
@@ -1421,11 +1682,7 @@ function paintDetail(g, data, opts = {}) {
   const suggestBox = h('div', { class: 'box suggest hidden', style: 'margin-top:12px' });
   saveBox.append(h('div', { class: 'boxactions' },
     h('button', { onclick: () => runSuggest(id, suggestBox), disabled: !g.installed }, t('Auto-detect')),
-    h('button', { onclick: () => saveOnce(id), disabled: !g.installed }, t('Save once…')),
-    h('button', { onclick: async () => {
-      const dir = await call('pickFolder', t('Choose the folder this game saves into'), g.installDir || undefined);
-      if (dir && (await addRule(id, { absPath: dir }))) { renderDetail(id, { noAuto: true }); refreshStatus(id); }
-    }, disabled: !g.installed }, t('Choose folder…')),
+    h('button', { onclick: async () => { if (await chooseSaveFolder(id)) { renderDetail(id, { noAuto: true }); refreshStatus(id); } }, disabled: !g.installed }, t('Choose folder…')),
     h('button', { class: 'ghost', onclick: () => typePath(id) }, t('Type a path…'))));
 
   // ---- launch
@@ -1463,7 +1720,8 @@ function paintDetail(g, data, opts = {}) {
   const title = h('input', { type: 'text', value: g.title });
   title.addEventListener('change', async () => { await call('updateGame', id, { title: title.value.trim() || g.title }); renderDetail(id); });
   const detailsBox = h('div', { class: 'box' },
-    h('div', { class: 'field' }, h('div', { class: 'lbl' }, t('Title')), title),
+    h('div', { class: 'field' }, h('div', { class: 'lbl' }, t('Title')), title,
+      g.titleSource === 'window' ? h('div', { class: 'faint small' }, t('Taken from the game\'s window. Type your own to replace it.')) : null),
     h('div', { class: 'boxactions' },
       h('button', { onclick: async () => { await vndbDialog(g, false); renderDetail(id); } }, t('Find on VNDB…')),
       h('button', { onclick: async () => { if (await call('setCustomCover', id)) renderDetail(id); } }, t('Use my own cover…')),
@@ -1502,6 +1760,15 @@ function paintDetail(g, data, opts = {}) {
 async function addRule(id, args) {
   let res;
   try { res = await call('addSaveRule', id, args); } catch { return null; }
+  if (res.needsConfirm && res.shared) {
+    const ok = await dialog({
+      title: t('Another game already uses this'),
+      text: t('"{title}" already syncs {path} on this PC. If two games sync the same saves, they can overwrite each other\'s. Use it anyway?', { title: res.shared, path: res.path }),
+      buttons: [{ label: t('Cancel'), value: false, cls: 'ghost' }, { label: t('Use it anyway'), value: true, cls: 'primary' }],
+    });
+    if (!ok) return null;
+    return addRule(id, { ...args, confirmShared: true });
+  }
   if (res.needsConfirm) {
     const ok = await dialog({
       title: t('That folder is unusually big'),
@@ -1509,7 +1776,7 @@ async function addRule(id, args) {
       buttons: [{ label: t('Cancel'), value: false, cls: 'ghost' }, { label: t('Sync it anyway'), value: true, cls: 'primary' }],
     });
     if (!ok) return null;
-    try { res = await call('addSaveRule', id, { ...args, confirmLarge: true }); } catch { return null; }
+    return addRule(id, { ...args, confirmLarge: true });
   }
   if (res.refused) {
     await dialog({ title: t('Can\'t sync that folder'), text: translateMessage(res.refused) });
@@ -1534,7 +1801,7 @@ async function runSuggest(id, box) {
   const already = new Set((g.saves || []).map((s) => `${s.path}|${(s.include || []).join(',')}`));
   const list = r.candidates.filter((c) => !already.has(`${c.path}|${(c.include || []).join(',')}`));
   const head = h('div', { class: 'note' }, r.engine ? `${t('Looks like a {engine} game.', { engine: r.engine })} ` : '',
-    list.length ? t('Suggestions (folders with files in them are most likely):') : t('No suggestions. Try Save once, or choose the folder yourself.'));
+    list.length ? t('Suggestions (folders with files in them are most likely):') : t('No suggestions yet. Press Play and VN Shelf will find it while you play, or choose the folder yourself.'));
   box.replaceChildren(head, ...list.slice(0, 8).map((c) => h('div', { class: 'row' },
     h('div', { class: 'grow' },
       h('div', { class: 'path' }, c.path, c.include && c.include.length ? `  (${c.include.join(', ')})` : ''),
@@ -1569,13 +1836,17 @@ async function typePath(id) {
   const inc = h('input', { type: 'text', placeholder: t('All files') });
   const ok = await dialog({
     title: t('Add a save location by path'),
-    text: t('Paste the full folder path, or use a placeholder: <game>, <appdata>, <localappdata>, <locallow>, <documents>, <savedgames>, <home>. %APPDATA% style also works.'),
+    text: t('Paste the full folder path, or use a placeholder: <game>, <appdata>, <localappdata>, <locallow>, <documents>, <savedgames>, <home>. %APPDATA% style also works. For a game that saves in the registry, paste its key: HKEY_CURRENT_USER\\Software\\<maker>\\<game>.'),
     body: [h('div', { class: 'field' }, h('div', { class: 'lbl' }, t('Folder')), p),
       h('div', { class: 'field' }, h('div', { class: 'lbl' }, t('Only these files (optional, comma-separated)')), inc)],
     buttons: [{ label: t('Cancel'), value: false, cls: 'ghost' }, { label: t('Add'), value: true, cls: 'primary', validate: () => !!p.value.trim() }],
   });
   if (!ok) return;
   let v = p.value.trim().replace(/^"|"$/g, '');
+  if (/^(HKCU|HKEY_)/i.test(v)) {
+    if (await addRule(id, { registryKey: v })) { renderDetail(id, { noAuto: true }); refreshStatus(id); }
+    return;
+  }
   const envMap = { '%appdata%': '<appdata>', '%localappdata%': '<localappdata>', '%userprofile%': '<home>' };
   v = v.replace(/^%[a-z]+%/i, (m) => envMap[m.toLowerCase()] || m);
   const isToken = /^<[a-z]+>/.test(v);
@@ -1584,46 +1855,91 @@ async function typePath(id) {
   refreshStatus(id);
 }
 
-async function saveOnce(id) {
-  const ok = await dialog({
-    title: t('Find saves by saving once'),
-    text: t('VN Shelf starts the game and notes the time. Make one save (or start a new game and save), then close the game. VN Shelf then lists the files that changed: in the game folder, AppData, Documents and Saved Games.'),
-    buttons: [{ label: t('Cancel'), value: false, cls: 'ghost' }, { label: t('Start the game'), value: true, cls: 'primary' }],
+/** The reading-status picker on a game's page. Changes sync to every PC with the game. */
+function statusSelect(g) {
+  const sel = h('select', { class: 'statussel', title: t('Reading status') },
+    h('option', { value: '', selected: !g.status }, t('No status')),
+    STATUS_ORDER.map((st) => h('option', { value: st, selected: g.status === st }, STATUS_TEXT()[st])));
+  sel.addEventListener('change', async () => {
+    try { await call('updateGame', g.id, { status: sel.value }); } catch { return; }
+    g.status = sel.value;
+    const i = games.findIndex((x) => x.id === g.id);
+    if (i >= 0) games[i] = { ...games[i], status: sel.value };
+    renderSidebar();
   });
-  if (!ok) return;
-  const r = await call('startSaveOnce', id);
-  if (r.needs === 'locate') toast(t('Set up the game on this PC first.'), 'bad');
+  return sel;
 }
 
-async function showSaveOnceResult({ id, candidates }) {
-  if (!candidates.length) {
-    await dialog({ title: t('No new files found'), text: t('Nothing changed while the game was open. Did it save? Some games only save when you return to the title screen. You can try again or choose the folder yourself.') });
+/** Pick a save folder by hand and add it. Returns true if one was added. */
+async function chooseSaveFolder(id) {
+  const g = games.find((x) => x.id === id) || {};
+  const dir = await call('pickFolder', t('Choose the folder this game saves into'), g.installDir || undefined).catch(() => null);
+  return !!(dir && (await addRule(id, { absPath: dir })));
+}
+
+/**
+ * After a game closed (its first play without a save folder): what changed, and which
+ * of it is where the game saves. After a first play, the first sync follows straight away.
+ */
+async function showSaveOnceResult({ id, candidates = [], registry = [], afterPlay = false }) {
+  const g = games.find((x) => x.id === id) || {};
+  const done = async (added) => {
+    if (!added) return;
+    if (afterPlay) await syncNow(id); // uploads, or asks which to keep if the other PC already has saves
+    if (view === 'detail' && currentId === id) renderDetail(id, { noAuto: true });
+    refreshStatus(id);
+  };
+  if (!candidates.length && !registry.length) {
+    if (afterPlay) {
+      const v = await dialog({
+        title: t('Where does this game save?'),
+        text: t('VN Shelf couldn\'t tell where {title} saves. If you didn\'t save while playing, it will look again next time you play. You can also choose the folder yourself.', { title: g.title || '' }),
+        buttons: [{ label: t('Ask me next time'), value: null, cls: 'ghost' }, { label: t('Choose folder…'), value: 'pick', cls: 'primary' }],
+      });
+      if (v === 'pick') await done(await chooseSaveFolder(id));
+    } else {
+      await dialog({ title: t('No new files found'), text: t('Nothing changed while the game was open. Did it save? Some games only save when you return to the title screen. You can try again or choose the folder yourself.') });
+    }
     return;
   }
-  const picks = new Set([0]);
-  const rows = candidates.map((c, i) => {
-    const box = h('input', { type: 'checkbox', checked: i === 0 });
-    box.addEventListener('change', () => (box.checked ? picks.add(i) : picks.delete(i)));
-    return h('label', { class: `choice${i === 0 ? ' sel' : ''}`, onclick: (e) => { if (e.target !== box) return; e.currentTarget.classList.toggle('sel', box.checked); } },
-      box,
-      h('div', { class: 'grow' },
-        h('div', { class: 'mono' }, c.path, c.include && c.include.length ? `  (${c.include.join(', ')})` : '', !c.portable ? `  — ${t('this PC only')}` : ''),
-        h('div', { class: 'p' }, `${plural(c.fileCount, '{n} changed file', '{n} changed files')} · ${translateMessage(c.reason)}`),
-        h('div', { class: 'files' }, c.files.slice(0, 8).join('\n'))));
-  });
-  const ok = await dialog({
-    title: t('Files that changed while you played'),
-    text: t('Tick the save folder. The most likely one is ticked already.'),
+  const picks = new Set(candidates.length ? [0] : []);
+  const regPicks = new Set(candidates.length ? [] : [0]); // the registry is ticked only when no folder was found
+  const choice = (checked, onChange, ...kids) => {
+    const box = h('input', { type: 'checkbox', checked });
+    box.addEventListener('change', () => onChange(box.checked));
+    return h('label', { class: `choice${checked ? ' sel' : ''}`, onclick: (e) => { if (e.target === box) e.currentTarget.classList.toggle('sel', box.checked); } }, box, h('div', { class: 'grow' }, ...kids));
+  };
+  const rows = [
+    ...candidates.map((c, i) => choice(picks.has(i), (on) => (on ? picks.add(i) : picks.delete(i)),
+      h('div', { class: 'mono' }, c.path, c.include && c.include.length ? `  (${c.include.join(', ')})` : '', !c.portable ? `  — ${t('this PC only')}` : ''),
+      h('div', { class: 'p' }, `${plural(c.fileCount, '{n} changed file', '{n} changed files')} · ${translateMessage(c.reason)}`),
+      h('div', { class: 'files' }, c.files.slice(0, 8).join('\n')))),
+    registry.length && candidates.length ? h('div', { class: 'faint small' }, t('This game also wrote to the registry. Tick it to sync that too.')) : null,
+    ...registry.map((r, i) => choice(regPicks.has(i), (on) => (on ? regPicks.add(i) : regPicks.delete(i)),
+      h('div', { class: 'mono' }, r.display),
+      h('div', { class: 'p' }, `${t('Registry')} · ${plural(r.values, '{n} value', '{n} values')}`))),
+  ];
+  const v = await dialog({
+    title: afterPlay ? t('Where does this game save?') : t('Files that changed while you played'),
+    text: afterPlay
+      ? t('While you played {title}, these places changed. Tick where it saves; the most likely one is ticked already.', { title: g.title || '' })
+      : t('Tick the save folder. The most likely one is ticked already.'),
     body: rows, wide: true,
-    buttons: [{ label: t('Cancel'), value: false, cls: 'ghost' }, { label: t('Use selected'), value: true, cls: 'primary' }],
+    buttons: [
+      { label: afterPlay ? t('Ask me next time') : t('Cancel'), value: null, cls: 'ghost' },
+      { label: t('Somewhere else…'), value: 'other', cls: 'ghost' },
+      { label: t('Use selected'), value: 'use', cls: 'primary' },
+    ],
   });
-  if (!ok) return;
+  if (v === 'other') { await done(await chooseSaveFolder(id)); return; }
+  if (v !== 'use') return;
+  let added = false;
   for (const i of picks) {
     const c = candidates[i];
-    await addRule(id, { path: c.path, include: c.include });
+    if (await addRule(id, { path: c.path, include: c.include })) added = true;
   }
-  if (view === 'detail' && currentId === id) renderDetail(id, { noAuto: true });
-  refreshStatus(id);
+  for (const i of regPicks) if (await addRule(id, { registryKey: registry[i].key })) added = true;
+  await done(added);
 }
 
 // ------------------------------------------------------------------ search suggestions
@@ -1779,6 +2095,7 @@ vns.on('library-changed', async ({ ids, added }) => {
   renderSidebar();
   for (const id of added ? games.map((g) => g.id) : ids) refreshStatus(id);
 });
+vns.on('title-taken', ({ title }) => toast(t('Title updated to "{title}" from the game\'s window.', { title }), 'good'));
 vns.on('auto-uploaded', (titles) => {
   toast(t('Uploaded newer saves for: {games}', { games: titles.join(', ') }), 'good');
   for (const g of games.filter((x) => titles.includes(x.title))) refreshStatus(g.id);
@@ -1852,7 +2169,7 @@ window.addEventListener('drop', (e) => {
   setup = await vns.call('getSetup');
   setLanguage(setup.settings.language);
   applyStaticText();
-  applyBackground(setup.settings.background);
+  applyLook();
   if (!setup.configured) await settingsDialog(true);
   // Paint the library saved last time straight away, then swap in the fresh one (Drive can take seconds).
   const cached = await vns.call('listGames', { cached: true }).catch(() => null);

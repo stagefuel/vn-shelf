@@ -106,3 +106,18 @@ test('Windows admin games: asks for rights, and "No" ends cleanly as declined', 
     assert.strictEqual(info.reason, want);
   }
 });
+
+test('watch-only: follows a game that is already running and reports when it closes', { skip: process.platform === 'win32' }, async () => {
+  const { spawn } = require('child_process');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vns-lwo-'));
+  const game = path.join(dir, 'game.sh');
+  fs.writeFileSync(game, '#!/bin/sh\nsleep 2\n');
+  fs.chmodSync(game, 0o755);
+  spawn(game, [], { stdio: 'ignore', detached: true }).unref();
+  await new Promise((r) => setTimeout(r, 300));
+  const info = await new Promise((resolve) => {
+    launch({ exePath: null, installDir: dir, pollMs: 200, graceMs: 800 }).on('exit', resolve);
+  });
+  assert.strictEqual(info.reason, 'closed');
+  assert.ok(info.playedMs >= 1000, `counted ${info.playedMs} ms`);
+});

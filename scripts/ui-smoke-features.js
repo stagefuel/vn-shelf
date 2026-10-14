@@ -51,12 +51,12 @@ let runGame;
 let toolPath;
 if (WIN) {
   runGame = path.join(home, 'Games', 'Tool Test', 'tooltest.cmd');
-  write(runGame, '@echo off\r\nping -n 5 127.0.0.1 > nul\r\n');
+  write(runGame, '@echo off\r\nif not exist "%~dp0save" mkdir "%~dp0save"\r\necho slot> "%~dp0save\\save01.dat"\r\nping -n 5 127.0.0.1 > nul\r\n');
   toolPath = path.join(home, 'Tools', 'hooker.cmd');
   write(toolPath, `@echo off\r\necho started> "${toolMark}"\r\nping -n 60 127.0.0.1 > nul\r\n`);
 } else {
   runGame = path.join(home, 'Games', 'Tool Test', 'tooltest.sh');
-  write(runGame, '#!/bin/sh\nsleep 4\n');
+  write(runGame, '#!/bin/sh\nmkdir -p "$(dirname "$0")/save"\necho slot > "$(dirname "$0")/save/save01.dat"\nsleep 4\n');
   fs.chmodSync(runGame, 0o755);
   toolPath = path.join(home, 'Tools', 'hooker.sh');
   write(toolPath, `#!/bin/sh\necho $$ > "${toolMark}"\nsleep 60\n`);
@@ -199,10 +199,14 @@ const zipOut = path.join(base, 'k3-saves.zip');
   await page.waitForSelector('#playBtn');
   await page.waitForTimeout(500);
   await page.click('#playBtn');
-  await page.click('dialog[open] button:has-text("Play without syncing")');
   for (let i = 0; i < 40 && !fs.existsSync(toolMark); i++) await sleep(250);
   result.toolStarted = fs.existsSync(toolMark);
-  await page.waitForFunction(() => document.querySelector('#playBtn') && document.querySelector('#playBtn').textContent.includes('Play'), null, { timeout: 30000 });
+  // No save folder yet: after the game closes, VN Shelf shows where it saved.
+  await page.waitForSelector('dialog[open] h3:has-text("Where does this game save")', { timeout: 40000 });
+  result.detectedAfterPlay = await page.$$eval('dialog[open] .choice .mono', (r) => r.map((x) => x.textContent.trim()));
+  await page.click('dialog[open] button:has-text("Use selected")');
+  await page.waitForSelector('.toast.good:has-text("uploaded")', { timeout: 30000 });
+  result.saveFolderAfterPlay = await page.$eval('.panel .row .path', (e) => e.textContent);
   await sleep(1500);
   if (!WIN && result.toolStarted) {
     const pid = Number(fs.readFileSync(toolMark, 'utf8'));
@@ -306,6 +310,30 @@ const zipOut = path.join(base, 'k3-saves.zip');
   await page.click('dialog[open] .dfoot button:has-text("Save")');
   await page.waitForTimeout(500);
   result.startWithSystemOff = WIN ? !(await app.evaluate(({ app: a }) => a.getLoginItemSettings().openAtLogin)) : !fs.existsSync(autostart);
+
+  // ---- reading status
+  await page.click('#sidebar .navitem:has-text("All games")');
+  await page.click('#grid .card:has-text("SWAN SONG")');
+  await page.waitForSelector('#detailView select.statussel');
+  await page.selectOption('#detailView select.statussel', 'finished');
+  await page.waitForSelector('#sidebar .navitem:has-text("Finished")');
+  await page.click('#sidebar .navitem:has-text("Finished")');
+  await page.waitForSelector('.libtoolbar h1:has-text("Finished")');
+  result.statusFilter = await page.$$eval('#grid .card .title', (t) => t.map((x) => x.textContent));
+  result.statusOnCard = await page.textContent('#grid .card .sub');
+  await shot(page, 'f12-status');
+
+  // ---- theme and fonts
+  await page.click('#settingsBtn');
+  await page.click('dialog[open] .tab[data-tab="look"]');
+  await page.selectOption('dialog[open] .bgedit select >> nth=0', 'sakura');
+  await page.waitForTimeout(300);
+  await shot(page, 'f13-theme');
+  result.fontChoices = await page.$$eval('dialog[open] .fontrow select >> nth=0', (s) => s[0] ? s[0].options.length : 0).catch(() => 0);
+  await page.click('dialog[open] .dfoot button:has-text("Save")');
+  await page.waitForTimeout(500);
+  result.themeAccent = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--accent').trim());
+  result.themeSaved = await page.evaluate(() => vns.call('getSetup').then((x) => x.settings.theme && x.settings.theme.preset));
 
   // ---- Japanese UI
   await page.click('#settingsBtn');

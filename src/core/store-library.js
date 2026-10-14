@@ -8,6 +8,8 @@ const crypto = require('crypto');
 const fsu = require('./fsutil');
 const { slug, newRuleId } = require('./library');
 
+const DEVICES = '__devices__';
+
 class StoreLibrary {
   /**
    * @param {import('./stores').BaseStore} store
@@ -60,6 +62,8 @@ class StoreLibrary {
       engine: fields.engine || null,
       saves: [],
       launch: { useLocaleEmulator: false, args: '' },
+      titleSource: fields.titleSource || 'user', // 'folder' | 'window' | 'vndb' | 'user'
+      status: '', // reading status (see STATUSES in main.js)
       addedAt: new Date().toISOString(),
     };
     await this.store.createGame(id);
@@ -76,6 +80,11 @@ class StoreLibrary {
 
   async addSaveRule(id, rule) {
     const game = await this.get(id);
+    if (rule.kind === 'registry') {
+      const key = require('./registry').normalizeKey(rule.key);
+      if ((game.saves || []).some((s) => s.kind === 'registry' && s.key.toLowerCase() === key.toLowerCase())) return game;
+      return this.update(id, { saves: [...(game.saves || []), { id: newRuleId(), kind: 'registry', key }] });
+    }
     const r = { id: newRuleId(), path: rule.path, include: rule.include || [], exclude: rule.exclude || [] };
     if ((game.saves || []).some((s) => s.path === r.path && JSON.stringify(s.include) === JSON.stringify(r.include))) return game;
     return this.update(id, { saves: [...(game.saves || []), r] });
@@ -129,6 +138,15 @@ class StoreLibrary {
   }
 
   coverPath(game) { return this.cacheFile(game); }
+
+  // ---- each PC's shared look and preferences, for "Copy settings from another PC" (kept in a
+  // container of their own, which has no game.json and so never shows up as a game)
+
+  async putDeviceFile(name, buf) { await this.store.createGame(DEVICES); await this.store.putFile(DEVICES, name, buf); }
+
+  async getDeviceFile(name) { if (this.store.refresh) this.store.refresh(DEVICES); return this.store.getFile(DEVICES, name); }
+
+  async listDeviceFiles() { return (await this.store.list(DEVICES)).map((f) => f.name); }
 
   /** Remove from the library (the Drive folder goes to Drive's trash, so it can be recovered). */
   async remove(id) { await this.store.removeGame(id); }

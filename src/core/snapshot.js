@@ -19,8 +19,13 @@ const SKIP_DIRS = new Set([
   'logs', 'log', 'inetcache', 'webcache', 'history', 'service worker', 'blob_storage', 'indexeddb_leveldb',
   'squirreltemp', 'elevateddiagnostics', 'connecteddevicesplatform', 'comms', 'peer distribution',
   'my music', 'my pictures', 'my videos', 'sharex', 'obs-studio', 'nvidia share',
+  'chrome', 'firefox', 'edge', 'microsoft edge', 'lunatranslator', 'lunahook', 'textractor', 'locale.emulator',
+  'claude', 'fontcache', 'iconcache', 'notifications', 'explorer', 'recent', 'unitycrashhandler', 'mediafoundation',
+  'python', '__pycache__', 'node_modules', '.vscode', 'vscode', 'programs', 'meikipop', 'magpie', 'ikemenreader',
+  'd3d12', 'dxcache', 'glcache', 'shadercache', 'fxc', 'directx', 'crashreports', 'crashreporter',
 ]);
-const SKIP_EXT = new Set(['.log', '.tmp', '.etl', '.lock', '.pf', '.dmp', '.cache']);
+const SKIP_EXT = new Set(['.log', '.tmp', '.etl', '.lock', '.pf', '.dmp', '.cache', '.db-wal', '.db-shm', '.ldb',
+  '.journal', '.lnk', '.crdownload', '.partial', '.vns-tmp']);
 
 /** The places a game is likely to write saves, as [token, absolute dir]. */
 function scanRoots(roots, gameDir) {
@@ -64,7 +69,8 @@ async function changedSince(roots, gameDir, sinceMs, { extraSkip = [], maxFiles 
           if (SKIP_EXT.has(path.extname(e.name).toLowerCase())) continue;
           try {
             const st = await fsp.stat(abs);
-            if (st.mtimeMs >= sinceMs) {
+            // Created or changed: a file copied in keeps its old modified time but gets a new creation time.
+            if (st.mtimeMs >= sinceMs || (st.birthtimeMs && st.birthtimeMs >= sinceMs && st.birthtimeMs <= Date.now())) {
               changed.push({ abs, token, root, size: st.size, mtime: st.mtimeMs });
             }
           } catch { /* vanished */ }

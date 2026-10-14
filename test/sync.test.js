@@ -136,7 +136,8 @@ test('half-synced shared folder is refused instead of copied', async () => {
   a.save('s.dat', 'one');
   await sync(a, game);
   // Simulate Drive having delivered state.json but not the save file yet.
-  fs.rmSync(path.join(a.engine.gameDir(game.id), 'current', game.saves[0].id, 's.dat'));
+  const st = JSON.parse(fs.readFileSync(path.join(a.engine.gameDir(game.id), 'state.json'), 'utf8'));
+  fs.rmSync(path.join(a.engine.gameDir(game.id), st.dir, game.saves[0].id, 's.dat'));
   b.save('s.dat', 'old');
   b.last = null;
   await assert.rejects(() => sync(b, game, { resolution: 'cloud' }), (e) => e.code === 'cloud-incomplete');
@@ -319,4 +320,96 @@ test('play time: each PC keeps its own total in the shared record', async () => 
   assert.strictEqual(g.playtime.pc.seconds, 660);
   assert.strictEqual(g.playtime.laptop.seconds, 120);
   assert.ok(g.playtime.pc.lastPlayed);
+});
+
+test('registry saves: a game\'s key travels to the other PC like a save file, with history', async () => {
+  const { MemoryRegistry, normalizeKey } = require('../src/core/registry');
+  const { game: g0, lib, a, b } = await setup();
+  const regA = new MemoryRegistry();
+  const regB = new MemoryRegistry();
+  a.engine.registry = regA; a.engine.stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vns-st-'));
+  b.engine.registry = regB; b.engine.stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vns-st-'));
+  const game = await lib.addSaveRule(g0.id, { kind: 'registry', key: 'HKCU\\Software\\Nitroplus\\Muramasa' });
+  assert.strictEqual(game.saves[2].key, 'Software\\Nitroplus\\Muramasa');
+  const data = { values: { Route: { kind: 'DWord', data: 3 }, Name: { kind: 'String', data: '景明' }, Flags: { kind: 'Binary', data: '00FF10' } },
+    keys: { System: { values: { Clear: { kind: 'MultiString', data: ['a', 'b'] } }, keys: {} } } };
+  regA.set('Software\\Nitroplus\\Muramasa', data);
+  a.save('save01.dat', 'file save');
+  assert.strictEqual(await sync(a, game), 'push');
+  assert.strictEqual(await sync(b, game), 'pull');
+  assert.deepStrictEqual((await regB.exportKeys(['Software\\Nitroplus\\Muramasa'])).get('Software\\Nitroplus\\Muramasa'), data);
+  assert.strictEqual(b.readSave('save01.dat'), 'file save');
+  // A change on B goes back to A; A's old values are kept in History first.
+  regB.set('Software\\Nitroplus\\Muramasa', { ...data, values: { ...data.values, Route: { kind: 'DWord', data: 4 } } });
+  assert.strictEqual(await sync(b, game), 'push');
+  assert.strictEqual(await sync(a, game), 'pull');
+  assert.strictEqual((await regA.exportKeys(['Software\\Nitroplus\\Muramasa'])).get('Software\\Nitroplus\\Muramasa').values.Route.data, 4);
+  assert.ok((await a.engine.listHistory(game.id)).some((h) => h.kind === 'before-pull'));
+  // Unsafe keys are refused outright.
+  for (const bad of ['HKLM\\Software\\X\\Y', 'HKCU\\Software\\Microsoft\\Windows', 'HKCU\\Software\\OnlyMaker', 'HKCU\\Control Panel\\Desktop']) {
+    assert.throws(() => normalizeKey(bad), (e) => e.code === 'registry-not-allowed', bad);
+  }
+});
+
+test('registry saves: a damaged export in the cloud is never written into the registry', async () => {
+  const { MemoryRegistry } = require('../src/core/registry');
+  const { game: g0, lib, a, b, cloud } = await setup();
+  for (const p of [a, b]) { p.engine.registry = new MemoryRegistry(); p.engine.stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vns-st-')); }
+  const game = await lib.addSaveRule(g0.id, { kind: 'registry', key: 'Software\\Maker\\Game' });
+  a.engine.registry.set('Software\\Maker\\Game', { values: { X: { kind: 'DWord', data: 1 } }, keys: {} });
+  await sync(a, game);
+  const rule = game.saves.find((r) => r.kind === 'registry');
+  const state = JSON.parse(fs.readFileSync(path.join(cloud, 'games', game.id, 'state.json'), 'utf8'));
+  const dir = path.join(cloud, 'games', game.id, state.dir || 'current');
+  fs.writeFileSync(path.join(dir, rule.id, '__registry__.json'), '{"values": {"X": {"kind": "DWord", "data": 1}}, "keys"');
+  await assert.rejects(sync(b, game), (e) => e.code === 'cloud-incomplete');
+  assert.strictEqual((await b.engine.registry.exportKeys(['Software\\Maker\\Game'])).get('Software\\Maker\\Game'), null);
+});
+
+test('two PCs uploading at the same moment through a slow sync app: no mixed files, a conflict, nothing lost', async () => {
+  const { game, a, b, cloud } = await setup();
+  a.save('save01.dat', 'start');
+  await sync(a, game);
+  await sync(b, game);
+  // The sync app is slow: each PC now works on its own copy of the shared folder for a while.
+  const base = path.dirname(cloud);
+  const viewA = path.join(base, 'viewA');
+  const viewB = path.join(base, 'viewB');
+  fs.cpSync(cloud, viewA, { recursive: true });
+  fs.cpSync(cloud, viewB, { recursive: true });
+  a.engine.cloudDir = viewA;
+  b.engine.cloudDir = viewB;
+  a.save('save01.dat', 'A progress');
+  b.save('save01.dat', 'B progress');
+  b.save('save02.dat', 'B only');
+  assert.strictEqual(await sync(a, game), 'push');
+  assert.strictEqual(await sync(b, game), 'push');
+  // The sync app catches up: B's sync record wins, A's becomes a "conflicted copy"; folders merge.
+  const merged = path.join(base, 'merged');
+  fs.cpSync(viewB, merged, { recursive: true });
+  fs.cpSync(viewA, merged, { recursive: true, force: false });
+  const gd = (root) => path.join(root, 'games', game.id);
+  fs.copyFileSync(path.join(gd(viewA), 'state.json'), path.join(gd(merged), 'state (PC\'s conflicted copy 2026-10-14).json'));
+  a.engine.cloudDir = merged;
+  b.engine.cloudDir = merged;
+
+  // B is up to date; A is told its upload was replaced (a conflict), not quietly overwritten.
+  assert.strictEqual(await sync(b, game), 'nothing');
+  await assert.rejects(sync(a, game), (e) => e.code === 'conflict');
+  // Choosing B's: B's files arrive intact (nothing mixed in from A's upload), A's are kept in History.
+  assert.strictEqual(await sync(a, game, { resolution: 'cloud' }), 'pull');
+  assert.strictEqual(a.readSave('save01.dat'), 'B progress');
+  assert.strictEqual(a.readSave('save02.dat'), 'B only');
+  assert.ok((await a.engine.listHistory(game.id)).some((h) => h.kind === 'before-pull'));
+
+  // A day later, A's replaced upload folder is moved into History (named after A), not deleted.
+  const stB = JSON.parse(fs.readFileSync(path.join(gd(merged), 'state.json'), 'utf8'));
+  const orphan = fs.readdirSync(gd(merged)).find((n) => n.startsWith('current-') && n !== stB.dir);
+  assert.ok(orphan, 'A\'s upload kept its own folder');
+  const old = new Date(Date.now() - 2 * 24 * 3600 * 1000);
+  fs.utimesSync(path.join(gd(merged), orphan), old, old);
+  await a.engine.cleanIncoming(gd(merged));
+  assert.ok(!fs.existsSync(path.join(gd(merged), orphan)));
+  const replaced = (await a.engine.listHistory(game.id)).find((h) => h.kind === 'replaced');
+  assert.ok(replaced && replaced.deviceName === 'PC', 'kept as a restorable backup from PC');
 });
