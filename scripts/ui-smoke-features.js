@@ -198,12 +198,15 @@ const zipOut = path.join(base, 'k3-saves.zip');
   // ---- mouse back / forward and Alt+arrows
   await page.click('#sidebar .navitem:has-text("All games")');
   await page.waitForSelector('#libraryView:not(.hidden) #grid .card');
+  const backShown = () => page.evaluate(() => !document.querySelector('#backBtn').classList.contains('hidden'));
+  result.backHiddenOnTab = !(await backShown());
   await page.click('#grid .card >> nth=0');
   await page.waitForSelector('#detailView:not(.hidden) #playBtn');
+  result.backShownOnGame = await backShown();
   const sideButton = (button) => page.evaluate((b) => window.dispatchEvent(new MouseEvent('mouseup', { button: b, bubbles: true })), button);
   await sideButton(3);
   await page.waitForSelector('#libraryView:not(.hidden)');
-  result.mouseBackToLibrary = true;
+  result.mouseBackToLibrary = !(await backShown());
   await page.waitForTimeout(300);
   await sideButton(4);
   await page.waitForSelector('#detailView:not(.hidden) #playBtn');

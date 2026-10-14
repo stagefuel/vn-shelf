@@ -4,6 +4,37 @@ All notable changes to VN Shelf. Download any version from the
 [Releases page](https://github.com/stagefuel/vn-shelf/releases). From 0.3.0 on, VN Shelf can
 update itself (Settings → Updates).
 
+## 0.4.1
+
+Faster start-up in Google Drive mode, and a clearer Play button while saves are checked.
+
+### Changed
+- **The library appears straight away.** VN Shelf keeps a copy of your library from the last time it
+  ran and shows it the moment the window opens. It then fetches the current list in the background
+  and swaps it in, so games added or changed on another PC still show up a moment later.
+- **Google Drive mode loads much faster.** Measured on a 33-game library:
+  - before: about 15 s, because each game's details were downloaded one after another
+  - now: about 3 s on a first run, and about 1 s after that
+  
+  Two changes make this happen. Game details are downloaded 8 at a time. They're also cached on
+  this PC (`drive-cache.json` in VN Shelf's settings folder) together with the fingerprint Drive
+  gives each file, so only the games that changed since last time are downloaded again.
+- **Sync badges fill in faster.** Up to 6 games are checked at once, instead of one at a time.
+- **Play shows that it's checking saves right away.** Pressing Play straight after start-up used to
+  look like nothing was happening for a few seconds while VN Shelf reached Google Drive. Now:
+  - the game's badge reads **Syncing**
+  - the game page's button reads **Syncing saves…**
+  - the button can't be pressed again until the newest saves are down and the game starts
+  
+  Extra clicks during that time are ignored, so the game can't start twice.
+- **The ← Back button only shows where it's needed:** on game pages and on a list of games with a
+  tag. Home, All games and your categories are always one click away in the sidebar, so the
+  button is hidden there. The mouse's back button and **Alt+←** still go back from anywhere.
+
+### Fixed
+- A launcher test could fail on GitHub's Windows machines because of timing. It now adapts to how
+  the game was started. This only affected the automated tests, not the app.
+
 ## 0.4.0
 
 A cleaner look: one slim top bar, a simpler home page, background images, and mouse back/forward.

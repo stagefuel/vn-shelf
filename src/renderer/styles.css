@@ -63,6 +63,7 @@ button.play {
 }
 button.play:hover { filter: brightness(1.08); }
 button.play.stop { background: var(--bg-hover); border-color: var(--line); color: var(--text); }
+button.play.busy, button.play:disabled { cursor: progress; opacity: .75; filter: none; }
 
 input[type=text], input[type=search], input[type=number], textarea {
   font: inherit;

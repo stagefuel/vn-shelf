@@ -102,8 +102,10 @@ You pick one on first run, and the same one on every PC:
 - **One slim top bar on Windows:** the window's own title bar is merged into VN Shelf's bar. Drag it to
   move the window, double-click to maximise.
 - **Background image:** pick any picture in Settings (stored per PC), with sliders for darkness and blur.
-- **Back and forward:** the mouse's side buttons, Alt+← / Alt+→ and the Back button move through
-  Home, the library, filters and game pages.
+- **Back and forward:** the mouse's side buttons and Alt+← / Alt+→ move through Home, the library,
+  filters and game pages. The Back button appears on game pages and tag lists.
+- **Quick start-up:** the library from last time appears at once and refreshes in the background. In
+  Google Drive mode, game details are cached, so only changes are downloaded.
 
 ### Updates
 - VN Shelf checks for a new version when it starts (you can turn this off) and shows a pop-up you

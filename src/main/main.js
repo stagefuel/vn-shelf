@@ -34,6 +34,7 @@ let googleAuth = null; // null when this build has no Google client ID
 let updateInfo = null; // newest release found on GitHub, if any
 const TOPBAR_HEIGHT = 52; // keep in step with .topbar in styles.css
 const running = new Map(); // id -> { ev, watchers, liveTimer, mode }
+const starting = new Set(); // ids whose Play is still checking saves
 
 // Lets tests (and a future portable mode) keep settings somewhere other than %APPDATA%.
 if (process.env.VNS_USER_DATA) app.setPath('userData', process.env.VNS_USER_DATA);
@@ -107,7 +108,7 @@ function rebuild() {
       refreshAccessToken: () => googleAuth.refreshAccessToken(),
       apiBase: process.env.VNS_DRIVE_API, uploadBase: process.env.VNS_DRIVE_UPLOAD, // test hooks
     });
-    const store = new DriveStore(client);
+    const store = new DriveStore(client, { cacheFile: path.join(app.getPath('userData'), 'drive-cache.json') });
     library = new StoreLibrary(store, path.join(app.getPath('userData'), 'covers'));
     engine = new ManifestSyncEngine({ ...common, store, label: 'Google Drive' });
   } else if (b === 'folder') {
@@ -139,9 +140,9 @@ function coverUrl(game) {
   return p ? `${pathToFileURL(p).href}?v=${game.coverVersion || 0}` : null;
 }
 
-async function decorate(game) {
+async function decorate(game, { offline = false } = {}) {
   const l = local(game.id);
-  if (library && library.ensureCover) await library.ensureCover(game);
+  if (library && library.ensureCover && !offline) await library.ensureCover(game);
   const exeOk = !!(l.exePath && (await fsu.exists(l.exePath)));
   return {
     ...game,
@@ -360,9 +361,17 @@ const api = {
     return r.canceled ? null : r.filePaths[0];
   },
 
-  async listGames() {
+  /** With {cached:true}, returns the list saved by the last full listing (instant, may be stale). */
+  async listGames({ cached = false } = {}) {
     if (!library) return [];
-    return Promise.all((await library.list()).map(decorate));
+    const snap = path.join(app.getPath('userData'), 'library-snapshot.json');
+    if (cached) {
+      const s = await fsu.readJson(snap, null);
+      return s && s.backend === backend() ? Promise.all(s.games.map((g) => decorate(g, { offline: true }))) : null;
+    }
+    const list = await library.list();
+    fsu.writeJson(snap, { backend: backend(), games: list }).catch(() => {});
+    return Promise.all(list.map(decorate));
   },
 
   async getGame(id) { return decorate(await getGame(id)); },
@@ -541,8 +550,24 @@ const api = {
   // ---- play
 
   async play(id, opts = {}) {
-    const game = await getGame(id);
     if (running.has(id)) throw new Error('It\'s already running.');
+    if (starting.has(id)) return { busy: true }; // a second click while saves are still being checked
+    starting.add(id);
+    // Show it straight away: right after start-up the first Drive calls can take a few seconds.
+    setState(id, 'syncing', { message: 'Checking for newer saves…' });
+    let r;
+    try {
+      r = await api.startPlay(id, opts);
+      return r;
+    } finally {
+      starting.delete(id);
+      if (!(r && r.started) && !running.has(id)) setState(id, 'idle');
+    }
+  },
+
+  /** play() without the "checking" indicator around it. */
+  async startPlay(id, opts = {}) {
+    const game = await getGame(id);
     const l = local(id);
     if (!l.exePath || !(await fsu.exists(l.exePath))) return { needs: 'locate' };
     const hasSaves = (game.saves || []).length > 0;

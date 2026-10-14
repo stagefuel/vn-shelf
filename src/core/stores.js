@@ -107,7 +107,12 @@ const CHILD_TTL_MS = 15000;
 
 class DriveStore extends BaseStore {
   /** @param {import('./gdrive').DriveClient} client */
-  constructor(client, { rootName = 'VN Shelf' } = {}) {
+  /**
+   * @param {object} [o]
+   * @param {string} [o.cacheFile]  where to keep downloaded JSON (game.json…) between runs, so a start
+   *   only downloads what changed on Drive. Entries are keyed by Drive file id + content MD5.
+   */
+  constructor(client, { rootName = 'VN Shelf', cacheFile = null } = {}) {
     super();
     this.client = client;
     this.rootName = rootName;
@@ -115,7 +120,20 @@ class DriveStore extends BaseStore {
     this.rootId = null;
     this.folders = null; // gameId -> folderId
     this.children = new Map(); // gameId -> { at, files: Map(name -> file) }
-    this.jsonCache = new Map(); // fileId+md5 -> parsed JSON
+    this.jsonCache = new Map(); // fileId:md5:modifiedTime -> parsed JSON
+    this.cacheFile = cacheFile;
+    if (cacheFile) {
+      try {
+        for (const [k, v] of Object.entries(JSON.parse(require('fs').readFileSync(cacheFile, 'utf8')))) this.jsonCache.set(k, v);
+      } catch { /* no cache yet */ }
+    }
+  }
+
+  async saveCache(keep) {
+    if (!this.cacheFile) return;
+    const obj = {};
+    for (const k of keep) if (this.jsonCache.has(k)) obj[k] = this.jsonCache.get(k);
+    await fsu.writeJson(this.cacheFile, obj).catch(() => {});
   }
 
   /**
@@ -152,6 +170,12 @@ class DriveStore extends BaseStore {
 
   async gameFolders(fresh = false) {
     if (this.folders && !fresh) return this.folders;
+    if (!fresh && this.foldersPromise) return this.foldersPromise; // several status checks at once share one listing
+    this.foldersPromise = this.listGameFolders().finally(() => { this.foldersPromise = null; });
+    return this.foldersPromise;
+  }
+
+  async listGameFolders() {
     const folders = new Map();
     for (const root of await this.roots()) {
       const list = await this.client.list(`${q(root)} in parents and trashed = false and mimeType = '${FOLDER}'`, 'id,name,appProperties');
@@ -250,18 +274,27 @@ class DriveStore extends BaseStore {
     const folders = await this.gameFolders(true);
     const byFolder = new Map([...folders].map(([g, f]) => [f, g]));
     const files = await this.client.list(`name = ${q(name)} and trashed = false`, 'id,parents,md5Checksum,modifiedTime');
-    const out = new Map();
+    const wanted = [];
     for (const f of files) {
       const gameId = (f.parents || []).map((p) => byFolder.get(p)).find(Boolean);
-      if (!gameId || out.has(gameId)) continue;
-      const key = `${f.id}:${f.md5Checksum}`;
-      if (!this.jsonCache.has(key)) {
-        try { this.jsonCache.set(key, JSON.parse((await this.client.download(f.id)).toString('utf8'))); } catch { continue; }
-      }
-      out.set(gameId, this.jsonCache.get(key));
+      if (gameId && !wanted.some((w) => w.gameId === gameId)) wanted.push({ gameId, f, key: `${f.id}:${f.md5Checksum}:${f.modifiedTime}` });
     }
+    // Download only what isn't cached (unchanged files are known by their MD5), several at a time.
+    const missing = wanted.filter((w) => !this.jsonCache.has(w.key));
+    let next = 0;
+    const worker = async () => {
+      while (next < missing.length) {
+        const w = missing[next++];
+        try { this.jsonCache.set(w.key, JSON.parse((await this.client.download(w.f.id)).toString('utf8'))); } catch { /* skip unreadable */ }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(8, missing.length) }, worker));
+    const out = new Map();
+    for (const w of wanted) if (this.jsonCache.has(w.key)) out.set(w.gameId, this.jsonCache.get(w.key));
+    if (missing.length || this.cacheFile) await this.saveCache(wanted.map((w) => w.key));
     return out;
   }
+
 }
 
 module.exports = { DirStore, DriveStore, BaseStore };

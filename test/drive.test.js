@@ -337,3 +337,53 @@ test('drive: games in a duplicate root (made by another PC) are still found', as
     assert.deepStrictEqual(titles, ['Game A', 'Game B'], `found ${titles}; ids ${ga.id} ${gb.id}`);
   } finally { await fd.close(); }
 });
+
+// ------------------------------------------------------------------ start-up speed
+
+test('drive: readAll downloads in parallel and caches unchanged files between runs', async () => {
+  const fd = await startFakeDrive();
+  try {
+    const auth = authFor(fd); await auth.signIn({ timeoutMs: 5000 });
+    const lib = new StoreLibrary(driveStoreFor(fd, auth), tmp());
+    const made = [];
+    for (let i = 0; i < 12; i++) made.push(await lib.create({ title: `Game ${i}` }));
+
+    const cacheFile = path.join(tmp(), 'drive-cache.json');
+    const counted = () => {
+      const s = driveStoreFor(fd, auth);
+      s.cacheFile = cacheFile;
+      try { for (const [k, v] of Object.entries(JSON.parse(fs.readFileSync(cacheFile, 'utf8')))) s.jsonCache.set(k, v); } catch { /* first run */ }
+      s.downloads = 0;
+      let inFlight = 0;
+      s.maxInFlight = 0;
+      const dl = s.client.download.bind(s.client);
+      s.client.download = async (id) => {
+        s.downloads++; inFlight++; s.maxInFlight = Math.max(s.maxInFlight, inFlight);
+        try { return await dl(id); } finally { inFlight--; }
+      };
+      return s;
+    };
+
+    const first = counted();
+    const all = await first.readAll('game.json');
+    assert.strictEqual(all.size, 12);
+    assert.strictEqual(first.downloads, 12);
+    assert.ok(first.maxInFlight > 1, 'downloads should overlap');
+    for (const g of made) assert.strictEqual(all.get(g.id).title, g.title);
+
+    // Next start: nothing changed, so nothing is downloaded.
+    const second = counted();
+    assert.strictEqual((await second.readAll('game.json')).size, 12);
+    assert.strictEqual(second.downloads, 0);
+
+    // Another PC edits one game: only that file is fetched, and the new content wins.
+    await lib.update(made[3].id, { title: 'Renamed' });
+    const third = counted();
+    const again = await third.readAll('game.json');
+    assert.strictEqual(third.downloads, 1);
+    assert.strictEqual(again.get(made[3].id).title, 'Renamed');
+
+    // The cache only keeps entries for files that still exist.
+    assert.strictEqual(Object.keys(JSON.parse(fs.readFileSync(cacheFile, 'utf8'))).length, 12);
+  } finally { await fd.close(); }
+});

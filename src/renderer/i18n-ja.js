@@ -362,6 +362,8 @@ Object.assign(JA, {
   'Close your games first; VN Shelf restarts to update.': '先にゲームを閉じてください。アップデートのため VN Shelf が再起動します。',
   'It\'s already running.': 'すでに起動しています。',
   'Getting latest saves…': '最新のセーブを取得中…',
+  'Checking for newer saves…': '新しいセーブを確認中…',
+  'Syncing saves…': 'セーブを同期中…',
   'Saving to the cloud…': 'クラウドに保存中…',
   'Saves uploaded': 'セーブをアップロードしました',
   'Saves downloaded': 'セーブをダウンロードしました',

@@ -123,7 +123,6 @@ let currentId = null;
 const filter = { category: null, tag: null };
 const live = {};      // id -> { state, message }
 const badges = {};    // id -> gameStatus result
-let statusQueue = Promise.resolve();
 let showSpoilers = false;
 
 const BADGE_TEXT = () => ({
@@ -149,15 +148,25 @@ function badgeFor(g) {
   return b ? b.badge : null;
 }
 
+const statusWaiting = [];
+let statusRunning = 0;
+/** Refresh a game's sync badge. Several run at once (each may talk to Google Drive), the rest wait. */
 function refreshStatus(id) {
-  statusQueue = statusQueue.then(async () => {
-    try {
-      badges[id] = await vns.call('gameStatus', id);
-    } catch { badges[id] = { badge: 'error' }; }
-    updateCards(id);
-    if (view === 'detail' && currentId === id) updateStatusLine();
-  });
-  return statusQueue;
+  return new Promise((resolve) => { statusWaiting.push({ id, resolve }); pumpStatus(); });
+}
+
+function pumpStatus() {
+  while (statusRunning < 6 && statusWaiting.length) {
+    const { id, resolve } = statusWaiting.shift();
+    statusRunning++;
+    (async () => {
+      try {
+        badges[id] = await vns.call('gameStatus', id);
+      } catch { badges[id] = { badge: 'error' }; }
+      updateCards(id);
+      if (view === 'detail' && currentId === id) updateStatusLine();
+    })().finally(() => { statusRunning--; resolve(); pumpStatus(); });
+  }
 }
 
 function categoriesAll() {
@@ -223,7 +232,12 @@ function pushNav() {
   updateBackBtn();
 }
 
-function updateBackBtn() { $('#backBtn').classList.toggle('hidden', nav.index <= 0); }
+// The Back button shows on game pages and tag lists only; Home and the sidebar's tabs (All games,
+// categories) are reached from the sidebar. The mouse's back button and Alt+← still work everywhere.
+function updateBackBtn() {
+  const offTab = view === 'detail' || (view === 'library' && !!filter.tag);
+  $('#backBtn').classList.toggle('hidden', nav.index <= 0 || !offTab);
+}
 
 async function restoreNav(st) {
   if (st.view === 'detail' && games.some((g) => g.id === st.id)) { currentId = st.id; setView('detail'); await renderDetail(st.id, { noAuto: true }); }
@@ -255,7 +269,7 @@ function cardFor(g) {
     g.coverUrl ? h('img', { src: g.coverUrl, alt: '', loading: 'lazy', draggable: 'false' }) : h('div', { class: 'placeholder' }, g.title));
   const b = badgeFor(g);
   if (b) art.append(h('span', { class: `badge ${b}` }, BADGE_TEXT()[b] || b));
-  if (g.installed && !(live[g.id] && live[g.id].state === 'running')) {
+  if (g.installed && !(live[g.id] && ['running', 'syncing'].includes(live[g.id].state))) {
     art.append(h('button', { class: 'quickplay', onclick: (e) => { e.stopPropagation(); play(g.id); } }, t('▶ Play')));
   }
   const sub = g.lastPlayed ? t('Played {when}', { when: ago(g.lastPlayed) }) : (g.titleAlt || g.developer || '');
@@ -407,7 +421,7 @@ async function conflictDialog(info) {
 async function play(id, opts = {}) {
   let r;
   try { r = await call('play', id, opts); } catch { return; }
-  if (r.started) return;
+  if (r.started || r.busy) return;
   const g = games.find((x) => x.id === id) || {};
   const msg = translateMessage(r.message || '');
   switch (r.needs) {
@@ -984,8 +998,11 @@ function updateStatusLine() {
   const isRunning = live[g.id] && live[g.id].state === 'running';
   const btn = $('#playBtn');
   if (btn) {
-    btn.textContent = isRunning ? t('Stop tracking') : t('▶ Play');
+    const syncing = live[g.id] && live[g.id].state === 'syncing';
+    btn.textContent = isRunning ? t('Stop tracking') : syncing ? t('Syncing saves…') : t('▶ Play');
     btn.classList.toggle('stop', !!isRunning);
+    btn.classList.toggle('busy', !!syncing);
+    btn.disabled = !!syncing;
     btn.title = isRunning ? t('Use this if the game is closed but VN Shelf still thinks it\'s running') : '';
   }
 }
@@ -1442,8 +1459,16 @@ window.addEventListener('drop', (e) => {
   applyStaticText();
   applyBackground(setup.settings.background);
   if (!setup.configured) await settingsDialog(true);
-  games = await call('listGames').catch(() => []);
-  showHome();
-  for (const g of games) refreshStatus(g.id);
+  // Paint the library saved last time straight away, then swap in the fresh one (Drive can take seconds).
+  const cached = await vns.call('listGames', { cached: true }).catch(() => null);
+  if (cached && cached.length) { games = cached; showHome(); }
   if (setup.update) showUpdatePopup(setup.update);
+  games = await call('listGames').catch(() => []);
+  if (cached && cached.length) {
+    if (view === 'home') renderHome();
+    else if (view === 'library') renderGrid();
+    else if (view === 'detail' && !games.some((g) => g.id === currentId)) showHome();
+    renderSidebar();
+  } else showHome();
+  for (const g of games) refreshStatus(g.id);
 })();
