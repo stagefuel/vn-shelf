@@ -12,6 +12,9 @@ system and no analytics. The developer never receives any of your data.
 - **VNDB (vndb.org)**, when you search for a game, import a folder of games or refresh a game's info.
   The search text (a title or folder name) is sent to VNDB's public API, and covers are downloaded
   from VNDB's image server.
+- **Your VNDB list, only if you connect your VNDB account** (Settings → VNDB). VN Shelf then reads
+  your list and its labels and sends VNDB changes to the reading status, labels, rating and
+  started/finished dates of the VNs in your library. It never reads or sends your list notes.
 - **GitHub (github.com)**, to check for a newer version of VN Shelf when the app starts and when you
   press Check now, and to download an update you choose to install. You can turn the automatic
   check off in Settings → Updates. Only GitHub's public release list is requested; nothing about
@@ -24,6 +27,9 @@ system and no analytics. The developer never receives any of your data.
 - The Google sign-in token is stored on your computer, encrypted with your operating system's
   credential protection. Signing out in Settings deletes it. You can also revoke access at any
   time at <https://myaccount.google.com/permissions>.
+- A VNDB token, if you connect one, is stored the same way on that computer only. It is never
+  put in your sync location. Disconnecting in Settings deletes it, and you can also delete the token
+  on vndb.org (My Profile → Applications).
 - Your save files are stored in your own Google Drive, or in whatever folder you chose for syncing.
 - Settings and the game library are stored in the app's folder on your computer and in your
   chosen sync location.

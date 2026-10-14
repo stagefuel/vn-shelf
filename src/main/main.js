@@ -19,6 +19,7 @@ const { ManifestSyncEngine } = require('../core/manifest-sync');
 const { exclusive, busyGames, isRegistryRule } = require('../core/sync');
 const registry = require('../core/registry');
 const { cleanTitle } = require('../core/titles');
+const vndbList = require('../core/vndb-list');
 
 // Reading status. The values follow VNDB's list labels, so they can sync with a VNDB list later:
 // playing = Playing (1), finished = Finished (2), stalled = Stalled (3), dropped = Dropped (4),
@@ -188,9 +189,12 @@ function loadOAuthConfig() {
   return null;
 }
 
-/** Google tokens live in userData, encrypted with the OS's credential protection when available. */
-function tokenStore() {
-  const file = path.join(app.getPath('userData'), 'google-token.json');
+/**
+ * Tokens (Google, VNDB) live in userData on this PC only, encrypted with the OS's credential
+ * protection when available. They are never put in shared storage or copied to another PC.
+ */
+function tokenStore(name = 'google-token.json') {
+  const file = path.join(app.getPath('userData'), name);
   let cache;
   return {
     load() {
@@ -557,8 +561,10 @@ async function markReading(id) {
   try {
     const game = await library.get(id);
     if (game && (!game.status || game.status === 'wishlist')) {
-      await library.update(id, { status: 'playing', statusAt: new Date().toISOString() });
+      const now = new Date().toISOString();
+      await library.update(id, { status: 'playing', statusAt: now, listEditedAt: now, ...(game.started ? {} : { started: vndbList.today() }) });
       send('games-changed');
+      vndbSyncSoon();
     }
   } catch { /* not important */ }
 }
@@ -714,6 +720,81 @@ async function publishSettings() {
   await config.set({ publishedSettings: sig });
 }
 
+// ---------------------------------------------------------------- VNDB list sync
+// Reading status, categories with a matching label, your rating and dates sync both ways with the
+// owner's VNDB list (core/vndb-list.js). The token stays on this PC, encrypted.
+
+let vndbToken = null; // tokenStore('vndb-token.json'), set up when the app is ready
+let vndbChain = Promise.resolve();
+let vndbPending = null; // the run waiting to start, which later requests join
+let vndbSoonTimer = null;
+const VNDB_FULL_EVERY = 6 * 3600 * 1000; // re-read the whole list this often (finds removed entries)
+
+function vndbCacheFile() { return path.join(app.getPath('userData'), 'vndb-list.json'); }
+
+function vndbClient(token) {
+  return new vndbList.VndbListClient({ token, apiBase: process.env.VNS_VNDB_API || undefined, gapMs: process.env.VNS_VNDB_API ? 0 : 1000 });
+}
+
+function vndbInfo() {
+  const v = config.data.vndb;
+  if (!v || !vndbToken || !vndbToken.load()) return { connected: false };
+  return {
+    connected: true, username: v.username, userId: v.userId, canWrite: !!v.canWrite, labels: v.labels || [],
+    lastSyncAt: v.lastSyncAt || null, lastError: v.lastError || null, syncing: !!vndbPending || vndbBusy,
+  };
+}
+
+/** Run a sync after the ones already started; requests made while one is waiting share it. */
+function vndbSync(opts = {}) {
+  if (vndbPending) { if (opts.full) vndbPending.full = true; return vndbPending.promise; }
+  const p = { full: !!opts.full };
+  p.promise = vndbChain.catch(() => {}).then(() => { vndbPending = null; return vndbSyncOnce(p); });
+  vndbPending = p;
+  vndbChain = p.promise;
+  return p.promise;
+}
+
+/** A change to a game's status, categories, rating or dates goes to VNDB 5 s later (changes in a row go together). */
+function vndbSyncSoon() {
+  if (!config.data.vndb) return;
+  clearTimeout(vndbSoonTimer);
+  vndbSoonTimer = setTimeout(() => vndbSync().catch(() => {}), 5000);
+}
+
+let vndbBusy = false;
+async function vndbSyncOnce({ full }) {
+  const v = config.data.vndb;
+  const token = vndbToken && vndbToken.load();
+  if (!v || !token || !library) return null;
+  const cache = (await fsu.readJson(vndbCacheFile(), null)) || {};
+  if (cache.user !== v.userId) Object.assign(cache, { user: v.userId, entries: {}, lastmod: 0, fullAt: null });
+  if (!cache.fullAt || Date.now() - Date.parse(cache.fullAt) > VNDB_FULL_EVERY) full = true;
+  vndbBusy = true;
+  send('vndb-state', vndbInfo());
+  try {
+    const games = await library.list({ maxAge: 0 });
+    const r = await vndbList.syncList({
+      client: vndbClient(token), user: v.userId, canWrite: !!v.canWrite, games, cache, full,
+      update: (id, patch) => library.update(id, patch).catch((e) => logError('vndb', e)),
+      log: (e) => logError('vndb', e),
+    });
+    await fsu.writeJson(vndbCacheFile(), cache);
+    if (config.data.vndb && config.data.vndb.userId === v.userId) {
+      await config.set({ vndb: { ...config.data.vndb, lastSyncAt: new Date().toISOString(), lastError: r.errors.length ? `${r.errors[0].title}: ${r.errors[0].message}` : null, labels: r.labels.map((l) => l.label) } });
+    }
+    if (r.pulled) send('games-changed');
+    return { pulled: r.pulled, pushed: r.pushed, errors: r.errors };
+  } catch (e) {
+    logError('vndb', e);
+    if (config.data.vndb) await config.set({ vndb: { ...config.data.vndb, lastError: e.message } });
+    throw e;
+  } finally {
+    vndbBusy = false;
+    send('vndb-state', vndbInfo());
+  }
+}
+
 // ---------------------------------------------------------------- API
 
 const api = {
@@ -748,6 +829,7 @@ const api = {
       repoUrl: REPO_URL,
       portable: !!process.env.PORTABLE_EXECUTABLE_FILE,
       update: updateInfo,
+      vndb: vndbInfo(),
     };
   },
 
@@ -878,15 +960,25 @@ const api = {
     const allowed = {};
     for (const k of ['title', 'titleAlt', 'developer', 'launch', 'notes', 'categories']) if (patch[k] !== undefined) allowed[k] = patch[k];
     if (allowed.title !== undefined) allowed.titleSource = 'user';
+    const before = patch.status !== undefined ? await peekGame(id) : null;
     if (patch.status !== undefined) {
       if (!STATUSES.includes(patch.status)) throw new Error('Unknown reading status.');
       allowed.status = patch.status;
       allowed.statusAt = new Date().toISOString();
+      // Dates fill themselves in the first time: started when reading begins, finished when finished.
+      if (patch.status === 'playing' && !before.started && patch.started === undefined) allowed.started = vndbList.today();
+      if (patch.status === 'finished' && !before.finished && patch.finished === undefined) allowed.finished = vndbList.today();
     }
+    if (patch.vote !== undefined) allowed.vote = patch.vote === null ? null : vndbList.cleanVote(patch.vote);
+    if (patch.started !== undefined) allowed.started = vndbList.cleanDate(patch.started);
+    if (patch.finished !== undefined) allowed.finished = vndbList.cleanDate(patch.finished);
     if (allowed.notes !== undefined) allowed.notes = String(allowed.notes).slice(0, 100000);
     if (allowed.categories !== undefined) allowed.categories = [...new Set((allowed.categories || []).map((c) => String(c).trim()).filter(Boolean))];
+    const listChange = ['status', 'categories', 'vote', 'started', 'finished'].some((k) => allowed[k] !== undefined);
+    if (listChange) allowed.listEditedAt = new Date().toISOString();
     const g = await library.update(id, allowed);
     send('games-changed');
+    if (listChange) vndbSyncSoon();
     return decorate(g);
   },
 
@@ -1206,6 +1298,70 @@ const api = {
 
   async vndbBestMatch(q) { return vndb.bestMatch(q); },
 
+  // ---- VNDB list
+
+  async vndbConnect(token) {
+    token = String(token || '').trim().replace(/^Token\s+/i, '');
+    if (!token) throw new Error('Paste your VNDB token first.');
+    const info = await vndbClient(token).authinfo();
+    const perms = (info && info.permissions) || [];
+    if (!perms.includes('listread')) throw new Error('This token can\'t read your list. Make a new one with "Access to my list" ticked.');
+    vndbToken.save(token);
+    const prev = config.data.vndb;
+    if (prev && prev.userId !== info.id) await fs.promises.rm(vndbCacheFile(), { force: true });
+    await config.set({ vndb: { userId: info.id, username: info.username, canWrite: perms.includes('listwrite'), labels: [], lastSyncAt: null, lastError: null } });
+    vndbSync({ full: true }).catch(() => {});
+    return api.getSetup();
+  },
+
+  async vndbDisconnect() {
+    clearTimeout(vndbSoonTimer);
+    vndbToken.clear();
+    await config.set({ vndb: null });
+    await fs.promises.rm(vndbCacheFile(), { force: true });
+    send('vndb-state', vndbInfo());
+    return api.getSetup();
+  },
+
+  async vndbSyncNow() {
+    if (!config.data.vndb) throw new Error('Connect your VNDB account first (Settings → VNDB).');
+    return vndbSync({ full: true });
+  },
+
+  /** List entries whose VN isn't in the library, each with an unlinked game of the same name if there is one. */
+  async vndbListOnly() {
+    if (!config.data.vndb || !library) return { entries: [] };
+    const cache = (await fsu.readJson(vndbCacheFile(), null)) || {};
+    if (cache.user !== config.data.vndb.userId) return { entries: [], loading: true };
+    const games = await library.list({ maxAge: STATUS_MAX_AGE });
+    const unlinked = games.filter((g) => !g.vndbId);
+    const entries = vndbList.listOnly(cache, games).map((e) => {
+      const names = [e.title, e.titleAlt].map(detect.normName).filter((n) => n.length >= 3);
+      const match = unlinked.find((g) => [g.title, g.titleAlt].map(detect.normName).some((n) => n.length >= 3 && names.some((m) => detect.namesMatch(n, m))));
+      return { ...e, linkTo: match ? { id: match.id, title: match.title } : null };
+    });
+    return { entries, loading: !cache.fullAt };
+  },
+
+  /** Add a VN from the VNDB list to the library (not installed on this PC until its game is located). */
+  async vndbAddFromList(vid) {
+    requireLibrary();
+    const full = await vndb.fetchInfo(vid);
+    refuseBlocked(full.title, full.titleAlt, full.info && full.info.aliases);
+    const game = await library.create({ title: full.title, titleAlt: full.titleAlt, developer: full.developer, vndbId: full.vndbId, titleSource: 'vndb' });
+    const g = await api.applyVndb(game.id, full);
+    vndbSync().catch(() => {}); // brings in its status, labels and rating
+    return g;
+  },
+
+  /** Link a library game to a VN on the list (the same as picking it in "Find on VNDB"). */
+  async vndbLink(id, vid) {
+    const full = await vndb.fetchInfo(vid);
+    const g = await api.applyVndb(id, full);
+    vndbSync().catch(() => {});
+    return g;
+  },
+
   // ---- bulk import
 
   async scanImport(dir) {
@@ -1521,6 +1677,7 @@ app.whenReady().then(async () => {
       openUrl: (u) => shell.openExternal(u), authUrl: process.env.VNS_GOOGLE_AUTH_URL, tokenUrl: process.env.VNS_GOOGLE_TOKEN_URL, revokeUrl: process.env.VNS_GOOGLE_REVOKE_URL,
     });
   }
+  vndbToken = tokenStore('vndb-token.json');
   rebuild();
   // A previous update that didn't finish can leave the downloaded exe next to this one.
   if (process.env.PORTABLE_EXECUTABLE_FILE) {
@@ -1534,6 +1691,8 @@ app.whenReady().then(async () => {
   setTimeout(() => autoUpload().catch(() => {}), 4000);
   setTimeout(() => publishSettings().catch(() => {}), 8000);
   setInterval(() => autoUpload().catch(() => {}), 5 * 60 * 1000);
+  if (config.data.vndb) setTimeout(() => vndbSync().catch(() => {}), 6000);
+  setInterval(() => { if (config.data.vndb) vndbSync().catch(() => {}); }, 15 * 60 * 1000);
   pollChanges();
   win.on('show', schedulePoll);
   win.on('focus', () => { if (!pollTimer || Date.now() - lastFocusPoll > 15000) { lastFocusPoll = Date.now(); pollChanges(); } });

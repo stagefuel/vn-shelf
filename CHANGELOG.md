@@ -4,6 +4,65 @@ All notable changes to VN Shelf. Download any version from the
 [Releases page](https://github.com/stagefuel/vn-shelf/releases). From 0.3.0 on, VN Shelf can
 update itself (Settings → Updates).
 
+## 0.8.0
+
+VN Shelf now syncs with your VNDB list. Your reading status, categories, rating and dates stay the
+same in VN Shelf and on vndb.org, whichever side you change them on.
+
+### New
+- **Connect your VNDB account** in **Settings → VNDB**.
+  1. On vndb.org, open **My Profile → Applications** and create a token with **Access to my
+     list** and **Edit my list** ticked.
+  2. Paste the token into VN Shelf and press **Connect**.
+
+  The token is kept on this PC only, encrypted with Windows' credential protection. It is never
+  put in your shared storage or copied by **Copy settings from another PC**, so connect on each
+  PC where you want the sync. **Disconnect** deletes it. A token that can only read your list
+  works too: changes then come from VNDB but aren't sent back.
+- **What syncs, for every game linked to VNDB:**
+  - **Reading status** with VNDB's Playing, Finished, Stalled, Dropped and Wishlist labels (shown
+    in VN Shelf as Reading, Finished, On hold, Dropped and Plan to read). When you change the status,
+    the old status label is taken off on VNDB, so a VN never ends up both Playing and Finished.
+  - **Categories** whose name matches one of your own VNDB labels, ignoring upper and lower case.
+    For example, a "Favourites" category and a "favourites" label sync with each other. Categories
+    without a matching label stay in VN Shelf only. Matching categories show a small **VNDB**
+    mark on the game page.
+  - **Your rating** (1–10) and the **Started** and **Finished** dates, in the new **Your rating &
+    dates** box on each game's page.
+  - **Notes never sync.** Blacklisted VNs are left alone.
+- **Dates fill themselves in.** Setting a game to Reading (or playing it for the first time) fills
+  in **Started** with today's date if it was empty. Setting it to Finished fills in **Finished**.
+  This works with or without VNDB.
+- **Your VNDB list** in the sidebar shows the VNs on your VNDB list that aren't in your library,
+  with their cover, status and rating, and a filter by status.
+  - **+ Add** puts one in your library with its VNDB info and cover. Find its program on its page
+    when it's on this PC.
+  - **Link to "…"** appears when a game in your library has the same name but isn't linked to VNDB
+    yet. It links them, so the game's status and labels sync from then on.
+  - Click a cover to open the VN on vndb.org.
+- **When it syncs:**
+  - when VN Shelf starts
+  - every 15 minutes
+  - about 5 seconds after you change a status, category, rating or date
+  - when you press **Sync with VNDB now** (in Settings → VNDB or on the list page)
+
+  Usually this is a single request: VN Shelf asks only for entries changed since last time, and
+  re-reads the whole list every few hours to notice VNs removed on the website.
+
+### How changes are merged
+- Each field is compared with what both sides agreed on last time. If only one side changed it,
+  that change wins. If both changed the same field, the **newer change wins**, without asking.
+  Different fields changed on each side are both kept.
+- Categories and labels merge one by one: one added on either side is added on the other, and one
+  removed on either side is removed on the other. The first time a game syncs, nothing is taken
+  away: categories and labels from both sides are kept, and an empty field takes the other
+  side's value.
+- A VN removed from your VNDB list has its status, rating and dates cleared in VN Shelf too. Anything
+  you changed in VN Shelf since the last sync is kept, and puts the VN back on the list.
+- If VNDB can't be reached, or rejects a change, nothing is lost: the change is sent at the next
+  sync. VN Shelf keeps under VNDB's request limits, sending at most one request a second and waiting
+  when VNDB asks it to.
+
 ## 0.7.0
 
 Setting up a new game is now just pressing Play. Registry saves sync, games get a reading status,

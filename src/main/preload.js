@@ -4,7 +4,7 @@ const { contextBridge, ipcRenderer, webUtils } = require('electron');
 contextBridge.exposeInMainWorld('vns', {
   call: (method, ...args) => ipcRenderer.invoke('api', method, ...args),
   on: (channel, cb) => {
-    if (!['game-state', 'games-changed', 'saveonce-result', 'import-progress', 'update-available', 'update-progress', 'nav', 'sync-progress', 'library-changed', 'auto-uploaded', 'title-taken'].includes(channel)) return () => {};
+    if (!['game-state', 'games-changed', 'saveonce-result', 'import-progress', 'update-available', 'update-progress', 'nav', 'sync-progress', 'library-changed', 'auto-uploaded', 'title-taken', 'vndb-state'].includes(channel)) return () => {};
     const fn = (_e, payload) => cb(payload);
     ipcRenderer.on(channel, fn);
     return () => ipcRenderer.removeListener(channel, fn);

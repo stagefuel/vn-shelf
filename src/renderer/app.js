@@ -269,6 +269,7 @@ function renderSidebar() {
   replaceKids(nav,
     item(t('Home'), view === 'home', () => showHome()),
     item(t('All games'), view === 'library' && !filter.category && !filter.tag && !filter.status, () => showLibrary({ category: null, tag: null }), h('span', { class: 'count' }, games.length)),
+    setup.vndb && setup.vndb.connected ? item(t('Your VNDB list'), view === 'vndb', () => showVndbList()) : null,
     ...(() => {
       const used = STATUS_ORDER.filter((st) => games.some((g) => g.status === st));
       if (!used.length) return [];
@@ -290,6 +291,7 @@ function setView(v) {
   $('#homeView').classList.toggle('hidden', v !== 'home');
   $('#libraryView').classList.toggle('hidden', v !== 'library');
   $('#detailView').classList.toggle('hidden', v !== 'detail');
+  $('#vndbView').classList.toggle('hidden', v !== 'vndb');
   $('main').scrollTop = 0;
   renderSidebar();
 }
@@ -301,6 +303,7 @@ const nav = { stack: [], index: -1, lastMove: 0 };
 function navState() {
   if (view === 'detail') return { view, id: currentId };
   if (view === 'library') return { view, filter: { ...filter } };
+  if (view === 'vndb') return { view };
   return { view: 'home' };
 }
 
@@ -327,6 +330,7 @@ function updateBackBtn() {
 async function restoreNav(st) {
   if (st.view === 'detail' && games.some((g) => g.id === st.id)) { currentId = st.id; setView('detail'); await renderDetail(st.id, { noAuto: true }); }
   else if (st.view === 'library') { Object.assign(filter, st.filter || {}); setView('library'); renderGrid(); }
+  else if (st.view === 'vndb' && setup.vndb && setup.vndb.connected) { setView('vndb'); renderVndbList(); }
   else { setView(games.length ? 'home' : 'library'); if (view === 'home') renderHome(); else renderGrid(); }
   updateBackBtn();
 }
@@ -491,6 +495,103 @@ function renderGrid() {
   $('#grid').replaceChildren(...list.map(cardFor));
   $('#empty').classList.toggle('hidden', games.length > 0);
   $('#noMatch').classList.toggle('hidden', !(games.length > 0 && list.length === 0));
+}
+
+// ------------------------------------------------------------------ your VNDB list
+
+let vndbListFilter = '';
+let vndbListSeq = 0;
+
+function showVndbList() {
+  setView('vndb');
+  renderVndbList();
+  pushNav();
+}
+
+/** VNs on the owner's VNDB list that aren't in the library, each with Add (and Link, for a game of the same name). */
+async function renderVndbList() {
+  const seq = ++vndbListSeq;
+  const r = await vns.call('vndbListOnly').catch(() => ({ entries: [] }));
+  if (seq !== vndbListSeq || view !== 'vndb') return;
+  const all = r.entries || [];
+  const list = vndbListFilter ? all.filter((e) => e.status === vndbListFilter) : all;
+  const statusSel = h('select', { class: 'sortsel', title: t('Reading status') },
+    h('option', { value: '', selected: !vndbListFilter }, t('Every status')),
+    STATUS_ORDER.filter((st) => all.some((e) => e.status === st)).map((st) => h('option', { value: st, selected: vndbListFilter === st }, STATUS_TEXT()[st])));
+  statusSel.addEventListener('change', () => { vndbListFilter = statusSel.value; renderVndbList(); });
+  const syncing = setup.vndb && setup.vndb.syncing;
+  const card = (e) => {
+    const art = h('div', { class: 'art' },
+      e.image ? h('img', { src: e.image, alt: '', loading: 'lazy', draggable: 'false', class: e.imageSexual >= 1.5 ? 'nsfw' : null }) : h('div', { class: 'placeholder' }, e.title));
+    const add = h('button', { class: `small${e.linkTo ? ' ghost' : ' primary'}`, onclick: async (ev) => {
+      ev.stopPropagation();
+      add.disabled = true;
+      try {
+        await call('vndbAddFromList', e.vndbId);
+        toast(t('Added {title}. Find its program on its page to play it on this PC.', { title: e.title }), 'good');
+        games = await call('listGames');
+        renderSidebar();
+        renderVndbList();
+      } catch { add.disabled = false; }
+    } }, t('+ Add'));
+    const link = e.linkTo ? h('button', { class: 'small primary', title: t('Link {game} in your library to this VNDB entry', { game: e.linkTo.title }), onclick: async (ev) => {
+      ev.stopPropagation();
+      try {
+        await call('vndbLink', e.linkTo.id, e.vndbId);
+        toast(t('Linked {game} to VNDB.', { game: e.linkTo.title }), 'good');
+        games = await call('listGames');
+        renderVndbList();
+      } catch { /* toast shown */ }
+    } }, t('Link to “{game}”', { game: e.linkTo.title })) : null;
+    return h('div', { class: 'card listcard', title: t('Open on VNDB'), onclick: () => vns.call('openExternal', `https://vndb.org/${e.vndbId}`) },
+      art,
+      h('div', { class: 'title' }, e.title),
+      h('div', { class: 'sub' }, e.status ? [h('span', { class: `sdot ${e.status}` }), STATUS_TEXT()[e.status]] : null,
+        e.vote ? `${e.status ? ' · ' : ''}★ ${e.vote / 10}` : null),
+      h('div', { class: 'listbtns' }, link, add));
+  };
+  replaceKids($('#vndbView'),
+    h('div', { class: 'libtoolbar' },
+      h('h1', {}, t('Your VNDB list')),
+      h('span', { class: 'dim' }, t('{n} not in your library', { n: list.length })),
+      h('div', { class: 'spacer' }),
+      statusSel,
+      h('button', { class: 'small', disabled: !!syncing, onclick: () => vndbSyncNow() }, syncing ? t('Syncing…') : t('Sync with VNDB now'))),
+    list.length ? h('div', { class: 'grid' }, list.map(card))
+      : h('div', { class: 'empty' }, h('p', {}, r.loading || syncing ? t('Reading your VNDB list…') : t('Everything on your VNDB list is in your library.'))));
+}
+
+async function vndbSyncNow() {
+  try {
+    const r = await call('vndbSyncNow');
+    if (!r) return;
+    const bits = [];
+    if (r.pulled) bits.push(plural(r.pulled, '{n} game updated from VNDB', '{n} games updated from VNDB'));
+    if (r.pushed) bits.push(plural(r.pushed, '{n} change sent to VNDB', '{n} changes sent to VNDB'));
+    toast(bits.length ? bits.join(' · ') : t('Your library and VNDB list already match.'), r.errors && r.errors.length ? 'bad' : 'good');
+  } catch { /* toast shown */ }
+}
+
+/** Your rating and the started/finished dates on a game's page. They sync with VNDB when it's connected. */
+function listBox(g) {
+  const vote = h('select', { title: t('Your rating') }, h('option', { value: '', selected: !g.vote }, t('Not rated')));
+  for (let n = 10; n >= 1; n--) vote.append(h('option', { value: String(n * 10), selected: g.vote === n * 10 }, String(n)));
+  if (g.vote && g.vote % 10) vote.append(h('option', { value: String(g.vote), selected: true }, (g.vote / 10).toFixed(1)));
+  const started = h('input', { type: 'date', value: g.started || '' });
+  const finished = h('input', { type: 'date', value: g.finished || '' });
+  const save = (patch) => call('updateGame', g.id, patch).then((ng) => { Object.assign(g, { vote: ng.vote, started: ng.started, finished: ng.finished }); }).catch(() => {});
+  vote.addEventListener('change', () => save({ vote: vote.value ? Number(vote.value) : null }));
+  started.addEventListener('change', () => save({ started: started.value }));
+  finished.addEventListener('change', () => save({ finished: finished.value }));
+  const connected = setup.vndb && setup.vndb.connected;
+  return h('div', { class: 'box' },
+    h('div', { class: 'listfields' },
+      h('label', { class: 'field' }, h('div', { class: 'lbl' }, t('Your rating')), vote),
+      h('label', { class: 'field' }, h('div', { class: 'lbl' }, t('Started')), started),
+      h('label', { class: 'field' }, h('div', { class: 'lbl' }, t('Finished')), finished)),
+    h('div', { class: 'faint small listnote' }, !g.vndbId ? t('Link this game to VNDB (Find on VNDB…) to sync these with your list.')
+      : connected ? t('These, the reading status and categories named like your VNDB labels sync with your VNDB list.')
+        : t('Connect your VNDB account in Settings to sync these with your list.')));
 }
 
 // ------------------------------------------------------------------ categories
@@ -946,6 +1047,60 @@ function toolsEditor() {
 }
 
 let settingsTab = 'general';
+let vndbPaneDraw = null; // redraws the VNDB tab while Settings is open
+
+/** Settings → VNDB: connect with a token, see when it last synced, sync now, disconnect. */
+function vndbPane() {
+  const el = h('div', {});
+  const field = (label, ...kids) => h('div', { class: 'field' }, label ? h('div', { class: 'lbl' }, label) : null, ...kids);
+  const draw = () => {
+    const v = setup.vndb || { connected: false };
+    if (!v.connected) {
+      const token = h('input', { type: 'password', placeholder: t('Paste your VNDB token'), autocomplete: 'off', spellcheck: 'false' });
+      const go = h('button', { type: 'button', class: 'small primary', onclick: async () => {
+        go.disabled = true;
+        try {
+          setup = await call('vndbConnect', token.value);
+          toast(t('Connected to VNDB as {name}.', { name: setup.vndb.username }), 'good');
+          renderSidebar();
+          draw();
+        } catch { go.disabled = false; }
+      } }, t('Connect'));
+      token.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); go.click(); } });
+      replaceKids(el,
+        h('p', { class: 'dim' }, t('Keep your reading status, categories, rating and dates the same here and on your VNDB list. Changes on either side show up on the other.')),
+        field(t('1. Make a token'), h('div', { class: 'faint small' }, t('On vndb.org, log in and open My Profile → Applications. Create a token with "Access to my list" and "Edit my list" ticked, and copy it.')),
+          h('div', { class: 'val' }, h('button', { type: 'button', class: 'small', onclick: () => vns.call('openExternal', 'https://vndb.org/') }, t('Open vndb.org')))),
+        field(t('2. Paste it here'), h('div', { class: 'val' }, token, go)),
+        h('div', { class: 'faint small' }, t('The token is kept on this PC only, encrypted, and is never copied to your other PCs. Notes never sync.')));
+      return;
+    }
+    const labels = v.labels || [];
+    replaceKids(el,
+      field(t('Account'), h('div', { class: 'val wrap' }, h('div', { class: 'grow' }, h('strong', {}, v.username), ` (${v.userId})`),
+        h('button', { type: 'button', class: 'small', disabled: !!v.syncing, onclick: () => vndbSyncNow() }, v.syncing ? t('Syncing…') : t('Sync with VNDB now')),
+        h('button', { type: 'button', class: 'small ghost', onclick: async () => {
+          setup = await call('vndbDisconnect');
+          if (view === 'vndb') showHome();
+          renderSidebar();
+          draw();
+        } }, t('Disconnect'))),
+      !v.canWrite ? h('div', { class: 'faint small warn' }, t('This token can only read your list, so changes made here aren\'t sent to VNDB. Make one with "Edit my list" ticked to sync both ways.')) : null),
+      field(t('Last synced'), h('div', {}, v.syncing ? t('Syncing…') : v.lastSyncAt ? ago(v.lastSyncAt) : t('Not yet')),
+        v.lastError ? h('div', { class: 'small warn' }, translateMessage(v.lastError)) : null,
+        h('div', { class: 'faint small' }, t('VN Shelf syncs when it starts, every 15 minutes, and a few seconds after you change something.'))),
+      field(t('What syncs'), h('ul', { class: 'small plainlist' },
+        h('li', {}, t('Reading status ↔ Playing, Finished, Stalled, Dropped and Wishlist')),
+        h('li', {}, t('Your rating and the started / finished dates')),
+        h('li', {}, labels.length ? t('Categories named like one of your labels: {labels}', { labels: labels.join(', ') })
+          : t('Categories named like one of your own VNDB labels (you have none yet; make them on vndb.org)')),
+        h('li', {}, t('VNs on your list that aren\'t in your library are under "Your VNDB list" in the sidebar.')))),
+      h('div', { class: 'faint small' }, t('When both sides changed the same thing, the newer change wins. Notes never sync.')));
+  };
+  draw();
+  vndbPaneDraw = draw;
+  return el;
+}
 
 /** Patch notes in Settings → About: this version's, with a link to show every version. */
 function patchNotesBox() {
@@ -1047,6 +1202,7 @@ async function settingsDialog(first = false) {
       field(t('Background (this PC)'), backgroundEditor()),
       field(null, h('label', { class: 'check' }, statsBox, t('Show play time and when you last played on covers'))),
     ]],
+    ['vndb', 'VNDB', [vndbPane()]],
     ['about', t('Updates & about'), [
       field(null, h('div', { class: 'aboutline' }, h('strong', {}, 'VN Shelf'), ` ${t('Version {version}', { version: setup.version })}`)),
       field(null, h('div', { class: 'val wrap' }, notes.btn,
@@ -1084,6 +1240,7 @@ async function settingsDialog(first = false) {
       } },
     ],
   });
+  vndbPaneDraw = null;
   applyBackground(setup.settings.background);
   if (!ok) { applyLook(); return; } // undo previews
   setup = await call('saveSettings', {
@@ -1532,6 +1689,10 @@ function notesBox(g) {
   return h('div', { class: 'box' }, h('div', { class: 'field' }, area, h('div', { class: 'faint small' }, t('Notes sync to your other PCs with the game.'), ' ', state)));
 }
 
+function vndbLabelled(c) {
+  return !!(setup.vndb && setup.vndb.connected && (setup.vndb.labels || []).some((l) => l.toLowerCase() === String(c).toLowerCase()));
+}
+
 function categoryBox(g) {
   const mine = new Set(g.categories || []);
   const all = categoriesAll();
@@ -1543,7 +1704,8 @@ function categoryBox(g) {
   };
   box.append(h('div', { class: 'field' },
     h('div', { class: 'tags' },
-      all.map((c) => h('button', { class: `chip${mine.has(c) ? ' on' : ''}`, onclick: () => toggle(c) }, mine.has(c) ? `✓ ${c}` : c)),
+      all.map((c) => h('button', { class: `chip${mine.has(c) ? ' on' : ''}`, onclick: () => toggle(c), title: vndbLabelled(c) ? t('Syncs with your VNDB label of the same name') : null },
+        mine.has(c) ? `✓ ${c}` : c, vndbLabelled(c) && g.vndbId ? h('span', { class: 'vlabel' }, 'VNDB') : null)),
       h('button', { class: 'chip add', onclick: async () => {
         const input = h('input', { type: 'text', placeholder: t('Category name') });
         const name = await dialog({ title: t('New category'), body: input,
@@ -1745,6 +1907,7 @@ function paintDetail(g, data, opts = {}) {
     h('div', { class: 'panel' },
       h('h2', {}, t('Launch')), launchBox,
       h('h2', {}, t('Start with this game')), tools,
+      h('h2', {}, t('Your rating & dates')), listBox(g),
       h('h2', {}, t('Categories')), categoryBox(g),
       h('h2', {}, t('Save backup')), backupBox(g),
       h('h2', {}, t('History')), histBox,
@@ -1866,6 +2029,7 @@ function statusSelect(g) {
     const i = games.findIndex((x) => x.id === g.id);
     if (i >= 0) games[i] = { ...games[i], status: sel.value };
     renderSidebar();
+    if (view === 'detail' && currentId === g.id) renderDetail(g.id, { noAuto: true }); // dates may have filled in
   });
   return sel;
 }
@@ -2084,6 +2248,13 @@ vns.on('games-changed', async () => {
   renderSidebar();
 });
 vns.on('saveonce-result', showSaveOnceResult);
+vns.on('vndb-state', (st) => {
+  const wasSyncing = setup.vndb && setup.vndb.syncing;
+  setup.vndb = st;
+  if (vndbPaneDraw && $('#dlg').open) vndbPaneDraw();
+  if (view === 'vndb' && (!st.syncing || !wasSyncing)) renderVndbList();
+  renderSidebar();
+});
 // The other PC changed something (added a game, uploaded saves, edited a game): show it.
 vns.on('library-changed', async ({ ids, added }) => {
   games = await vns.call('listGames').catch(() => games);

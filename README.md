@@ -4,6 +4,7 @@ A Steam-style library for visual novels that keeps your save files in sync betwe
 
 Add your games (one by one or a whole folder at once), and VN Shelf:
 - fetches each game's cover, description and tags from VNDB
+- keeps your reading status, rating and labels in sync with your VNDB list (optional)
 - finds where the game keeps its saves
 - brings newer saves down from your other PC before you play, and uploads yours when you close
   the game
@@ -53,8 +54,24 @@ You pick one on first run, and the same one on every PC:
 - **Notes:** a notes box on each game that saves as you type and syncs to your other PCs.
 - **Reading status:** Plan to read, Reading, On hold, Finished, Dropped, with a sidebar filter. It's
   set to Reading automatically when you first play. The statuses match VNDB's list labels.
+- **Your rating and dates:** a 1–10 rating and Started / Finished dates on each game. The dates
+  fill themselves in when you start and finish.
 - **Titles from the game's window** for games not linked to VNDB, tidied of version numbers and
   engine names.
+
+### Your VNDB list
+- **Connect your VNDB account** in Settings → VNDB with a token from vndb.org (My Profile →
+  Applications). The token stays on that PC, encrypted.
+- **Two-way sync** for every game linked to VNDB:
+  - reading status ↔ Playing / Finished / Stalled / Dropped / Wishlist
+  - categories ↔ your own VNDB labels with the same name
+  - your rating and Started / Finished dates
+
+  Notes never sync. When both sides changed the same thing, the newer change wins.
+- **Syncs by itself:** at start-up, every 15 minutes and a few seconds after a change, usually with
+  one request.
+- **Your VNDB list** page: VNs on your list that aren't in your library, with **+ Add**, and
+  **Link** for a game you already have under the same name.
 
 ### Adding games
 - **Drag a game's `.exe`** onto the window, or use **+ Add game**, and pick the match from VNDB.
@@ -162,7 +179,8 @@ The exe isn't code-signed, so Windows SmartScreen may say "Windows protected you
 ## Privacy
 
 VN Shelf talks to three services, and only for the reasons below:
-- **VNDB:** to search for games and fetch their info and covers.
+- **VNDB:** to search for games and fetch their info and covers. If you connect your VNDB account,
+  also to read and update your list (status, labels, rating, dates; never notes).
 - **GitHub:** to check for and download updates. You can turn this off.
 - **Google:** only if you choose Google Drive mode.
 
@@ -178,6 +196,7 @@ npm run dist:win                            # Windows portable .exe + zip into d
 node scripts/ui-smoke.js shots/             # end-to-end: two PCs, folder mode (needs a display, e.g. Xvfb)
 node scripts/ui-smoke-drive.js shots/       # end-to-end: two PCs, Google Drive mode against a fake Drive
 node scripts/ui-smoke-features.js shots/    # end-to-end: import, tags, categories, notes, tools, export, updates, Japanese
+node scripts/ui-smoke-vndb.js shots/        # end-to-end: VNDB list sync against a stand-in VNDB (no internet needed)
 ```
 
 Set `VNS_EXE` to a packaged `VN Shelf.exe` to run the end-to-end checks against a real build.

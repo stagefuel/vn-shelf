@@ -1,7 +1,8 @@
 'use strict';
 // VNDB lookups for titles, cover art and game info (https://api.vndb.org/kana). No key needed for reads.
 
-const API = 'https://api.vndb.org/kana/vn';
+// VNS_VNDB_API points every VNDB request at a stand-in server (tests).
+const apiUrl = () => `${process.env.VNS_VNDB_API || 'https://api.vndb.org/kana'}/vn`;
 const SEARCH_FIELDS = 'id,title,alttitle,released,developers.name,image.url,image.sexual,image.dims';
 const INFO_FIELDS = `${SEARCH_FIELDS},aliases,description,length,length_minutes,rating,votecount,languages,platforms,olang,`
   + 'tags.id,tags.name,tags.rating,tags.spoiler,tags.lie,tags.category';
@@ -15,7 +16,7 @@ function idFilter(q) {
 }
 
 async function post(body, fetchImpl) {
-  const res = await fetchImpl(API, {
+  const res = await fetchImpl(apiUrl(), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'User-Agent': 'VN-Shelf' },
     body: JSON.stringify(body),

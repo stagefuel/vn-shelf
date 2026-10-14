@@ -67,7 +67,7 @@ button.play.stop { background: var(--bg-hover); border-color: var(--line); color
 button.play.busy, button.play:disabled { cursor: progress; opacity: .75; filter: none; }
 button.play.big { font-size: 20px; padding: 14px 48px; }
 
-input[type=text], input[type=search], input[type=number], textarea {
+input[type=text], input[type=search], input[type=number], input[type=password], input[type=date], textarea {
   font: inherit;
   color: var(--text);
   background: var(--bg);
@@ -476,3 +476,16 @@ body.has-bg .homehero .bgfade { background: linear-gradient(180deg, color-mix(in
 .bgedit .field { padding: 6px 0; border-top: 0; }
 .swatches { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
 .swatch .grow { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ---------- VNDB list ---------- */
+.listcard .listbtns { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+.listcard .listbtns button { padding: 4px 10px; }
+.listcard img.nsfw { filter: blur(10px); }
+.listfields { display: flex; gap: 14px; flex-wrap: wrap; padding: 12px 14px 4px; }
+.listfields .field { padding: 0; border: 0; }
+.listnote { padding: 0 14px 12px; }
+.listfields input[type=date], .listfields select { width: 160px; }
+.chip .vlabel { margin-left: 6px; font-size: 10px; letter-spacing: .04em; color: var(--accent); }
+.plainlist { margin: 4px 0 0; padding-left: 18px; color: var(--text-dim); }
+.plainlist li { margin: 2px 0; }
+.small.warn, .warn.small { color: var(--warn); }
