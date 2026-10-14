@@ -16,14 +16,19 @@ const SKIP_DIRS = new Set(['_commonredist', 'redist', 'directx', 'dx', 'manual',
 
 /** A readable title from a folder name: drops [brand] tags, version suffixes and underscores. */
 function cleanTitle(name) {
-  return String(name)
+  const tidy = (x) => x.replace(/\s+/g, ' ').trim();
+  let s = String(name)
     .replace(/[\[(【［].*?[\])】］]/g, ' ')
-    .replace(/[_]+/g, ' ')
-    .replace(/[\s+-]*v?(?:er)?\.?\s?\d+(?:\.\d+)+[a-z]?$/i, '') // "Game v1.05", "DemonsRoots1.2.1"
-    .replace(/[\s+-]+v\d+$/i, '') // "Title+v115"
-    .replace(/[\s+-]+\d{6,8}$/, '')
-    .replace(/\s+/g, ' ')
-    .trim() || String(name);
+    .replace(/_(game|games)$/i, ''); // "manosaba_game" (only when glued on with "_")
+  s = tidy(s.replace(/[_]+/g, ' '));
+  s = tidy(s.replace(/[\s+-]*v?(?:er)?\.?\s?\d+(?:\.\d+)+[a-z]?$/i, '')); // "Game v1.05", "DemonsRoots1.2.1"
+  s = tidy(s.replace(/[\s+-]+v\d+$/i, '')); // "Title+v115"
+  s = tidy(s.replace(/\s*-\s*copy(\s*\(\d+\))?$/i, '')); // "月姫 - Copy"
+  s = tidy(s.replace(/[\s+-]+(19|20)\d{2}[\s.-]\d{1,2}[\s.-]\d{1,2}$/, '')); // "Game 2025 08 29"
+  s = tidy(s.replace(/[\s+-]+(win|win32|win64|windows|pc|x64|x86)$/i, '')); // "game_win"
+  s = tidy(s.replace(/[\s+-]+(eng|english|en|jp|jpn|japanese|ja)$/i, '')); // "BLACK SHEEP TOWN_eng"
+  s = tidy(s.replace(/[\s+-]+\d{6,8}$/, '')); // "Game 20250829"
+  return s || String(name);
 }
 
 /** Pick the most likely game program among a folder's .exe files. */

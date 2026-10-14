@@ -754,7 +754,7 @@ const api = {
     const newExe = `${exe}.new`;
     await updater.download(info.asset, newExe, { onProgress: (p) => send('update-progress', p) });
     const script = await updater.writeSwapScript({ currentExe: exe, newExe, pid: process.pid, dir: app.getPath('temp') });
-    require('child_process').spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/c', script], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+    updater.launchSwapScript(script);
     setTimeout(() => app.quit(), 300);
     return { restarting: true };
   },
@@ -797,6 +797,12 @@ app.whenReady().then(async () => {
     });
   }
   rebuild();
+  // A previous update that didn't finish can leave the downloaded exe next to this one.
+  if (process.env.PORTABLE_EXECUTABLE_FILE) {
+    for (const leftover of [`${process.env.PORTABLE_EXECUTABLE_FILE}.new`, `${process.env.PORTABLE_EXECUTABLE_FILE}.new.part`]) {
+      fs.promises.rm(leftover, { force: true }).catch(() => {});
+    }
+  }
   await createWindow();
   pushPending().catch(() => {});
   setInterval(() => pushPending().catch(() => {}), 5 * 60 * 1000);

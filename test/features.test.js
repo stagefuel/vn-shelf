@@ -122,6 +122,14 @@ test('import: title cleanup', () => {
   assert.strictEqual(importer.cleanTitle('Some_Game_v1.05'), 'Some Game');
   assert.strictEqual(importer.cleanTitle('新説魔法少女+v115'), '新説魔法少女');
   assert.strictEqual(importer.cleanTitle('Fate Stay Night'), 'Fate Stay Night');
+  // Real folder names from a test library
+  assert.strictEqual(importer.cleanTitle('Dai Sengoku Rance MG_2025_08_29(1)'), 'Dai Sengoku Rance MG');
+  assert.strictEqual(importer.cleanTitle('justinlamsadventure_win'), 'justinlamsadventure');
+  assert.strictEqual(importer.cleanTitle('BLACK SHEEP TOWN_eng'), 'BLACK SHEEP TOWN');
+  assert.strictEqual(importer.cleanTitle('月姫 - Copy'), '月姫');
+  assert.strictEqual(importer.cleanTitle('manosaba_game'), 'manosaba');
+  assert.strictEqual(importer.cleanTitle('Game'), 'Game');
+  assert.strictEqual(importer.cleanTitle('Muv-Luv Tactics'), 'Muv-Luv Tactics');
 });
 
 // ------------------------------------------------------------------ VNDB
@@ -197,4 +205,25 @@ test('tools: started with the game and closed with it (only those set to close)'
   assert.strictEqual(alive(pidA), false, 'closeWithGame tool was stopped');
   assert.strictEqual(alive(pidB), true, 'other tool keeps running');
   process.kill(-hs[1].child.pid, 'SIGTERM');
+});
+
+test('updater (Windows): the swap script outlives its launcher and replaces the exe after the old process exits', { skip: process.platform !== 'win32', timeout: 60000 }, async () => {
+  const { spawn } = require('child_process');
+  const dir = tmp();
+  const sys32 = path.join(process.env.SystemRoot, 'System32');
+  const cur = path.join(dir, 'VN Shelf.exe');
+  const nw = `${cur}.new`;
+  fs.copyFileSync(path.join(sys32, 'whoami.exe'), cur);
+  fs.copyFileSync(path.join(sys32, 'hostname.exe'), nw);
+  const want = fs.readFileSync(nw);
+  // Stand-in for the running VN Shelf: a process that exits after ~3 s.
+  const stand = spawn(path.join(sys32, 'PING.EXE'), ['-n', '4', '127.0.0.1'], { stdio: 'ignore' });
+  const script = await updater.writeSwapScript({ currentExe: cur, newExe: nw, pid: stand.pid, dir });
+  updater.launchSwapScript(script);
+  await new Promise((r) => setTimeout(r, 1500));
+  assert.ok(!fs.readFileSync(cur).equals(want), 'not replaced while the old process still runs');
+  for (let i = 0; i < 40 && fs.existsSync(nw); i++) await new Promise((r) => setTimeout(r, 500));
+  assert.ok(fs.readFileSync(cur).equals(want), 'replaced after it exits');
+  const log = fs.readFileSync(script.replace(/\.cmd$/, '.log'), 'utf8');
+  assert.match(log, /closed, replacing the program/);
 });

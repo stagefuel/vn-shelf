@@ -102,16 +102,28 @@ async function writeSwapScript({ currentExe, newExe, pid, dir }) {
     'setlocal',
     `set "CUR=${q(currentExe)}"`,
     `set "NEW=${q(newExe)}"`,
+    'set "LOG=%~dpn0.log"',
+    `echo %DATE% %TIME% waiting for VN Shelf (pid ${pid}) to close>"%LOG%"`,
+    'set /a WAITED=0',
     ':wait',
-    `tasklist /FI "PID eq ${pid}" 2>nul | find "${pid}" >nul && (ping -n 2 127.0.0.1 >nul & goto wait)`,
+    `tasklist /FI "PID eq ${pid}" /NH 2>nul | find " ${pid} " >nul || goto closed`,
+    'set /a WAITED+=1',
+    'if %WAITED% GEQ 120 goto closed',
+    'ping -n 2 127.0.0.1 >nul',
+    'goto wait',
+    ':closed',
+    'echo %TIME% closed, replacing the program>>"%LOG%"',
     'set /a TRIES=0',
     ':swap',
-    'move /y "%NEW%" "%CUR%" >nul 2>&1 && goto start',
+    'move /y "%NEW%" "%CUR%" >>"%LOG%" 2>&1 && goto start',
     'set /a TRIES+=1',
-    'if %TRIES% GEQ 30 goto start',
+    'if %TRIES% GEQ 30 goto failed',
     'ping -n 2 127.0.0.1 >nul',
     'goto swap',
+    ':failed',
+    'echo %TIME% could not replace the program; starting the old one>>"%LOG%"',
     ':start',
+    'echo %TIME% starting VN Shelf>>"%LOG%"',
     'start "" "%CUR%"',
     '(goto) 2>nul & del "%~f0"',
     '',
@@ -121,4 +133,16 @@ async function writeSwapScript({ currentExe, newExe, pid, dir }) {
   return file;
 }
 
-module.exports = { checkForUpdate, download, writeSwapScript, compareVersions, parseVersion, RELEASES_PAGE, REPO };
+/**
+ * Run the swap script so it outlives VN Shelf. Tested on Windows 10: the script must get its own
+ * console (`start /min`). Started as a plain child it dies when VN Shelf exits, and started detached
+ * without a console its tasklist/ping calls hang.
+ */
+function launchSwapScript(script) {
+  const cmd = process.env.ComSpec || 'cmd.exe';
+  require('child_process').spawn(cmd, ['/d', '/c', 'start', '""', '/min', cmd, '/d', '/c', script], {
+    stdio: 'ignore', windowsHide: true, detached: true,
+  }).unref();
+}
+
+module.exports = { checkForUpdate, download, writeSwapScript, launchSwapScript, compareVersions, parseVersion, RELEASES_PAGE, REPO };

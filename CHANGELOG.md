@@ -4,6 +4,29 @@ All notable changes to VN Shelf. Download any version from the
 [Releases page](https://github.com/stagefuel/vn-shelf/releases). From 0.3.0 on, VN Shelf can
 update itself (Settings → Updates).
 
+## 0.3.1
+
+### Fixed
+- **In-app updates now finish on Windows.** In 0.3.0, the helper that swaps in the new version
+  hung in the background, so VN Shelf closed but wasn't replaced. The helper now runs in its own
+  (minimised) console window, so it keeps running after VN Shelf closes:
+  1. It waits for the old version to exit.
+  2. It replaces the `.exe`.
+  3. It starts the new version.
+  Each step is logged to `vnshelf-update-<number>.log` in your Temp folder.
+  - This was tested on Windows 10 with the real 0.3.0 download.
+  - A Windows-only automated test now checks it on every build.
+- A half-finished update no longer leaves a stray `VN Shelf.exe.new` behind: it's cleaned up at
+  the next start.
+- **Import folder** cleans up more folder names before searching VNDB:
+  - dates (`…_2025_08_29`)
+  - `_win` and `_eng` style suffixes
+  - `- Copy`
+  - `_game`
+
+**If you're on 0.3.0:** download 0.3.1 from the Releases page once by hand. Updates work from
+then on.
+
 ## 0.3.0
 
 A big library update: a home page, VNDB info and tags on every game, categories, bulk import,
