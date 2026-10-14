@@ -208,3 +208,115 @@ test('progress: uploads and downloads report every file and the bytes copied', a
   a.save('save03.dat', 'w');
   assert.strictEqual(await sync(a, game, { onProgress: () => { throw new Error('boom'); } }), 'push');
 });
+
+test('an empty or missing save folder never wipes the cloud copy: the saves come back instead', async () => {
+  const { game, a } = await setup();
+  a.save('save01.dat', 'progress');
+  assert.strictEqual(await sync(a, game), 'push');
+  // The save folder disappears (a drive unplugged, the game reinstalled, saves deleted by hand).
+  fs.rmSync(path.join(a.roots['<appdata>'], 'Nitroplus'), { recursive: true });
+  assert.strictEqual((await a.engine.status(game, a.install, a.last)).action, 'pull');
+  assert.strictEqual(await sync(a, game), 'pull');
+  assert.strictEqual(a.readSave('save01.dat'), 'progress');
+});
+
+test('a half-downloaded sync record in the shared folder is refused, not treated as "no cloud copy"', async () => {
+  const { game, a, cloud } = await setup();
+  a.save('save01.dat', 'x');
+  await sync(a, game);
+  fs.writeFileSync(path.join(cloud, 'games', game.id, 'state.json'), '{"generation": "12');
+  await assert.rejects(sync(a, game), (e) => e.code === 'cloud-incomplete');
+});
+
+test('upload-only syncs never download or ask', async () => {
+  const { game, a, b } = await setup();
+  a.save('save01.dat', 'A');
+  await sync(a, game);
+  b.save('save01.dat', 'B, made outside VN Shelf');
+  assert.strictEqual(await sync(b, game, { only: 'push' }), 'skipped'); // would be a conflict
+  assert.strictEqual(b.readSave('save01.dat'), 'B, made outside VN Shelf');
+  a.save('save01.dat', 'A2');
+  assert.strictEqual(await sync(a, game, { only: 'push' }), 'push');
+});
+
+test('saves never come down while the game is open', async () => {
+  const { game, a, b } = await setup();
+  a.save('save01.dat', 'new');
+  await sync(a, game);
+  b.save('save01.dat', 'old');
+  await sync(b, game, { resolution: 'cloud' });
+  a.save('save01.dat', 'newer');
+  await sync(a, game);
+  await assert.rejects(sync(b, game, { beforePull: async () => false }), (e) => e.code === 'game-running');
+  assert.strictEqual(b.readSave('save01.dat'), 'new');
+  assert.strictEqual(await sync(b, game, { beforePull: async () => true }), 'pull');
+  assert.strictEqual(b.readSave('save01.dat'), 'newer');
+});
+
+test('one sync at a time per game, even across engines', async () => {
+  const { exclusive, busyGames } = require('../src/core/sync');
+  const order = [];
+  const slow = (tag, ms) => exclusive('g1', async () => { order.push(`${tag}+`); await new Promise((r) => setTimeout(r, ms)); order.push(`${tag}-`); });
+  const other = exclusive('g2', async () => { order.push('other'); });
+  await Promise.all([slow('a', 60), slow('b', 10), other]);
+  assert.deepStrictEqual(order.filter((x) => x !== 'other'), ['a+', 'a-', 'b+', 'b-']);
+  assert.ok(order.indexOf('other') < order.indexOf('a-'), 'another game doesn\'t wait');
+  assert.deepStrictEqual(busyGames(), []);
+  // A failure doesn't block the next sync of that game.
+  await assert.rejects(exclusive('g1', async () => { throw new Error('x'); }));
+  assert.strictEqual(await exclusive('g1', async () => 'ok'), 'ok');
+});
+
+test('unchanged save files aren\'t read again to check them', async () => {
+  const fsu = require('../src/core/fsutil');
+  const { game, a } = await setup();
+  for (let i = 0; i < 5; i++) a.save(`save0${i}.dat`, `slot ${i}`);
+  // Files written long enough ago to trust their modified time.
+  const dir = path.join(a.roots['<appdata>'], 'Nitroplus', 'Muramasa');
+  const old = new Date(Date.now() - 60000);
+  for (const f of fs.readdirSync(dir)) fs.utimesSync(path.join(dir, f), old, old);
+  const real = fsu.hashFile;
+  let reads = 0;
+  fsu.hashFile = async (p) => { reads++; return real(p); };
+  try {
+    await a.engine.status(game, a.install, null);
+    assert.strictEqual(reads, 5);
+    await a.engine.status(game, a.install, null);
+    assert.strictEqual(reads, 5, 'second check used the cache');
+    fs.writeFileSync(path.join(dir, 'save02.dat'), 'changed!');
+    fs.utimesSync(path.join(dir, 'save02.dat'), new Date(Date.now() - 30000), new Date(Date.now() - 30000));
+    const st = await a.engine.status(game, a.install, null);
+    assert.strictEqual(reads, 6, 'only the changed file was read');
+    assert.ok(Object.keys(st.local.hashes).length === 5);
+  } finally { fsu.hashFile = real; }
+});
+
+test('a just-written file isn\'t trusted from the cache (coarse timestamps on some drives)', async () => {
+  const { HashCache } = require('../src/core/hashcache');
+  const c = new HashCache(null);
+  const now = BigInt(Date.now()) * 1000000n;
+  c.set('/x', 10, now, 'h1', Date.now());
+  assert.strictEqual(c.get('/x', 10, now), null);
+  const past = BigInt(Date.now() - 60000) * 1000000n;
+  c.set('/x', 10, past, 'h2', Date.now());
+  assert.strictEqual(c.get('/x', 10, past), 'h2');
+  assert.strictEqual(c.get('/x', 11, past), null, 'different size');
+});
+
+test('a sync app\'s copy of a game folder doesn\'t show up as a second game', async () => {
+  const { cloud, lib, game } = await setup();
+  fs.cpSync(path.join(cloud, 'games', game.id), path.join(cloud, 'games', `${game.id} (1)`), { recursive: true });
+  fs.cpSync(path.join(cloud, 'games', game.id), path.join(cloud, 'games', `${game.id} (Laptop's conflicted copy)`), { recursive: true });
+  assert.deepStrictEqual((await lib.list()).map((g) => g.id), [game.id]);
+});
+
+test('play time: each PC keeps its own total in the shared record', async () => {
+  const { lib, game } = await setup();
+  await lib.recordPlay(game.id, 'pc', { seconds: 600, deviceName: 'PC' });
+  await lib.recordPlay(game.id, 'laptop', { seconds: 120, deviceName: 'Laptop' });
+  await lib.recordPlay(game.id, 'pc', { seconds: 60.4, deviceName: 'PC' });
+  const g = await lib.get(game.id);
+  assert.strictEqual(g.playtime.pc.seconds, 660);
+  assert.strictEqual(g.playtime.laptop.seconds, 120);
+  assert.ok(g.playtime.pc.lastPlayed);
+});

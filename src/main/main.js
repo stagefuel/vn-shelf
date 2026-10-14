@@ -16,6 +16,8 @@ const launcher = require('../core/launcher');
 const vndb = require('../core/vndb');
 const limits = require('../core/limits');
 const { ManifestSyncEngine } = require('../core/manifest-sync');
+const { exclusive, busyGames } = require('../core/sync');
+const { HashCache } = require('../core/hashcache');
 const { StoreLibrary } = require('../core/store-library');
 const { DriveStore } = require('../core/stores');
 const { DriveClient } = require('../core/gdrive');
@@ -33,12 +35,27 @@ let roots = null;
 let googleAuth = null; // null when this build has no Google client ID
 let updateInfo = null; // newest release found on GitHub, if any
 let tray = null;
+let lastSnapshotJson = null;
+let lastFocusPoll = 0;
+let hashCache = null; // file hashes remembered between checks and runs (see core/hashcache.js)
+const STATUS_MAX_AGE = 20000; // badges and pages may use Drive data up to this old (no extra requests)
 let quitting = false; // true once the user chose Quit (the window's X only hides it, by default)
 const startHidden = process.argv.includes('--hidden'); // started with the computer: stay in the tray
 const REPO_URL = 'https://github.com/stagefuel/vn-shelf';
 const TOPBAR_HEIGHT = 52; // keep in step with .topbar in styles.css
 const running = new Map(); // id -> { ev, watchers, liveTimer, mode }
 const starting = new Set(); // ids whose Play is still checking saves
+
+// Last line of defence: an error nothing else caught goes to error.log in the settings folder instead
+// of crashing VN Shelf (and with it, a sync that's in progress).
+function logError(kind, e) {
+  try {
+    const line = `${new Date().toISOString()} ${kind}: ${(e && e.stack) || e}\n`;
+    fs.appendFileSync(path.join(app.getPath('userData'), 'error.log'), line);
+  } catch { /* nowhere to write */ }
+}
+process.on('uncaughtException', (e) => logError('uncaught', e));
+process.on('unhandledRejection', (e) => logError('unhandled', e));
 
 // Lets tests (and a future portable mode) keep settings somewhere other than %APPDATA%.
 if (process.env.VNS_USER_DATA) app.setPath('userData', process.env.VNS_USER_DATA);
@@ -196,7 +213,8 @@ function backend() {
 
 function rebuild() {
   const d = config.data;
-  const common = { deviceId: d.deviceId, deviceName: d.deviceName || os.hostname(), roots, historyDepth: d.historyDepth };
+  if (!hashCache) hashCache = new HashCache(path.join(app.getPath('userData'), 'hash-cache.json'));
+  const common = { deviceId: d.deviceId, deviceName: d.deviceName || os.hostname(), roots, historyDepth: d.historyDepth, hashCache };
   const b = backend();
   if (b === 'gdrive') {
     const client = new DriveClient({
@@ -238,6 +256,14 @@ async function getGame(id) {
   return g;
 }
 
+/** The game as last listed (at most STATUS_MAX_AGE old): for showing it, never for syncing it. */
+async function peekGame(id) {
+  requireLibrary();
+  const g = await library.get(id, { maxAge: STATUS_MAX_AGE });
+  if (!g) return getGame(id); // added since the last listing
+  return g;
+}
+
 function coverUrl(game) {
   const p = library && library.coverPath(game);
   return p ? `${pathToFileURL(p).href}?v=${game.coverVersion || 0}` : null;
@@ -253,12 +279,33 @@ async function decorate(game, { offline = false } = {}) {
     installed: exeOk,
     exePath: l.exePath || null,
     installDir: l.installDir || null,
-    lastPlayed: l.lastPlayed || null,
-    playMinutes: l.playMinutes || 0,
+    ...playInfo(game, l),
     pending: !!l.pending,
     running: running.has(game.id) ? running.get(game.id).mode : null,
     descSegments: game.vndb && game.vndb.description ? vndb.parseDescription(game.vndb.description) : null,
   };
+}
+
+/**
+ * Play time from every PC (each keeps its own total in the game's record) plus, until this PC's first
+ * session with 0.6, the minutes it counted the old way. Last played = the latest on any PC.
+ */
+function playInfo(game, l) {
+  const all = game.playtime || {};
+  const mine = config.data.deviceId;
+  let seconds = 0;
+  let last = l.lastPlayed || null;
+  const byDevice = [];
+  for (const [dev, e] of Object.entries(all)) {
+    seconds += e.seconds || 0;
+    if (e.lastPlayed && (!last || e.lastPlayed > last)) last = e.lastPlayed;
+    byDevice.push({ name: dev === mine ? (config.data.deviceName || os.hostname()) : e.deviceName || '?', seconds: e.seconds || 0, me: dev === mine });
+  }
+  if (!all[mine] && l.playMinutes) {
+    seconds += l.playMinutes * 60;
+    byDevice.push({ name: config.data.deviceName || os.hostname(), seconds: l.playMinutes * 60, me: true });
+  }
+  return { lastPlayed: last, playMinutes: Math.round(seconds / 60), playByDevice: byDevice.filter((x) => x.seconds > 0) };
 }
 
 // ---------------------------------------------------------------- background image
@@ -274,8 +321,11 @@ function backgroundInfo() {
 /** Run a sync and translate outcomes the UI must act on into { needs } answers. */
 async function runSync(game, opts = {}) {
   const dir = installDir(game.id);
+  // Never replace saves under a game that's open (started outside VN Shelf): it would write its old
+  // saves back over them later. Only checked when saves are about to come down, so it's rarely paid.
+  const beforePull = async () => running.has(game.id) || !(await launcher.isRunningFrom(dir).catch(() => false));
   try {
-    const r = await engine.sync(game, dir, local(game.id).lastSync || null, { ...opts, onProgress: progressSender(game.id) });
+    const r = await engine.sync(game, dir, local(game.id).lastSync || null, { ...opts, beforePull, onProgress: progressSender(game.id) });
     await config.setGame(game.id, { lastSync: r.lastSync, pending: false });
     return { ok: true, action: r.action };
   } catch (e) {
@@ -287,20 +337,102 @@ async function runSync(game, opts = {}) {
     if (e.code === 'cloud-incomplete') return { needs: 'incomplete', message: e.message };
     if (e.code === 'too-big' || e.code === 'bad-path') return { needs: 'too-big', message: e.message };
     if (e.code === 'signed-out') return { needs: 'signed-out', message: e.message };
+    if (e.code === 'game-running') return { needs: 'game-running', message: e.message };
     throw e;
   }
 }
 
-async function pushPending() {
-  if (!engine || !(await engine.cloudAvailable())) return;
-  for (const [id, l] of Object.entries(config.data.games)) {
-    if (!l.pending || running.has(id)) continue;
-    const game = await library.get(id).catch(() => null);
-    if (!game) continue;
-    const r = await runSync(game).catch((e) => ({ error: e.message }));
-    if (r.needs === 'conflict') setState(id, 'conflict', { info: r.info });
-    send('games-changed');
+/** Run fn over items, at most `n` at a time. */
+async function pool(items, n, fn) {
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(n, items.length) }, async () => {
+    while (next < items.length) await fn(items[next++]);
+  }));
+}
+
+/**
+ * Upload saves that changed on this PC since they last synced, for every game set up here: those
+ * made while VN Shelf was closed or the game was started some other way, and uploads that had to
+ * wait (offline). Upload only: it never downloads and never asks. Runs at start-up and every few minutes.
+ */
+let autoUploading = false;
+async function autoUpload() {
+  if (autoUploading || !engine || !library) return;
+  autoUploading = true;
+  try {
+    if (!(await engine.cloudAvailable().catch(() => false))) return;
+    const ids = Object.entries(config.data.games).filter(([id, l]) => l.exePath && !running.has(id) && !starting.has(id)).map(([id]) => id);
+    const uploaded = [];
+    await pool(ids, 2, async (id) => {
+      const game = await library.get(id, { maxAge: 60000 }).catch(() => null);
+      if (!game || !(game.saves || []).length) return;
+      const l = local(id);
+      if (!l.pending) {
+        const st = await engine.status(game, installDir(id), l.lastSync || null, { maxAge: 60000 }).catch(() => null);
+        if (!st || st.action !== 'push') return;
+      }
+      const fresh = await library.get(id).catch(() => null);
+      if (!fresh) return;
+      const r = await runSync(fresh, { only: 'push' }).catch(() => null);
+      if (r && r.ok && r.action === 'push') uploaded.push(fresh.title);
+    });
+    if (uploaded.length) send('auto-uploaded', uploaded);
+  } finally {
+    autoUploading = false;
   }
+}
+
+// ---------------------------------------------------------------- noticing the other PC's changes
+
+let lastPoll = null; // Drive: newest change time seen; folder: per-game fingerprints
+let pollTimer = null;
+
+/** Folder mode: a cheap fingerprint per game (sizes and times of its small files, nothing is read). */
+async function folderFingerprints(cloudDir) {
+  const root = path.join(cloudDir, 'games');
+  let names = [];
+  try { names = (await fs.promises.readdir(root)).filter((n) => !n.startsWith('.')); } catch { return new Map(); }
+  const out = new Map();
+  await Promise.all(names.map(async (id) => {
+    const parts = await Promise.all(['game.json', 'state.json', 'lock.json'].map((f) => fs.promises.stat(path.join(root, id, f)).then((st) => `${st.size}:${st.mtimeMs}`, () => '-')));
+    out.set(id, parts.join('|'));
+  }));
+  return out;
+}
+
+/** Look for changes made by another PC; tell the window which games changed. One request on Drive. */
+async function pollChanges() {
+  pollTimer = null;
+  try {
+    const b = backend();
+    if (!library || !engine || !b) return;
+    if (b === 'gdrive') {
+      const store = engine.store;
+      if (!lastPoll) { lastPoll = new Date(Date.now() - 2000).toISOString(); return; }
+      const ch = await store.changedSince(lastPoll);
+      lastPoll = ch.newest;
+      if (!ch.unknownFolder && !ch.games.size) return;
+      await store.snapshot(); // re-read only the changed records
+      send('library-changed', { ids: [...ch.games.keys()], added: ch.unknownFolder });
+    } else {
+      const now = await folderFingerprints(config.data.cloudDir);
+      const prev = lastPoll instanceof Map ? lastPoll : null;
+      lastPoll = now;
+      if (!prev) return;
+      const ids = [...now.keys()].filter((id) => prev.get(id) !== now.get(id));
+      const added = ids.some((id) => !prev.has(id)) || [...prev.keys()].some((id) => !now.has(id));
+      if (ids.length || added) send('library-changed', { ids, added });
+    }
+  } catch { /* offline: try again later */ } finally {
+    schedulePoll();
+  }
+}
+
+/** Every 20 s while the window is open, every 2 minutes while it's in the tray. */
+function schedulePoll() {
+  if (pollTimer) clearTimeout(pollTimer);
+  const visible = win && !win.isDestroyed() && win.isVisible() && !win.isMinimized();
+  pollTimer = setTimeout(pollChanges, visible ? 20000 : 120000);
 }
 
 function startLive(game) {
@@ -332,6 +464,24 @@ function stopLive(id) {
   for (const w of entry.watchers) try { w.close(); } catch { /* ignore */ }
 }
 
+/**
+ * Add a session to this PC's play time in the game's shared record (so the other PC shows the total),
+ * moving over the minutes counted the old way (on this PC only) the first time.
+ */
+async function recordPlay(id, seconds) {
+  const l = local(id);
+  const at = new Date().toISOString();
+  const carry = l.playMinutes && !l.playMigrated ? l.playMinutes * 60 : 0;
+  await config.setGame(id, { lastPlayed: at });
+  try {
+    const g = await library.recordPlay(id, config.data.deviceId, { seconds: seconds + carry, deviceName: config.data.deviceName || os.hostname(), at });
+    if (g && carry) await config.setGame(id, { playMigrated: true });
+  } catch {
+    // Storage unreachable: keep it on this PC for now; it's carried over next time.
+    await config.setGame(id, { playMinutes: (l.playMinutes || 0) + Math.round(seconds / 60), playMigrated: false });
+  }
+}
+
 function startGame(game, mode, onExit) {
   const l = local(game.id);
   const ev = launcher.launch({
@@ -351,12 +501,12 @@ function startGame(game, mode, onExit) {
       onError: (t, e) => setState(game.id, 'running', { message: `Couldn't start ${t.name}: ${e.message}`, key: 'state.toolFailed', params: { name: t.name } }),
     });
   }
+  ev.on('elevating', () => setState(game.id, 'running', { message: 'Waiting for permission to run as administrator…' }));
   ev.on('exit', async (info) => {
     stopLive(game.id);
     await tools.stopTools(entry.tools).catch(() => {});
     running.delete(game.id);
-    const minutes = Math.round((Date.now() - entry.startedAt) / 60000);
-    await config.setGame(game.id, { lastPlayed: new Date().toISOString(), playMinutes: (local(game.id).playMinutes || 0) + minutes });
+    if (info.reason !== 'failed' && info.reason !== 'declined') await recordPlay(game.id, (info.playedMs || 0) / 1000);
     try { await onExit(info); } catch (e) { setState(game.id, 'error', { message: e.message }); }
     send('games-changed');
   });
@@ -459,7 +609,8 @@ const api = {
     if (patch.language !== undefined && tray) tray.setContextMenu(trayMenu());
     if (onlyLocal) return api.getSetup();
     rebuild();
-    pushPending().catch(() => {});
+    lastPoll = null;
+    autoUpload().catch(() => {});
     return api.getSetup();
   },
 
@@ -474,27 +625,29 @@ const api = {
   },
 
   /** With {cached:true}, returns the list saved by the last full listing (instant, may be stale). */
-  async listGames({ cached = false } = {}) {
+  async listGames({ cached = false, fresh = false } = {}) {
     if (!library) return [];
     const snap = path.join(app.getPath('userData'), 'library-snapshot.json');
     if (cached) {
       const s = await fsu.readJson(snap, null);
       return s && s.backend === backend() ? Promise.all(s.games.map((g) => decorate(g, { offline: true }))) : null;
     }
-    const list = await library.list();
-    fsu.writeJson(snap, { backend: backend(), games: list }).catch(() => {});
+    const list = await library.list({ maxAge: fresh ? 0 : STATUS_MAX_AGE });
+    const json = JSON.stringify(list);
+    if (json !== lastSnapshotJson) { lastSnapshotJson = json; fsu.writeJson(snap, { backend: backend(), games: list }).catch(() => {}); }
     return Promise.all(list.map(decorate));
   },
 
-  async getGame(id) { return decorate(await getGame(id)); },
+  async getGame(id) { return decorate(await peekGame(id)); },
 
+  /** The badge for one game. Uses the latest library-wide listing, so it costs no Drive requests of its own. */
   async gameStatus(id) {
-    const game = await getGame(id);
+    const game = await peekGame(id);
     if (running.has(id)) return { badge: 'running' };
     if (!(game.saves || []).length) return { badge: 'no-saves' };
     if (!local(id).exePath) return { badge: 'not-installed' };
-    const st = await engine.status(game, installDir(id), local(id).lastSync || null);
-    const lock = await engine.readLock(id);
+    const st = await engine.status(game, installDir(id), local(id).lastSync || null, { maxAge: STATUS_MAX_AGE });
+    const lock = await engine.readLock(id, { maxAge: STATUS_MAX_AGE });
     const cloud = st.cloud ? { deviceName: st.cloud.deviceName, pushedAt: st.cloud.pushedAt } : null;
     const badge = { nothing: 'synced', adopt: 'synced', push: 'upload', pull: 'download', conflict: 'conflict', offline: 'offline' }[st.action];
     return { badge, cloud, lock: lock && !lock.mine && !lock.stale ? lock : null };
@@ -583,7 +736,7 @@ const api = {
   // ---- save locations
 
   async describeSaves(id) {
-    const game = await getGame(id);
+    const game = await peekGame(id);
     const dir = installDir(id);
     const out = [];
     for (const { rule, abs, error } of engine.resolveRules(game, dir)) {
@@ -701,9 +854,11 @@ const api = {
     }
 
     startGame(game, 'play', async (info) => {
-      if (info.reason === 'failed') {
+      if (info.reason === 'failed' || info.reason === 'declined') {
         await engine.releaseLock(id).catch(() => {});
-        setState(id, 'error', { message: `Couldn't start the game: ${info.error}` });
+        setState(id, 'error', info.reason === 'declined'
+          ? { message: 'This game needs administrator rights, and permission wasn\'t given, so it didn\'t start. Nothing was changed.' }
+          : { message: `Couldn't start the game: ${info.error}` });
         return;
       }
       if (!hasSaves) { setState(id, 'idle'); return; }
@@ -772,7 +927,7 @@ const api = {
 
   async restore(id, name) {
     const game = await getGame(id);
-    if (running.has(id)) throw new Error('Close the game first.');
+    if (running.has(id) || (await launcher.isRunningFrom(installDir(id)).catch(() => false))) throw new Error('Close the game first.');
     const last = await engine.restore(game, installDir(id), name);
     await config.setGame(id, { lastSync: last, pending: false });
     send('games-changed');
@@ -877,8 +1032,9 @@ const api = {
     if (!local(id).exePath) throw new Error('Set the game up on this PC first.');
     const f = await api.pickFile('Choose a VN Shelf save export', [{ name: 'Zip', extensions: ['zip'] }]);
     if (!f) return null;
+    if (await launcher.isRunningFrom(installDir(id)).catch(() => false)) throw new Error('Close the game first.');
     const buf = await fs.promises.readFile(f);
-    const r = await savesio.importSaves(engine, game, installDir(id), buf);
+    const r = await exclusive(id, () => savesio.importSaves(engine, game, installDir(id), buf));
     const fresh = await library.get(id);
     const s = await runSync(fresh, { resolution: 'local' }).catch((e) => ({ error: e.message }));
     send('games-changed');
@@ -1021,8 +1177,11 @@ app.whenReady().then(async () => {
   createTray();
   if (config.data.startWithSystem) applyStartWithSystem(true).catch(() => {});
   await createWindow();
-  pushPending().catch(() => {});
-  setInterval(() => pushPending().catch(() => {}), 5 * 60 * 1000);
+  setTimeout(() => autoUpload().catch(() => {}), 4000);
+  setInterval(() => autoUpload().catch(() => {}), 5 * 60 * 1000);
+  pollChanges();
+  win.on('show', schedulePoll);
+  win.on('focus', () => { if (!pollTimer || Date.now() - lastFocusPoll > 15000) { lastFocusPoll = Date.now(); pollChanges(); } });
   if (config.data.autoUpdate && !process.env.VNS_NO_UPDATE_CHECK) {
     setTimeout(async () => {
       try {
@@ -1033,7 +1192,19 @@ app.whenReady().then(async () => {
   }
 });
 
-app.on('before-quit', () => { quitting = true; });
+// Never quit in the middle of copying saves: wait (up to 2 minutes) for syncs to finish first.
+let quitWhenSynced = false;
+app.on('before-quit', (e) => {
+  quitting = true;
+  if (!busyGames().length || quitWhenSynced) return;
+  e.preventDefault();
+  quitWhenSynced = true;
+  if (win && !win.isDestroyed()) win.hide();
+  const until = Date.now() + 120000;
+  const check = setInterval(() => {
+    if (!busyGames().length || Date.now() > until) { clearInterval(check); app.quit(); }
+  }, 300);
+});
 
 app.on('window-all-closed', () => {
   // Keep tracking a running game even if the window is closed? Simpler and safer: stay alive until it exits.

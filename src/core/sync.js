@@ -15,6 +15,24 @@ const crypto = require('crypto');
 const fsu = require('./fsutil');
 const { expand } = require('./paths');
 const limits = require('./limits');
+const { HashCache } = require('./hashcache');
+
+// One sync at a time per game, across every engine in the program (a new engine is made whenever
+// settings change): the startup upload, Play, Sync now, a restore or an import of the same game must
+// never copy the same files at the same moment. Different games don't wait for each other.
+const gameLocks = new Map(); // gameId -> promise of the work in progress
+
+function exclusive(gameId, fn) {
+  const prev = gameLocks.get(gameId) || Promise.resolve();
+  const run = prev.catch(() => {}).then(fn);
+  const tail = run.catch(() => {});
+  gameLocks.set(gameId, tail);
+  tail.then(() => { if (gameLocks.get(gameId) === tail) gameLocks.delete(gameId); });
+  return run;
+}
+
+/** Ids of games with a sync (or restore/import) running or waiting right now. */
+function busyGames() { return [...gameLocks.keys()]; }
 
 class SyncError extends Error {
   constructor(code, message, info) {
@@ -39,14 +57,15 @@ function sameHashes(a, b) {
  *   'pull'     – only the shared folder changed
  *   'adopt'    – both changed but ended up identical; just record it
  *   'conflict' – both changed differently; the user must choose
+ * An empty save folder is never uploaded over saves in the cloud: those come down instead.
  */
 function decide(localHashes, cloudState, lastSync) {
   const hasLocal = Object.keys(localHashes).length > 0;
   if (!cloudState) return hasLocal ? 'push' : 'nothing';
-  if (!lastSync) {
-    if (!hasLocal) return 'pull';
-    return sameHashes(localHashes, cloudState.hashes) ? 'adopt' : 'conflict';
-  }
+  // No saves here but some in the cloud: bring them down, never "upload" the emptiness. A save folder
+  // that's missing for a moment (a drive not plugged in, a game reinstalled) must not wipe the cloud copy.
+  if (!hasLocal) return Object.keys(cloudState.hashes || {}).length ? 'pull' : 'nothing';
+  if (!lastSync) return sameHashes(localHashes, cloudState.hashes) ? 'adopt' : 'conflict';
   const localChanged = !sameHashes(localHashes, lastSync.hashes);
   const cloudChanged = cloudState.generation !== lastSync.generation;
   if (!localChanged && !cloudChanged) return 'nothing';
@@ -93,6 +112,7 @@ class SyncEngine {
    * @param {object} o.roots        from paths.defaultRoots()
    * @param {number} [o.historyDepth=10]
    * @param {string} [o.platform]
+   * @param {HashCache} [o.hashCache]  remembers file hashes between checks (and runs, if it has a file)
    */
   constructor(o) {
     this.cloudDir = o.cloudDir;
@@ -101,6 +121,7 @@ class SyncEngine {
     this.roots = o.roots;
     this.historyDepth = o.historyDepth || 10;
     this.platform = o.platform || process.platform;
+    this.hashCache = o.hashCache || new HashCache(null);
   }
 
   gameDir(id) { return path.join(this.cloudDir, 'games', id); }
@@ -138,11 +159,12 @@ class SyncEngine {
     let bytes = 0;
     for (const rel of rels) {
       let st;
-      try { st = await fsp.stat(path.join(abs, ...rel.split('/'))); } catch { continue; }
-      const why = limits.skipFile(rel, st.size);
+      try { st = await fsp.stat(path.join(abs, ...rel.split('/')), { bigint: true }); } catch { continue; }
+      const size = Number(st.size);
+      const why = limits.skipFile(rel, size);
       if (why) { skipped[why]++; continue; }
-      files.push({ rel, size: st.size });
-      bytes += st.size;
+      files.push({ rel, size, mtimeNs: st.mtimeNs });
+      bytes += size;
       if (files.length > limits.LIMITS.hardFiles || bytes > limits.LIMITS.hardBytes) break;
     }
     return { files, count: files.length, bytes, skipped };
@@ -150,6 +172,7 @@ class SyncEngine {
 
   /** Hash every save file on this PC. Returns { files: {key: abs}, hashes: {key: sha1}, sizes: {key: bytes} }. */
   async scanLocal(game, installDir) {
+    await this.hashCache.load();
     const files = {};
     const hashes = {};
     const sizes = {};
@@ -163,11 +186,12 @@ class SyncEngine {
           `The save location ${rule.path} has grown too big to sync (over ${limits.describeSize({ files: limits.LIMITS.hardFiles, bytes: limits.LIMITS.hardBytes })}). ` +
           'Narrow it to the actual save files on the game page.', { rule: rule.id });
       }
-      for (const { rel, size } of m.files) {
+      for (const { rel, size, mtimeNs } of m.files) {
         const key = `${rule.id}/${rel}`;
         const p = path.join(abs, ...rel.split('/'));
         try {
-          hashes[key] = await fsu.hashFile(p);
+          // Unchanged files (same size and modified time as last time) aren't read again.
+          hashes[key] = await this.hashCache.hash(p, { size, mtimeNs });
           files[key] = p;
           sizes[key] = size;
         } catch { /* file vanished mid-scan; ignore */ }
@@ -177,23 +201,33 @@ class SyncEngine {
   }
 
   async readCloudState(id) {
-    return fsu.readJson(path.join(this.gameDir(id), 'state.json'));
+    const file = path.join(this.gameDir(id), 'state.json');
+    let text;
+    try { text = await fsp.readFile(file, 'utf8'); } catch (e) {
+      if (e.code === 'ENOENT') return null;
+      throw new SyncError('cloud-incomplete', `Couldn't read this game's sync record in the shared folder (${e.code}). Try again in a moment.`);
+    }
+    try { return JSON.parse(text); } catch {
+      // Half-downloaded by the sync app, most likely. Treating it as "no cloud copy" would upload over it.
+      throw new SyncError('cloud-incomplete', 'This game\'s sync record in the shared folder is incomplete (the sync app may still be downloading it). Try again in a moment.');
+    }
   }
 
   /** Check that the files in a snapshot folder match the hashes it claims (i.e. the sync client has finished). */
   async verifySnapshot(dir, hashes) {
+    await this.hashCache.load();
     const missing = [];
     for (const [key, h] of Object.entries(hashes || {})) {
       const p = path.join(dir, ...key.split('/'));
       try {
-        if ((await fsu.hashFile(p)) !== h) missing.push(key);
+        if ((await this.hashCache.hash(p)) !== h) missing.push(key);
       } catch { missing.push(key); }
     }
     return missing;
   }
 
   /** Work out the sync status without changing anything. */
-  async status(game, installDir, lastSync) {
+  async status(game, installDir, lastSync, opts = {}) { // eslint-disable-line no-unused-vars
     if (!(await this.cloudAvailable())) return { action: 'offline' };
     const local = await this.scanLocal(game, installDir);
     const cloud = await this.readCloudState(game.id);
@@ -204,13 +238,20 @@ class SyncEngine {
    * Bring this PC and the shared folder in line.
    * @param {'local'|'cloud'} [resolution] how to settle a conflict
    * @param {function} [onProgress]       see Progress
+   * @param {'push'} [only]                 only upload; anything else (download, conflict) is left alone
+   * @param {function} [beforePull]         async () => false stops a download (e.g. the game is open)
    * @returns {Promise<{action:string, lastSync:object, cloud:object}>}
    */
-  async sync(game, installDir, lastSync, { resolution, onProgress } = {}) {
+  sync(game, installDir, lastSync, opts = {}) {
+    return exclusive(game.id, () => this.syncNow(game, installDir, lastSync, opts));
+  }
+
+  async syncNow(game, installDir, lastSync, { resolution, onProgress, only, beforePull } = {}) {
     await this.requireCloud();
     const local = await this.scanLocal(game, installDir);
     const cloud = await this.readCloudState(game.id);
     let action = decide(local.hashes, cloud, lastSync);
+    if (only === 'push' && action !== 'push') return { action: 'skipped', cloud, lastSync };
 
     if (action === 'conflict') {
       if (resolution === 'local') action = 'push';
@@ -228,6 +269,9 @@ class SyncEngine {
       return { action, cloud: state, lastSync: { generation: state.generation, hashes: state.hashes } };
     }
     if (action === 'pull') {
+      if (beforePull && !(await beforePull())) {
+        throw new SyncError('game-running', 'This game is open right now. Close it first, then try again: if saves came down now, the open game could write its older saves back over them.');
+      }
       await this.pull(game, installDir, local, cloud, { onProgress });
       return { action, cloud, lastSync: { generation: cloud.generation, hashes: cloud.hashes } };
     }
@@ -243,6 +287,7 @@ class SyncEngine {
     const gdir = this.gameDir(game.id);
     const stamp = fsu.timestamp();
     const tmp = path.join(gdir, `.incoming-${this.deviceId.slice(0, 8)}-${stamp}`);
+    await this.cleanIncoming(gdir);
     await fsu.rmrf(tmp);
     await fsp.mkdir(tmp, { recursive: true });
 
@@ -276,6 +321,17 @@ class SyncEngine {
     await fsu.writeJson(path.join(gdir, 'state.json'), state);
     await this.rotateHistory(game.id);
     return state;
+  }
+
+  /** Remove upload folders left behind by a push that never finished (a crash, a power cut). */
+  async cleanIncoming(gdir) {
+    let names = [];
+    try { names = await fsp.readdir(gdir); } catch { return; }
+    for (const n of names.filter((x) => x.startsWith('.incoming-'))) {
+      const p = path.join(gdir, n);
+      const st = await fsp.stat(p).catch(() => null);
+      if (st && Date.now() - st.mtimeMs > 24 * 3600 * 1000) await fsu.rmrf(p).catch(() => {});
+    }
   }
 
   /** Copy the shared folder's current saves onto this PC, backing up what's here first. */
@@ -355,6 +411,7 @@ class SyncEngine {
     try { names = await fsp.readdir(hist); } catch { return []; }
     const out = [];
     for (const name of names) {
+      if (fsu.isSyncDuplicate(name)) continue; // a sync app's copy of a backup folder
       const meta = await fsu.readJson(path.join(hist, name, 'meta.json'));
       if (!meta) continue;
       out.push({ name, ...meta, files: Object.keys(meta.hashes || {}).length });
@@ -370,7 +427,11 @@ class SyncEngine {
   }
 
   /** Put an old version back on this PC and make it the new shared version. */
-  async restore(game, installDir, name) {
+  restore(game, installDir, name) {
+    return exclusive(game.id, () => this.restoreNow(game, installDir, name));
+  }
+
+  async restoreNow(game, installDir, name) {
     await this.requireCloud();
     const dir = path.join(this.gameDir(game.id), 'history', name);
     const meta = await fsu.readJson(path.join(dir, 'meta.json'));
@@ -388,7 +449,7 @@ class SyncEngine {
 
   // ---- "is it open on the other PC?" lock ----
 
-  async readLock(id) {
+  async readLock(id, opts = {}) { // eslint-disable-line no-unused-vars
     const lock = await fsu.readJson(path.join(this.gameDir(id), 'lock.json'));
     if (!lock) return null;
     const ageH = (Date.now() - new Date(lock.since).getTime()) / 3.6e6;
@@ -407,4 +468,4 @@ class SyncEngine {
   }
 }
 
-module.exports = { SyncEngine, SyncError, Progress, decide, sameHashes, totalSize };
+module.exports = { SyncEngine, SyncError, Progress, decide, sameHashes, totalSize, exclusive, busyGames };

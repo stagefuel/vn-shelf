@@ -60,20 +60,46 @@ async function walk(dir, { filter, prune, maxDepth = 32, limit = Infinity } = {}
   return out;
 }
 
+/**
+ * Retry an operation that can fail for a moment on Windows: a game that has just closed (or an
+ * antivirus / sync app) may still hold the file. Other errors fail straight away.
+ */
+async function withRetry(fn, { tries = 6, delayMs = 150 } = {}) {
+  for (let attempt = 1; ; attempt++) {
+    try { return await fn(); } catch (e) {
+      if (!['EBUSY', 'EPERM', 'EACCES'].includes(e.code) || attempt >= tries) throw e;
+      await new Promise((r) => setTimeout(r, delayMs * attempt));
+    }
+  }
+}
+
 async function hashFile(p) {
   // Reading the whole file also forces cloud placeholders (OneDrive/Drive "online-only") to download.
-  return new Promise((resolve, reject) => {
+  return withRetry(() => new Promise((resolve, reject) => {
     const h = crypto.createHash('sha1');
     const s = fs.createReadStream(p);
     s.on('error', reject);
     s.on('data', (d) => h.update(d));
     s.on('end', () => resolve(h.digest('hex')));
-  });
+  }));
+}
+
+/**
+ * A copy a sync app made of a file it couldn't merge, not a file of ours: Dropbox's
+ * "save (Desktop's conflicted copy 2026-10-14).dat", its Japanese "競合コピー", OneDrive's
+ * "save-COMPUTERNAME.dat" (when `computers` names that PC) and Google Drive's "save (1).dat".
+ * Only used for cloud-side files that no manifest lists, so a real "save (1).dat" is never lost.
+ */
+function isSyncDuplicate(name, computers = []) {
+  const base = String(name).replace(/\.[^.\\/]*$/, '');
+  if (/\([^()]*(conflicted copy|競合コピー|conflict)[^()]*\)/i.test(name)) return true;
+  if (/ \(\d+\)$/.test(base)) return true;
+  return computers.some((c) => c && base.toLowerCase().endsWith(`-${String(c).toLowerCase()}`));
 }
 
 async function copyFile(src, dest) {
   await fsp.mkdir(path.dirname(dest), { recursive: true });
-  await fsp.copyFile(src, dest);
+  await withRetry(() => fsp.copyFile(src, dest));
   // Keep the original modified time; some engines show it in their save menus.
   try {
     const st = await fsp.stat(src);
@@ -139,6 +165,6 @@ function safeName(s) {
 }
 
 module.exports = {
-  exists, isDir, globToRegex, makeMatcher, walk, hashFile, copyFile, rmrf,
+  exists, isDir, globToRegex, makeMatcher, walk, hashFile, copyFile, rmrf, withRetry, isSyncDuplicate,
   readJson, writeJson, moveDir, timestamp, safeName,
 };

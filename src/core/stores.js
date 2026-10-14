@@ -11,7 +11,7 @@ const fsu = require('./fsutil');
 const { DriveError, FOLDER, q } = require('./gdrive');
 
 class BaseStore {
-  async readJson(gameId, name) {
+  async readJson(gameId, name, opts = {}) { // eslint-disable-line no-unused-vars
     const buf = await this.getFile(gameId, name);
     if (!buf) return null;
     try { return JSON.parse(buf.toString('utf8')); } catch { return null; }
@@ -104,6 +104,8 @@ class DirStore extends BaseStore {
 // --------------------------------------------------------------------------------- Google Drive
 
 const CHILD_TTL_MS = 15000;
+// The small per-game files the library and the sync badges need, read for every game in one query.
+const SNAPSHOT_NAMES = ['game.json', 'state.json', 'lock.json'];
 
 class DriveStore extends BaseStore {
   /** @param {import('./gdrive').DriveClient} client */
@@ -121,6 +123,7 @@ class DriveStore extends BaseStore {
     this.folders = null; // gameId -> folderId
     this.children = new Map(); // gameId -> { at, files: Map(name -> file) }
     this.jsonCache = new Map(); // fileId:md5:modifiedTime -> parsed JSON
+    this.snap = null; // { at, games: Set(gameId), files: Map(gameId -> Map(name -> key)) }
     this.cacheFile = cacheFile;
     if (cacheFile) {
       try {
@@ -215,6 +218,120 @@ class DriveStore extends BaseStore {
     return files;
   }
 
+  /**
+   * One listing of game.json, state.json and lock.json for every game, downloading only files whose
+   * content changed since they were last seen (on this run or a previous one: see cacheFile).
+   * About 3 requests for the whole library when nothing changed. Concurrent callers share one.
+   */
+  snapshot() {
+    if (!this.snapPromise) {
+      this.snapPromise = this.takeSnapshot().finally(() => { this.snapPromise = null; });
+    }
+    return this.snapPromise;
+  }
+
+  /** A snapshot no older than maxAge ms (taking a new one if needed). */
+  async freshSnapshot(maxAge) {
+    if (this.snap && Date.now() - this.snap.at < maxAge) return this.snap;
+    return this.snapshot();
+  }
+
+  async takeSnapshot() {
+    const startedAt = Date.now();
+    this.rootIds = null; // another PC may have created a duplicate root since we last looked
+    const folders = await this.gameFolders(true);
+    const byFolder = new Map([...folders].map(([g, f]) => [f, g]));
+    const files = await this.client.list(`(${SNAPSHOT_NAMES.map((n) => `name = ${q(n)}`).join(' or ')}) and trashed = false`,
+      'id,name,parents,md5Checksum,modifiedTime');
+    const map = new Map([...folders.keys()].map((g) => [g, new Map()]));
+    const newest = new Map(); // gameId/name -> modifiedTime of the copy kept
+    for (const f of files) {
+      const gameId = (f.parents || []).map((p) => byFolder.get(p)).find(Boolean);
+      if (!gameId) continue;
+      const k = `${gameId}/${f.name}`;
+      if (newest.has(k) && newest.get(k) >= f.modifiedTime) continue; // two copies of one name: keep the newest
+      newest.set(k, f.modifiedTime);
+      map.get(gameId).set(f.name, { key: `${f.id}:${f.md5Checksum}:${f.modifiedTime}`, id: f.id });
+    }
+    const missing = [];
+    for (const names of map.values()) for (const e of names.values()) if (!this.jsonCache.has(e.key)) missing.push(e);
+    let next = 0;
+    const worker = async () => {
+      while (next < missing.length) {
+        const e = missing[next++];
+        try { this.jsonCache.set(e.key, JSON.parse((await this.client.download(e.id)).toString('utf8'))); } catch { /* skip unreadable */ }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(8, missing.length) }, worker));
+    // Writes made while this was running are newer than what it saw: keep those.
+    if (this.snap && this.snap.writes) {
+      for (const [gameId, names] of this.snap.writes) {
+        if (!map.has(gameId)) map.set(gameId, new Map());
+        for (const [name, e] of names) if (e.at >= startedAt) { if (e.key) map.get(gameId).set(name, e); else map.get(gameId).delete(name); }
+      }
+    }
+    this.snap = { at: startedAt, games: new Set(map.keys()), files: map, writes: new Map() };
+    const keep = [];
+    for (const names of map.values()) for (const e of names.values()) keep.push(e.key);
+    if (missing.length || this.cacheFile) await this.saveCache(keep);
+    return this.snap;
+  }
+
+  /** Record our own write (or deletion: key null) of a snapshot file, so the snapshot stays current. */
+  noteWrite(gameId, name, key, json) {
+    if (!SNAPSHOT_NAMES.includes(name)) return;
+    if (key && json !== undefined) this.jsonCache.set(key, json);
+    const snap = this.snap;
+    if (!snap) return;
+    const e = { key, at: Date.now() };
+    if (!snap.files.has(gameId)) { snap.files.set(gameId, new Map()); snap.games.add(gameId); }
+    if (key) snap.files.get(gameId).set(name, e); else snap.files.get(gameId).delete(name);
+    if (!snap.writes.has(gameId)) snap.writes.set(gameId, new Map());
+    snap.writes.get(gameId).set(name, e);
+  }
+
+  /**
+   * With maxAge: answer game.json / state.json / lock.json from a snapshot at most that old, with no
+   * request of its own. Without: read the file from Drive now.
+   */
+  async readJson(gameId, name, { maxAge } = {}) {
+    if (maxAge && SNAPSHOT_NAMES.includes(name)) {
+      const snap = await this.freshSnapshot(maxAge);
+      if (snap.games.has(gameId)) {
+        const e = snap.files.get(gameId).get(name);
+        if (!e) return null;
+        if (this.jsonCache.has(e.key)) return this.jsonCache.get(e.key);
+      }
+    }
+    return super.readJson(gameId, name);
+  }
+
+  /**
+   * Files changed on Drive since `sinceIso` (by any PC), as gameId -> Set(names). One request.
+   * Used to notice the other PC's changes without re-reading the library.
+   */
+  async changedSince(sinceIso) {
+    const folders = await this.gameFolders();
+    const byFolder = new Map([...folders].map(([g, f]) => [f, g]));
+    const files = await this.client.list(`modifiedTime > ${q(sinceIso)}`, 'id,name,mimeType,parents,md5Checksum,modifiedTime,trashed');
+    const out = { games: new Map(), unknownFolder: false, newest: sinceIso };
+    for (const f of files) {
+      if (f.modifiedTime > out.newest) out.newest = f.modifiedTime;
+      const gameId = (f.parents || []).map((p) => byFolder.get(p)).find(Boolean);
+      if (!gameId) {
+        // A game folder we haven't seen (another PC added a game), or something in one.
+        if (!(this.rootIds || []).includes(f.id)) out.unknownFolder = true;
+        continue;
+      }
+      // Our own writes are already known (same id, content and time): not a change.
+      const e = this.snap && this.snap.files.get(gameId) && this.snap.files.get(gameId).get(f.name);
+      if (e && e.key === `${f.id}:${f.md5Checksum}:${f.modifiedTime}`) continue;
+      if (!out.games.has(gameId)) out.games.set(gameId, new Set());
+      out.games.get(gameId).add(f.name);
+    }
+    return out;
+  }
+
   /** Forget cached listings so the next read sees other PCs' changes. */
   refresh(gameId) {
     if (gameId) this.children.delete(gameId); else this.children.clear();
@@ -230,6 +347,7 @@ class DriveStore extends BaseStore {
     if (fid) await this.client.trash(fid);
     if (this.folders) this.folders.delete(gameId);
     this.children.delete(gameId);
+    if (this.snap) { this.snap.files.delete(gameId); this.snap.games.delete(gameId); }
   }
 
   async getFile(gameId, name) {
@@ -252,6 +370,11 @@ class DriveStore extends BaseStore {
     }
     if (!f) f = await this.client.createFile(name, await this.folderId(gameId, { create: true }), buf, mime);
     files.set(name, { ...f, name, modifiedTime: f.modifiedTime || new Date().toISOString() });
+    if (SNAPSHOT_NAMES.includes(name)) {
+      let json;
+      try { json = JSON.parse(buf.toString('utf8')); } catch { json = undefined; }
+      this.noteWrite(gameId, name, f.md5Checksum && f.modifiedTime ? `${f.id}:${f.md5Checksum}:${f.modifiedTime}` : `local:${f.id}:${Date.now()}`, json);
+    }
   }
 
   async deleteFile(gameId, name) {
@@ -260,6 +383,7 @@ class DriveStore extends BaseStore {
     if (!f) return;
     try { await this.client.remove(f.id); } catch (e) { if (e.status !== 404) throw e; }
     files.delete(name);
+    this.noteWrite(gameId, name, null);
   }
 
   async list(gameId) {
@@ -268,30 +392,17 @@ class DriveStore extends BaseStore {
     }));
   }
 
-  /** One query for every game's copy of `name` (e.g. game.json), downloading only what changed. */
-  async readAll(name) {
-    this.rootIds = null; // another PC may have created a duplicate root since we last looked
-    const folders = await this.gameFolders(true);
-    const byFolder = new Map([...folders].map(([g, f]) => [f, g]));
-    const files = await this.client.list(`name = ${q(name)} and trashed = false`, 'id,parents,md5Checksum,modifiedTime');
-    const wanted = [];
-    for (const f of files) {
-      const gameId = (f.parents || []).map((p) => byFolder.get(p)).find(Boolean);
-      if (gameId && !wanted.some((w) => w.gameId === gameId)) wanted.push({ gameId, f, key: `${f.id}:${f.md5Checksum}:${f.modifiedTime}` });
-    }
-    // Download only what isn't cached (unchanged files are known by their MD5), several at a time.
-    const missing = wanted.filter((w) => !this.jsonCache.has(w.key));
-    let next = 0;
-    const worker = async () => {
-      while (next < missing.length) {
-        const w = missing[next++];
-        try { this.jsonCache.set(w.key, JSON.parse((await this.client.download(w.f.id)).toString('utf8'))); } catch { /* skip unreadable */ }
-      }
-    };
-    await Promise.all(Array.from({ length: Math.min(8, missing.length) }, worker));
+  /**
+   * Every game's copy of `name` (e.g. game.json), from a fresh snapshot (or one at most maxAge ms old).
+   */
+  async readAll(name, { maxAge } = {}) {
+    if (!SNAPSHOT_NAMES.includes(name)) throw new Error(`readAll only covers ${SNAPSHOT_NAMES.join(', ')}`);
+    const snap = maxAge ? await this.freshSnapshot(maxAge) : await this.snapshot();
     const out = new Map();
-    for (const w of wanted) if (this.jsonCache.has(w.key)) out.set(w.gameId, this.jsonCache.get(w.key));
-    if (missing.length || this.cacheFile) await this.saveCache(wanted.map((w) => w.key));
+    for (const [gameId, names] of snap.files) {
+      const e = names.get(name);
+      if (e && this.jsonCache.has(e.key)) out.set(gameId, this.jsonCache.get(e.key));
+    }
     return out;
   }
 

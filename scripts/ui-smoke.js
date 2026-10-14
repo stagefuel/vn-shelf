@@ -136,11 +136,11 @@ const shot = (page, n) => page.screenshot({ path: path.join(shots, `${n}.png`) }
   await page.fill('dialog input[type=text]', 'Laptop');
   await page.click('dialog .choice:has-text("Dropbox")');
   await page.click('dialog button:has-text("Start")');
-  await page.waitForSelector('.card');
+  await page.waitForSelector('.card, .homehero');
   await page.waitForTimeout(1200);
   await shot(page, '07-laptop-library');
   await mockDialog(app, B.exe);
-  await page.click('.card:has-text("Kajiri")');
+  await page.click('.card:has-text("Kajiri"), .homehero:has-text("Kajiri") h1');
   await page.waitForSelector('#playBtn');
   await page.click('#playBtn');
   await page.click('dialog button:has-text("Find the .exe")');
@@ -154,8 +154,8 @@ const shot = (page, n) => page.screenshot({ path: path.join(shots, `${n}.png`) }
   // ---------------- conflict: both change
   fs.writeFileSync(path.join(A.game, 'savedata', 'save001.dat'), 'desktop offline progress');
   ({ app, page } = await start(A));
-  await page.waitForSelector('.card');
-  await page.click('.card:has-text("Kajiri")');
+  await page.waitForSelector('.card, .homehero');
+  await page.click('.card:has-text("Kajiri"), .homehero:has-text("Kajiri") h1');
   await page.waitForSelector('#playBtn');
   await page.waitForTimeout(800);
   await page.click('button:has-text("Sync now")');

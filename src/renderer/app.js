@@ -604,6 +604,15 @@ async function play(id, opts = {}) {
       if (v === 'settings') return settingsDialog(false);
       return;
     }
+    case 'game-running': {
+      const v = await dialog({
+        title: t('The game is open'),
+        text: t('{title} is running right now, so newer saves can\'t come down yet: the open game could write its older saves back over them. Close the game, then try again.', { title: g.title || '' }),
+        buttons: [{ label: t('Cancel'), value: null, cls: 'ghost' }, { label: t('Try again'), value: 'retry', cls: 'primary' }],
+      });
+      if (v === 'retry') return play(id, opts);
+      return;
+    }
     case 'incomplete': {
       const v = await dialog({
         title: t('Still downloading'),
@@ -1377,7 +1386,10 @@ function paintDetail(g, data, opts = {}) {
         h('div', { class: 'meta' },
           g.developer ? h('span', {}, g.developer) : null,
           g.engine ? h('span', {}, g.engine) : null,
-          g.playMinutes ? h('span', {}, t('{h} played here', { h: hours(g.playMinutes) })) : null,
+          g.playMinutes ? h('span', { title: (g.playByDevice || []).map((d) => `${d.name}: ${hours(d.seconds / 60)}`).join('\n') },
+            (g.playByDevice || []).length > 1
+              ? t('{h} played ({parts})', { h: hours(g.playMinutes), parts: g.playByDevice.map((d) => `${d.name} ${hours(d.seconds / 60)}`).join(' · ') })
+              : t('{h} played', { h: hours(g.playMinutes) })) : null,
           g.lastPlayed ? h('span', {}, t('Last played {when}', { when: ago(g.lastPlayed) })) : null,
           (g.categories || []).map((c) => h('span', { class: 'tag' }, c))),
         h('div', { class: 'actions' },
@@ -1756,12 +1768,33 @@ vns.on('games-changed', async () => {
   renderSidebar();
 });
 vns.on('saveonce-result', showSaveOnceResult);
+// The other PC changed something (added a game, uploaded saves, edited a game): show it.
+vns.on('library-changed', async ({ ids, added }) => {
+  games = await vns.call('listGames').catch(() => games);
+  if (view === 'library') renderGrid();
+  else if (view === 'home') renderHome();
+  else if (view === 'detail' && currentId && ids.includes(currentId) && !$('#dlg').open && !(document.activeElement && document.activeElement.closest('#detailView'))) {
+    renderDetail(currentId, { noAuto: true });
+  }
+  renderSidebar();
+  for (const id of added ? games.map((g) => g.id) : ids) refreshStatus(id);
+});
+vns.on('auto-uploaded', (titles) => {
+  toast(t('Uploaded newer saves for: {games}', { games: titles.join(', ') }), 'good');
+  for (const g of games.filter((x) => titles.includes(x.title))) refreshStatus(g.id);
+});
 vns.on('update-available', (u) => showUpdatePopup(u));
 
+// Typing redraws at most once per frame, however fast the keys come.
+let searchFrame = 0;
 $('#search').addEventListener('input', () => {
-  if (view !== 'library') setView('library');
-  renderGrid();
-  showSuggestions();
+  if (searchFrame) return;
+  searchFrame = requestAnimationFrame(() => {
+    searchFrame = 0;
+    if (view !== 'library') setView('library');
+    renderGrid();
+    showSuggestions();
+  });
 });
 $('#search').addEventListener('focus', () => showSuggestions());
 $('#search').addEventListener('blur', () => setTimeout(hideSuggestions, 120));

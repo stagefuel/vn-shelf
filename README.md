@@ -86,6 +86,17 @@ You pick one on first run, and the same one on every PC:
 - **Locale Emulator:** set `LEProc.exe` in Settings, then tick it per game.
 - **Upload while playing:** optional; pushes saves about 10 s after each save.
 - **Progress bars:** bigger syncs show how many files and MB are done, on the cover and the game page.
+- **Play time** counts only the time the game itself ran (not launchers, not sleep), and every PC
+  shows the total across your PCs.
+- **Games that need administrator rights** start through Windows' permission prompt.
+
+### Keeping up with your other PC
+- Changes from your other PC (new games, newer saves, edits) appear by themselves within about 20
+  seconds.
+- Saves you made while VN Shelf was closed, or in a game started some other way, upload
+  automatically. This only ever uploads; it never downloads or asks in the background.
+- In Google Drive mode, the whole library is checked with a few requests (one listing, plus downloads
+  of only what changed), so start-up and badges are quick even for big libraries.
 
 ### Running in the background
 - **Start with Windows** (optional, per PC): VN Shelf starts quietly in the tray and keeps your saves
@@ -100,6 +111,9 @@ You pick one on first run, and the same one on every PC:
 - A half-downloaded shared folder is detected and waited for, never copied over a good save.
 - A warning appears if the game looks open on the other PC. If storage is unreachable, you can play
   offline and saves upload later.
+- Saves never come down while that game is open, an empty or missing save folder never wipes the
+  cloud copy, only one sync per game runs at a time, and quitting waits for syncs to finish.
+- Sync apps' duplicate copies ("(1)", "conflicted copy") are ignored.
 - **Save-folder limits:**
   - whole drives, system folders and game installs are refused
   - programs, videos, archives, caches, logs and files over 64 MB are never synced

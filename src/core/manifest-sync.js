@@ -13,7 +13,7 @@ const fsp = require('fs').promises;
 const path = require('path');
 const crypto = require('crypto');
 const fsu = require('./fsutil');
-const { SyncEngine, SyncError, Progress, decide, totalSize } = require('./sync');
+const { SyncEngine, SyncError, Progress, decide, totalSize, exclusive } = require('./sync');
 
 const sha1 = (buf) => crypto.createHash('sha1').update(buf).digest('hex');
 
@@ -42,11 +42,28 @@ class ManifestSyncEngine extends SyncEngine {
     return this.store.readJson(id, 'state.json');
   }
 
-  async sync(game, installDir, lastSync, { resolution, onProgress } = {}) {
+  /**
+   * Status without a fresh Drive read: with maxAge, the cloud record may come from the last
+   * library-wide listing (see DriveStore.snapshot), so checking every game costs no extra requests.
+   */
+  async status(game, installDir, lastSync, { maxAge } = {}) {
+    if (!maxAge) return super.status(game, installDir, lastSync);
+    if (!(await this.cloudAvailable())) return { action: 'offline' };
+    const local = await this.scanLocal(game, installDir);
+    const cloud = await this.store.readJson(game.id, 'state.json', { maxAge });
+    return { action: decide(local.hashes, cloud, lastSync), local, cloud };
+  }
+
+  sync(game, installDir, lastSync, opts = {}) {
+    return exclusive(game.id, () => this.syncNow(game, installDir, lastSync, opts));
+  }
+
+  async syncNow(game, installDir, lastSync, { resolution, onProgress, only, beforePull } = {}) {
     await this.requireCloud();
     const local = await this.scanLocal(game, installDir);
     const cloud = await this.readCloudState(game.id);
     let action = decide(local.hashes, cloud, lastSync);
+    if (only === 'push' && action !== 'push') return { action: 'skipped', cloud, lastSync };
     if (action === 'conflict') {
       if (resolution === 'local') action = 'push';
       else if (resolution === 'cloud') action = 'pull';
@@ -58,6 +75,9 @@ class ManifestSyncEngine extends SyncEngine {
       return { action, cloud: state, lastSync: { generation: state.generation, hashes: state.hashes } };
     }
     if (action === 'pull') {
+      if (beforePull && !(await beforePull())) {
+        throw new SyncError('game-running', 'This game is open right now. Close it first, then try again: if saves came down now, the open game could write its older saves back over them.');
+      }
       await this.pull(game, installDir, local, cloud, { onProgress });
       return { action, cloud, lastSync: { generation: cloud.generation, hashes: cloud.hashes } };
     }
@@ -78,11 +98,19 @@ class ManifestSyncEngine extends SyncEngine {
     const hashes = {};
     const keys = Object.keys(local.files);
     const progress = new Progress(onProgress, phase, keys.length, totalSize(local, keys));
+    await this.hashCache.load();
     for (const [key, p] of Object.entries(local.files)) {
+      // Unchanged since it was last hashed and already in the store: nothing to read or upload.
+      const st = await fsp.stat(p, { bigint: true }).catch(() => null);
+      if (!st) { progress.step(); continue; } // vanished since the scan
+      const known = this.hashCache.get(p, Number(st.size), st.mtimeNs);
+      if (known && blobs.has(known)) { hashes[key] = known; progress.step(Number(st.size)); continue; }
       let buf;
-      try { buf = await fsp.readFile(p); } catch { progress.step(); continue; } // vanished since the scan
+      const readAt = Date.now();
+      try { buf = await fsu.withRetry(() => fsp.readFile(p)); } catch { progress.step(); continue; }
       const h = sha1(buf); // hash what we actually read; the game may have written since the scan
       hashes[key] = h;
+      this.hashCache.set(p, Number(st.size), st.mtimeNs, h, readAt);
       if (!blobs.has(h)) {
         await this.store.putBlob(gameId, h, buf);
         blobs.set(h, { modified: Date.now() });
@@ -204,7 +232,11 @@ class ManifestSyncEngine extends SyncEngine {
     }
   }
 
-  async restore(game, installDir, name) {
+  restore(game, installDir, name) {
+    return exclusive(game.id, () => this.restoreNow(game, installDir, name));
+  }
+
+  async restoreNow(game, installDir, name) {
     await this.requireCloud();
     const entry = (await this.readHistory(game.id)).find((e) => e.name === name);
     if (!entry) throw new SyncError('not-found', `No such backup: ${name}`);
@@ -219,9 +251,9 @@ class ManifestSyncEngine extends SyncEngine {
 
   // ---- "is it open on the other PC?" lock
 
-  async readLock(id) {
-    if (this.store.refresh) this.store.refresh(id);
-    const lock = await this.store.readJson(id, 'lock.json');
+  async readLock(id, { maxAge } = {}) {
+    if (!maxAge && this.store.refresh) this.store.refresh(id);
+    const lock = await this.store.readJson(id, 'lock.json', { maxAge });
     if (!lock) return null;
     const ageH = (Date.now() - new Date(lock.since).getTime()) / 3.6e6;
     return { ...lock, mine: lock.deviceId === this.deviceId, stale: ageH > 12 };

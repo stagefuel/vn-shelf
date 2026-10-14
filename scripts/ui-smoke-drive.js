@@ -133,11 +133,11 @@ async function mockDialog(app, file) {
   await page.click('dialog .choice:has-text("Google Drive (sign in)")');
   await page.waitForSelector('dialog .choice.sel:has-text("Signed in as")', { timeout: 15000 });
   await page.click('dialog button:has-text("Start")');
-  await page.waitForSelector('.card:has-text("Muramasa")', { timeout: 20000 });
+  await page.waitForSelector('.card:has-text("Muramasa"), .homehero:has-text("Muramasa")', { timeout: 20000 });
   await page.waitForTimeout(1000);
   await shot(page, 'd05-laptop-library');
   await mockDialog(app, B.exe);
-  await page.click('.card:has-text("Muramasa")');
+  await page.click('.card:has-text("Muramasa"), .homehero:has-text("Muramasa") h1');
   await page.waitForSelector('#playBtn');
   await page.click('#playBtn');
   await page.click('dialog button:has-text("Find the .exe")');

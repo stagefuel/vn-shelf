@@ -18,15 +18,28 @@ class StoreLibrary {
     this.cacheDir = cacheDir;
   }
 
-  async list() {
-    const all = await this.store.readAll('game.json');
-    const games = [...all.values()].filter((g) => g && g.id && !g.removed);
+  /** @param {object} [o]  maxAge: accept a listing up to this many ms old (no requests if it's that fresh) */
+  async list({ maxAge } = {}) {
+    const all = await this.store.readAll('game.json', { maxAge });
+    const games = [...all.entries()].filter(([folder, g]) => g && g.id && !g.removed && g.id === folder).map(([, g]) => g);
     return games.sort((a, b) => a.title.localeCompare(b.title, 'ja'));
   }
 
-  async get(id) {
+  /** @param {object} [o]  maxAge: as in list(); without it the game is read from Drive now */
+  async get(id, { maxAge } = {}) {
+    if (maxAge) return this.store.readJson(id, 'game.json', { maxAge });
     if (this.store.refresh) this.store.refresh(id);
     return this.store.readJson(id, 'game.json');
+  }
+
+  /** Add a play session to this PC's total. Each PC keeps its own entry, so they never overwrite each other. */
+  async recordPlay(id, deviceId, { seconds, deviceName, at = new Date().toISOString() }) {
+    const game = await this.get(id);
+    if (!game) return null;
+    const all = { ...(game.playtime || {}) };
+    const mine = all[deviceId] || { seconds: 0 };
+    all[deviceId] = { seconds: Math.max(0, Math.round((mine.seconds || 0) + seconds)), lastPlayed: at, deviceName };
+    return this.save({ ...game, playtime: all });
   }
 
   async save(game) {

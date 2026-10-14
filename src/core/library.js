@@ -24,16 +24,27 @@ class Library {
     const root = path.join(this.cloudDir, 'games');
     let names;
     try { names = await fsp.readdir(root); } catch { return []; }
-    const games = [];
-    for (const id of names) {
-      if (id.startsWith('.')) continue;
-      const g = await fsu.readJson(path.join(root, id, 'game.json'));
-      if (g && !g.removed) games.push(g);
-    }
+    // Read in parallel (a shared folder can be slow), and only folders whose name is the game's id:
+    // a sync app's copy of a folder ("abc (1)", "abc (conflicted copy)") would otherwise show twice.
+    const found = await Promise.all(names.filter((id) => !id.startsWith('.')).map((id) => fsu.readJson(path.join(root, id, 'game.json')).then((g) => [id, g])));
+    const games = found.filter(([id, g]) => g && !g.removed && g.id === id).map(([, g]) => g);
     return games.sort((a, b) => a.title.localeCompare(b.title, 'ja'));
   }
 
-  async get(id) { return fsu.readJson(path.join(this.dir(id), 'game.json')); }
+  async get(id, opts = {}) { // eslint-disable-line no-unused-vars
+    return fsu.readJson(path.join(this.dir(id), 'game.json'));
+  }
+
+  /** Add a play session to this PC's total. Each PC keeps its own entry, so they never overwrite each other. */
+  async recordPlay(id, deviceId, { seconds, deviceName, at = new Date().toISOString() }) {
+    const game = await this.get(id);
+    if (!game) return null;
+    const all = { ...(game.playtime || {}) };
+    const mine = all[deviceId] || { seconds: 0 };
+    all[deviceId] = { seconds: Math.max(0, Math.round((mine.seconds || 0) + seconds)), lastPlayed: at, deviceName };
+    await fsu.writeJson(path.join(this.dir(id), 'game.json'), { ...game, playtime: all });
+    return { ...game, playtime: all };
+  }
 
   async create(fields) {
     const id = `${slug(fields.title)}-${crypto.randomBytes(3).toString('hex')}`;

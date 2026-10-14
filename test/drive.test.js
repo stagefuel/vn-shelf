@@ -406,3 +406,54 @@ test('drive: readAll downloads in parallel and caches unchanged files between ru
     assert.strictEqual(Object.keys(JSON.parse(fs.readFileSync(cacheFile, 'utf8'))).length, 12);
   } finally { await fd.close(); }
 });
+
+test('drive: every game\'s badge from one listing, own writes seen at once, other PC\'s changes noticed', async () => {
+  const fd = await startFakeDrive();
+  try {
+    const auth = authFor(fd); await auth.signIn({ timeoutMs: 5000 });
+    const roots = { '<appdata>': path.join(tmp(), 'appdata'), '<home>': tmp() };
+    const storeA = driveStoreFor(fd, auth);
+    const libA = new StoreLibrary(storeA, tmp());
+    const engA = new ManifestSyncEngine({ store: storeA, deviceId: 'A', deviceName: 'A', roots });
+    const made = [];
+    for (let i = 0; i < 6; i++) {
+      let g = await libA.create({ title: `Game ${i}` });
+      g = await libA.addSaveRule(g.id, { path: `<appdata>/G${i}` });
+      write(path.join(roots['<appdata>'], `G${i}`, 'save.dat'), `slot ${i}`);
+      await engA.sync(g, null, null);
+      made.push(g);
+    }
+    // A fresh start on another PC: one listing, then badges for every game with no further requests.
+    const storeB = driveStoreFor(fd, auth);
+    const libB = new StoreLibrary(storeB, tmp());
+    const engB = new ManifestSyncEngine({ store: storeB, deviceId: 'B', deviceName: 'B', roots: { '<appdata>': tmp(), '<home>': tmp() } });
+    const list = await libB.list();
+    assert.strictEqual(list.length, 6);
+    const before = fd.state.requests;
+    const o = { maxAge: 20000 };
+    for (const g of list) {
+      const game = await libB.get(g.id, o);
+      const st = await engB.status(game, null, null, o);
+      assert.strictEqual(st.action, 'pull');
+      await engB.readLock(g.id, o);
+    }
+    assert.strictEqual(fd.state.requests - before, 0, 'no Drive requests for the badges');
+
+    // B's own edit shows straight away, without re-downloading it.
+    await libB.update(made[0].id, { notes: 'mine' });
+    const r1 = fd.state.requests;
+    assert.strictEqual((await libB.get(made[0].id, o)).notes, 'mine');
+    assert.strictEqual(fd.state.requests - r1, 0);
+
+    // A changes a game: B's change check (one request) names exactly that game, and not B's own edit.
+    const since = new Date(Date.now() - 1).toISOString();
+    await new Promise((r) => setTimeout(r, 5));
+    await libA.update(made[3].id, { title: 'Renamed on A' });
+    const r2 = fd.state.requests;
+    const ch = await storeB.changedSince(since);
+    assert.strictEqual(fd.state.requests - r2, 1);
+    assert.deepStrictEqual([...ch.games.keys()], [made[3].id]);
+    await storeB.snapshot();
+    assert.strictEqual((await libB.get(made[3].id, o)).title, 'Renamed on A');
+  } finally { await fd.close(); }
+});

@@ -4,6 +4,73 @@ All notable changes to VN Shelf. Download any version from the
 [Releases page](https://github.com/stagefuel/vn-shelf/releases). From 0.3.0 on, VN Shelf can
 update itself (Settings → Updates).
 
+## 0.6.0
+
+Speed and safety. Google Drive mode now checks your whole library in a fraction of the time, VN
+Shelf notices changes from your other PC by itself, play time is accurate and shared between PCs,
+and several situations that could lose or mix up saves are now handled.
+
+### Faster
+- **Sync badges no longer cost any Google Drive requests.** Each game used to be checked
+  separately (5 requests per game). Measured on a 33-game library, checking every game took about
+  15 s and 163 requests. VN Shelf now reads every game's record, sync state and "open on another PC"
+  marker in **one** listing, so all the badges fill in in about 4 milliseconds with no extra requests.
+- **Game pages open without waiting for Drive.** They use the same listing (at most 20 seconds old).
+  Your own changes show straight away. Anything that actually syncs saves (Play, Sync now, Restore)
+  always reads the latest from Drive first.
+- **Save files aren't re-read to check them.** VN Shelf remembers each save file's fingerprint along
+  with its size and modified time (in `hash-cache.json` in VN Shelf's settings folder). Unchanged
+  files are no longer read again on every check, or on every upload in Google Drive mode. A file
+  changed in the last few seconds is always read, since some drives (FAT32, exFAT) only record
+  modified times to the nearest 2 seconds.
+- **Synced-folder mode reads the library in parallel**, which helps on slow network shares.
+- The search box redraws at most once per frame while you type.
+
+### New
+- **Changes from your other PC show up by themselves.** VN Shelf checks for them every 20 seconds
+  while its window is open, and every 2 minutes from the tray. Games added on the other PC appear,
+  and badges update when it uploads saves. In Google Drive mode each check is a single small
+  request. In folder mode it compares file sizes and times, without reading anything.
+- **Saves made outside VN Shelf are uploaded.** At start-up and every 5 minutes, VN Shelf uploads
+  saves for any game that changed on this PC since it last synced. That covers games started from a
+  desktop shortcut and uploads that had to wait while you were offline. It only uploads, and only
+  when the cloud copy hasn't changed meanwhile: it never downloads or asks you anything in the
+  background. A notice lists the games it uploaded.
+- **Accurate play time, shared between PCs.** Play time now counts only the time the game itself
+  was running. The wait for a launcher to start the real game, the few seconds VN Shelf waits after
+  the game closes, and time the PC spent asleep don't count. Each PC adds its own time to the game's
+  shared record, so every PC shows the total; hover over it on the game page to see each PC's share.
+  Time counted by earlier versions is carried over. "Last played" is now the latest on any PC.
+- **Games that need administrator rights.** Windows refuses to start these normally (error 740).
+  VN Shelf now shows Windows' own permission prompt instead. If you answer No, it says so and
+  changes nothing. While such a game runs, VN Shelf follows it by its process, because Windows hides
+  an administrator program's details from normal programs.
+
+### Safer
+- **One sync at a time per game.** The background upload, Play, Sync now, Restore and Import saves
+  can no longer copy the same game's files at the same moment. Different games don't wait for each
+  other.
+- **Saves never come down while the game is open.** If you started a game some other way and it's
+  still running, VN Shelf won't replace its saves: the open game could write its older saves back
+  over them later. You're asked to close it and try again. This is checked only when saves are about
+  to be downloaded, so it doesn't slow down anything else.
+- **An empty save folder never wipes the cloud copy.** If a game's save folder is missing or empty
+  (a drive that isn't plugged in, a reinstalled game), VN Shelf now brings the saves back down.
+  Before, it could treat the empty folder as "all saves deleted" and upload that.
+- **A half-downloaded sync record is refused.** In folder mode, a sync app can be partway through
+  downloading a game's `state.json`. VN Shelf now says "try again in a moment" instead of treating it
+  as missing and uploading over it.
+- **Sync apps' duplicate copies are ignored.** A game folder that Dropbox or Google Drive duplicated
+  ("… (1)", "… (conflicted copy)", "競合コピー") no longer appears as a second game, and duplicated
+  backup folders are skipped in History.
+- **Files a game still holds open are retried.** A game (or antivirus) can keep a save file locked for
+  a moment after closing. Copying and reading now retry for about a second before giving up.
+- **Quitting waits for syncs to finish**, for up to 2 minutes, so saves are never left half-copied.
+- **Leftover upload folders are cleaned up.** A push interrupted by a crash or power cut could leave
+  an `.incoming-…` folder in the shared folder; ones older than a day are now removed.
+- **Unexpected errors are logged** to `error.log` in VN Shelf's settings folder instead of closing the
+  app.
+
 ## 0.5.0
 
 VN Shelf can now run in the tray and start with Windows. This version also brings a new Home page,

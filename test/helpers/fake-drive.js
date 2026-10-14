@@ -16,7 +16,8 @@ function startFakeDrive({ pageSize = 4 } = {}) {
     files,
   };
 
-  const now = () => new Date().toISOString();
+  let lastNow = 0;
+  const now = () => { lastNow = Math.max(Date.now(), lastNow + 1); return new Date(lastNow).toISOString(); };
   const md5 = (b) => crypto.createHash('md5').update(b).digest('hex');
   const view = (f) => ({
     id: f.id, name: f.name, mimeType: f.mimeType, parents: f.parents, appProperties: f.appProperties,
@@ -32,6 +33,11 @@ function startFakeDrive({ pageSize = 4 } = {}) {
     let rest = q;
     const take = (re) => { const m = re.exec(rest); if (!m) return null; rest = rest.replace(m[0], ''); return m; };
     let m;
+    while ((m = take(/\((name = '[^']*'(?: or name = '[^']*')*)\)/))) {
+      const names = [...m[1].matchAll(/name = '([^']*)'/g)].map((x) => x[1]);
+      if (!names.includes(f.name)) return false;
+    }
+    while ((m = take(/modifiedTime > '([^']*)'/))) if (!(f.modifiedTime > m[1])) return false;
     while ((m = take(/appProperties has \{ key='([^']*)' and value='([^']*)' \}/))) {
       if (!f.appProperties || f.appProperties[m[1]] !== m[2]) return false;
     }

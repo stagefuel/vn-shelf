@@ -74,3 +74,35 @@ test('Windows: a .cmd launcher that starts the game and exits is followed to the
   assert.strictEqual(info.reason, 'closed');
   assert.ok(secs >= 7, `ended after ${secs}s, before the real game closed`);
 });
+
+test('play time counts only while the game runs: not the launcher gap or the wait after it closes', { skip: process.platform === 'win32' }, async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vns-lp-'));
+  const game = path.join(dir, 'game.sh');
+  fs.writeFileSync(game, '#!/bin/sh\nsleep 3\n');
+  fs.chmodSync(game, 0o755);
+  const info = await new Promise((resolve) => {
+    launch({ exePath: game, installDir: dir, pollMs: 200, graceMs: 2000 }).on('exit', resolve);
+  });
+  assert.strictEqual(info.reason, 'closed');
+  assert.ok(info.durationMs >= info.playedMs + 1500, `tracking ran ${info.durationMs} ms, which includes the wait after closing`);
+  assert.ok(info.playedMs >= 2700 && info.playedMs <= 3600, `counted ${info.playedMs} ms for a 3 s game`);
+});
+
+test('Windows admin games: asks for rights, and "No" ends cleanly as declined', async () => {
+  const { EventEmitter } = require('events');
+  // A start that Windows refuses with "requires elevation" (Node: EACCES), then the owner's answer.
+  const refuse = () => { const c = new EventEmitter(); c.unref = () => {}; c.pid = undefined; setImmediate(() => c.emit('error', Object.assign(new Error('spawn EACCES'), { code: 'EACCES' }))); return c; };
+  for (const [answer, want] of [[{ declined: true }, 'declined'], [{ error: 'boom' }, 'failed']]) {
+    let asked = 0;
+    const events = [];
+    const info = await new Promise((resolve) => {
+      const ev = launch({ exePath: 'C:\\Games\\X\\x.exe', installDir: 'C:\\Games\\X', platform: 'win32', pollMs: 100, graceMs: 300,
+        spawnImpl: refuse, elevateImpl: async (cmd) => { asked++; assert.strictEqual(cmd, 'C:\\Games\\X\\x.exe'); return answer; } });
+      ev.on('elevating', () => events.push('elevating'));
+      ev.on('exit', resolve);
+    });
+    assert.strictEqual(asked, 1);
+    assert.deepStrictEqual(events, ['elevating']);
+    assert.strictEqual(info.reason, want);
+  }
+});
