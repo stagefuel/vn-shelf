@@ -298,3 +298,42 @@ for (const kind of ['drive', 'dir']) {
     } finally { await env.close(); }
   });
 }
+
+// ------------------------------------------------------------------ duplicate root folders
+
+test('drive: simultaneous first-time calls create only one VN Shelf root', async () => {
+  const fd = await startFakeDrive();
+  try {
+    const auth = authFor(fd);
+    await auth.signIn({ timeoutMs: 5000 });
+    const store = driveStoreFor(fd, auth);
+    // The app does several of these at once right after sign-in.
+    await Promise.all([store.available(), store.listGames(), store.createGame('a-111111'), store.readAll('game.json')]);
+    const roots = [...fd.state.files.values()].filter((f) => f.appProperties && f.appProperties.vnshelf === 'root');
+    assert.strictEqual(roots.length, 1);
+  } finally { await fd.close(); }
+});
+
+test('drive: games in a duplicate root (made by another PC) are still found', async () => {
+  const fd = await startFakeDrive();
+  try {
+    const authA = authFor(fd); await authA.signIn({ timeoutMs: 5000 });
+    const authB = authFor(fd); await authB.signIn({ timeoutMs: 5000 });
+    // Two PCs each create a root before seeing the other's, and each adds a game.
+    const a = driveStoreFor(fd, authA);
+    const b = driveStoreFor(fd, authB);
+    await a.client.createFolder('VN Shelf', undefined, { vnshelf: 'root' });
+    await b.client.createFolder('VN Shelf', undefined, { vnshelf: 'root' });
+    const libA = new StoreLibrary(a, tmp());
+    const libB = new StoreLibrary(b, tmp());
+    const ga = await libA.create({ title: 'Game A' });
+    // Force B into the other root, as if it had created its own.
+    const second = [...fd.state.files.values()].filter((f) => f.appProperties && f.appProperties.vnshelf === 'root')[1].id;
+    b.rootIds = [second];
+    b.rootId = second;
+    const gb = await libB.create({ title: 'Game B' });
+    const fresh = new StoreLibrary(driveStoreFor(fd, authA), tmp());
+    const titles = (await fresh.list()).map((g) => g.title).sort();
+    assert.deepStrictEqual(titles, ['Game A', 'Game B'], `found ${titles}; ids ${ga.id} ${gb.id}`);
+  } finally { await fd.close(); }
+});

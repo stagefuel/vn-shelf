@@ -118,12 +118,28 @@ class DriveStore extends BaseStore {
     this.jsonCache = new Map(); // fileId+md5 -> parsed JSON
   }
 
-  async root() {
-    if (this.rootId) return this.rootId;
-    const found = await this.client.list(`appProperties has { key='vnshelf' and value='root' } and trashed = false and mimeType = '${FOLDER}'`, 'id,name');
-    this.rootId = found.length ? found[0].id : (await this.client.createFolder(this.rootName, undefined, { vnshelf: 'root' })).id;
-    return this.rootId;
+  /**
+   * Every "VN Shelf" root folder, oldest first. Normally there is one, but two PCs (or two calls at
+   * once) signing in for the first time can each create one, so all of them are read.
+   * Concurrent callers share one lookup, so this process never creates a second root itself.
+   */
+  async roots() {
+    if (this.rootIds) return this.rootIds;
+    if (!this.rootsPromise) {
+      this.rootsPromise = (async () => {
+        const found = await this.client.list(`appProperties has { key='vnshelf' and value='root' } and trashed = false and mimeType = '${FOLDER}'`, 'id,name,modifiedTime');
+        if (!found.length) found.push(await this.client.createFolder(this.rootName, undefined, { vnshelf: 'root' }));
+        found.sort((a, b) => String(a.modifiedTime || '').localeCompare(String(b.modifiedTime || '')) || String(a.id).localeCompare(String(b.id)));
+        this.rootIds = found.map((f) => f.id);
+        this.rootId = this.rootIds[0];
+        return this.rootIds;
+      })().finally(() => { this.rootsPromise = null; });
+    }
+    return this.rootsPromise;
   }
+
+  /** The root new game folders go into: the oldest, so every PC picks the same one. */
+  async root() { return (await this.roots())[0]; }
 
   async available() {
     try { await this.root(); return true; } catch (e) {
@@ -136,13 +152,15 @@ class DriveStore extends BaseStore {
 
   async gameFolders(fresh = false) {
     if (this.folders && !fresh) return this.folders;
-    const root = await this.root();
-    const list = await this.client.list(`${q(root)} in parents and trashed = false and mimeType = '${FOLDER}'`, 'id,name,appProperties');
-    this.folders = new Map();
-    for (const f of list) {
-      const id = f.appProperties && f.appProperties.vnsGame;
-      if (id) this.folders.set(id, f.id);
+    const folders = new Map();
+    for (const root of await this.roots()) {
+      const list = await this.client.list(`${q(root)} in parents and trashed = false and mimeType = '${FOLDER}'`, 'id,name,appProperties');
+      for (const f of list) {
+        const id = f.appProperties && f.appProperties.vnsGame;
+        if (id && !folders.has(id)) folders.set(id, f.id);
+      }
     }
+    this.folders = folders;
     return this.folders;
   }
 
@@ -228,6 +246,7 @@ class DriveStore extends BaseStore {
 
   /** One query for every game's copy of `name` (e.g. game.json), downloading only what changed. */
   async readAll(name) {
+    this.rootIds = null; // another PC may have created a duplicate root since we last looked
     const folders = await this.gameFolders(true);
     const byFolder = new Map([...folders].map(([g, f]) => [f, g]));
     const files = await this.client.list(`name = ${q(name)} and trashed = false`, 'id,parents,md5Checksum,modifiedTime');
