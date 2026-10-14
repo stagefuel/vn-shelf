@@ -9,7 +9,7 @@ Add your games (one by one or a whole folder at once), and VN Shelf:
 - brings newer saves down from your other PC before you play, and uploads yours when you close
   the game
 
-The interface is available in English and 日本語. Nothing AI-based runs inside the app.
+The interface is available in English and 日本語.
 
 **[Download the latest release](https://github.com/stagefuel/vn-shelf/releases)** ·
 [Wiki / guide](https://github.com/stagefuel/vn-shelf/wiki) · [Changelog](CHANGELOG.md)
