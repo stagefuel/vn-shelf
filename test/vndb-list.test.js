@@ -143,6 +143,26 @@ test('vndb list: a failed write is retried next run; a removed entry clears an u
   assert.strictEqual(s.lib.get('a').vote, null);
 });
 
+test('vndb list: a cleared date stays cleared here and isn\'t sent (VNDB can\'t clear dates); a cleared vote is', async () => {
+  const s = setup({ games: [{ id: 'a', vndbId: 'v1', title: 'A' }] });
+  s.fake.setEntry('v1', { labels: [2], vote: 80, started: '2026-01-01', finished: '2026-02-01' });
+  await s.run({ full: true });
+  s.lib.set('a', { ...s.lib.get('a'), started: '', vote: null, listEditedAt: new Date().toISOString() });
+  const r = await s.run();
+  assert.strictEqual(r.errors.length, 0);
+  assert.strictEqual(s.fake.entry('v1').vote, null);
+  assert.strictEqual(s.fake.entry('v1').started, '2026-01-01', 'left on VNDB');
+  assert.strictEqual(s.lib.get('a').started, '', 'stays cleared here');
+  const r2 = await s.run({ full: true });
+  assert.strictEqual(r2.pushed + r2.pulled, 0, 'settled: no loop');
+  assert.strictEqual(s.lib.get('a').started, '');
+  // A new date set on VNDB later still comes through.
+  s.fake.clock = Math.floor(Date.now() / 1000) + 60;
+  s.fake.setEntry('v1', { labels: [2], started: '2026-03-03', finished: '2026-02-01' });
+  await s.run();
+  assert.strictEqual(s.lib.get('a').started, '2026-03-03');
+});
+
 test('vndb list: read-only token pulls but never writes', async () => {
   const s = setup({ games: [{ id: 'a', vndbId: 'v1', title: 'A', status: 'playing' }, { id: 'b', vndbId: 'v2', title: 'B' }], perms: ['listread'] });
   s.fake.setEntry('v2', { labels: [2] });

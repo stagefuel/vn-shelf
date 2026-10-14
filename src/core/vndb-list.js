@@ -228,8 +228,9 @@ function patchBody(M, R, rawIds, custom) {
   if (add.length) body.labels_set = [...(body.labels_set || []), ...add];
   if (del.length) body.labels_unset = [...(body.labels_unset || []), ...del];
   if (M.vote !== R.vote) body.vote = M.vote;
-  if (M.started !== R.started) body.started = M.started || null;
-  if (M.finished !== R.finished) body.finished = M.finished || null;
+  // VNDB's API can set a date but not clear one (null and "" are refused), so a date cleared here stays on VNDB.
+  if (M.started && M.started !== R.started) body.started = M.started;
+  if (M.finished && M.finished !== R.finished) body.finished = M.finished;
   return Object.keys(body).length ? body : null;
 }
 
@@ -290,7 +291,10 @@ async function syncList({ client, user, canWrite, games, cache, full = false, up
     const rawIds = entry ? (entry.labels || []).map((l) => l.id || l) : [];
     const body = canWrite ? patchBody(M, R, rawIds, custom) : null;
     const lp = localPatch(game, M, L, custom);
-    let base = M;
+    // A date cleared here can't be cleared on VNDB: remember VNDB's date as agreed, so it isn't sent
+    // again and doesn't come back here, until either side changes it.
+    let base = { ...M };
+    for (const f of ['started', 'finished']) if (!M[f] && R[f]) base[f] = R[f];
     if (body) {
       try {
         await client.patch(vid, body);
@@ -302,7 +306,7 @@ async function syncList({ client, user, canWrite, games, cache, full = false, up
         entries[vid] = {
           ...(entry || { id: vid, vn: null }),
           labels: [...ids].map((id) => ({ id })),
-          vote: M.vote, started: M.started || null, finished: M.finished || null,
+          vote: M.vote, started: M.started || R.started || null, finished: M.finished || R.finished || null,
           lastmod: Math.floor(Date.now() / 1000),
         };
       } catch (e) {

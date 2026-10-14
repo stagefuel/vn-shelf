@@ -79,6 +79,8 @@ class FakeVndb {
       if (body.labels) e.labels = new Set(body.labels);
       for (const id of body.labels_set || []) { if (id === 0 || id === 7) return this.json(400, { error: 'bad label' }); e.labels.add(id); }
       for (const id of body.labels_unset || []) e.labels.delete(id);
+      // Like VNDB: a date can be set but not cleared.
+      for (const k of ['started', 'finished']) if (k in body && !/^\d{4}-\d{2}-\d{2}$/.test(String(body[k]))) return this.json(400, { error: `Invalid '${k}' member.` });
       for (const k of ['vote', 'started', 'finished']) if (k in body) e[k] = body[k];
       if (e.vote) e.labels.add(7); else e.labels.delete(7);
       e.lastmod = this.tick();

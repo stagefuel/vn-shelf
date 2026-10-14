@@ -30,6 +30,9 @@ same in VN Shelf and on vndb.org, whichever side you change them on.
   - **Your rating** (1–10) and the **Started** and **Finished** dates, in the new **Your rating &
     dates** box on each game's page.
   - **Notes never sync.** Blacklisted VNs are left alone.
+  - VNDB doesn't let apps clear a date. If you clear Started or Finished in VN Shelf, it stays cleared
+    here, but the date on VNDB stays until you remove it on vndb.org. A rating can be cleared on
+    both sides.
 - **Dates fill themselves in.** Setting a game to Reading (or playing it for the first time) fills
   in **Started** with today's date if it was empty. Setting it to Finished fills in **Finished**.
   This works with or without VNDB.
