@@ -187,7 +187,6 @@ function renderSidebar() {
     ...cats.map((c) => item(h('span', { class: 'catname' }, c), view === 'library' && filter.category === c,
       () => showLibrary({ category: c, tag: null }),
       h('span', { class: 'count' }, count(c)))),
-    cats.length ? null : h('div', { class: 'navnote' }, t('Group games into categories from a game\'s page, or with + above.')),
   );
 }
 
@@ -197,9 +196,50 @@ function setView(v) {
   $('#homeView').classList.toggle('hidden', v !== 'home');
   $('#libraryView').classList.toggle('hidden', v !== 'library');
   $('#detailView').classList.toggle('hidden', v !== 'detail');
-  $('#backBtn').classList.toggle('hidden', v !== 'detail');
   $('main').scrollTop = 0;
   renderSidebar();
+}
+
+// ---- navigation history (Back/Forward buttons, mouse side buttons, Alt+←/→)
+
+const nav = { stack: [], index: -1, lastMove: 0 };
+
+function navState() {
+  if (view === 'detail') return { view, id: currentId };
+  if (view === 'library') return { view, filter: { ...filter } };
+  return { view: 'home' };
+}
+
+function samePlace(a, b) { return !!a && !!b && JSON.stringify(a) === JSON.stringify(b); }
+
+/** Record where we are now (call after showing a view). */
+function pushNav() {
+  const st = navState();
+  if (samePlace(nav.stack[nav.index], st)) return updateBackBtn();
+  nav.stack = nav.stack.slice(0, nav.index + 1);
+  nav.stack.push(st);
+  if (nav.stack.length > 100) nav.stack.shift();
+  nav.index = nav.stack.length - 1;
+  updateBackBtn();
+}
+
+function updateBackBtn() { $('#backBtn').classList.toggle('hidden', nav.index <= 0); }
+
+async function restoreNav(st) {
+  if (st.view === 'detail' && games.some((g) => g.id === st.id)) { currentId = st.id; setView('detail'); await renderDetail(st.id, { noAuto: true }); }
+  else if (st.view === 'library') { Object.assign(filter, st.filter || {}); setView('library'); renderGrid(); }
+  else { setView(games.length ? 'home' : 'library'); if (view === 'home') renderHome(); else renderGrid(); }
+  updateBackBtn();
+}
+
+function navMove(step) {
+  // The mouse's side buttons can arrive twice on Windows (mouse event + app command): ignore repeats.
+  if (Date.now() - nav.lastMove < 250 || $('#dlg').open) return;
+  const i = nav.index + step;
+  if (i < 0 || i >= nav.stack.length) return;
+  nav.lastMove = Date.now();
+  nav.index = i;
+  restoreNav(nav.stack[i]);
 }
 
 async function loadGames() {
@@ -237,22 +277,16 @@ function updateCards(id) {
 function showHome() {
   setView(games.length ? 'home' : 'library');
   if (view === 'home') renderHome(); else renderGrid();
+  pushNav();
 }
 
+/** Home: one row of the most recently played games (or the newest, before anything is played). */
 function renderHome() {
-  const recent = games.filter((g) => g.lastPlayed).sort((a, b) => b.lastPlayed.localeCompare(a.lastPlayed)).slice(0, 12);
-  const added = [...games].sort((a, b) => String(b.addedAt || '').localeCompare(String(a.addedAt || ''))).slice(0, 12);
-  const totalMinutes = games.reduce((s, g) => s + (g.playMinutes || 0), 0);
-  const row = (title, list, empty) => h('section', { class: 'homerow' },
-    h('h2', {}, title),
-    list.length ? h('div', { class: 'rowcards' }, list.map(cardFor)) : h('div', { class: 'note' }, empty));
-  $('#homeView').replaceChildren(
-    h('div', { class: 'homehead' },
-      h('div', {}, h('h1', {}, t('Home')),
-        h('div', { class: 'dim' }, t('{games} games · {hours} played on this PC', { games: games.length, hours: hours(totalMinutes) })))),
-    row(t('Continue reading'), recent, t('Games you play show up here.')),
-    row(t('Recently added'), added, ''),
-  );
+  const played = games.filter((g) => g.lastPlayed).sort((a, b) => b.lastPlayed.localeCompare(a.lastPlayed));
+  const list = played.length ? played : [...games].sort((a, b) => String(b.addedAt || '').localeCompare(String(a.addedAt || '')));
+  replaceKids($('#homeView'),
+    h('h2', { class: 'hometitle' }, played.length ? t('Recently played') : t('Recently added')),
+    h('div', { class: 'recentrow' }, list.slice(0, 24).map(cardFor)));
 }
 
 // ------------------------------------------------------------------ library grid
@@ -261,6 +295,7 @@ function showLibrary(f) {
   if (f) Object.assign(filter, f);
   setView('library');
   renderGrid();
+  pushNav();
 }
 
 function matchesSearch(g, q) {
@@ -738,6 +773,7 @@ async function settingsDialog(first = false) {
   const tools = toolsEditor();
   const body = [
     h('div', { class: 'field' }, h('div', { class: 'lbl' }, t('Language')), langSel),
+    first ? null : h('div', { class: 'field' }, h('div', { class: 'lbl' }, t('Background (this PC)')), backgroundEditor()),
     h('div', { class: 'field' }, h('div', { class: 'lbl' }, t('Name of this PC (shown on the other PC)')), name),
     h('div', { class: 'field' }, h('div', { class: 'lbl' }, t('Where to keep saves — choose the same cloud service on every PC')), chooser.el),
   ];
@@ -779,6 +815,7 @@ async function settingsDialog(first = false) {
       } },
     ],
   });
+  applyBackground(setup.settings.background);
   if (!ok) return;
   const patch = { deviceName: name.value, ...chooser.get(), language: langSel.value };
   if (!first) Object.assign(patch, { historyDepth: depth.value, liveMode: liveBox.checked, localeEmulatorPath: lePath.value.trim(), autoUpdate: upd.checked, tools: tools.get() });
@@ -788,6 +825,53 @@ async function settingsDialog(first = false) {
   showUpdatePill(lastUpdate);
   await loadGames();
   if (view === 'detail' && currentId) renderDetail(currentId, { noAuto: true });
+}
+
+// ------------------------------------------------------------------ background
+
+/** Show the chosen background image behind the app (or none). `look` overrides dim/blur for previews. */
+function applyBackground(bg, look) {
+  const el = $('#appBg');
+  const on = !!(bg && bg.url);
+  document.body.classList.toggle('has-bg', on);
+  el.classList.toggle('hidden', !on);
+  if (!on) { el.style.backgroundImage = ''; return; }
+  const dim = look && look.dim !== undefined ? look.dim : bg.dim;
+  const blur = look && look.blur !== undefined ? look.blur : bg.blur;
+  el.style.backgroundImage = `url("${bg.url}")`;
+  el.style.filter = blur ? `blur(${blur}px)` : '';
+  el.style.inset = blur ? `-${blur * 2}px` : '0';
+  document.documentElement.style.setProperty('--bg-dim', String(dim));
+}
+
+function backgroundEditor() {
+  const wrap = h('div', { class: 'bgedit' });
+  const draw = () => {
+    const bg = setup.settings.background;
+    const dim = h('input', { type: 'range', min: '0', max: '0.95', step: '0.01', value: String(bg ? bg.dim : 0.72) });
+    const blur = h('input', { type: 'range', min: '0', max: '30', step: '1', value: String(bg ? bg.blur : 0) });
+    const preview = () => applyBackground(bg, { dim: Number(dim.value), blur: Number(blur.value) });
+    const commit = async () => { setup = await call('setBackgroundLook', { dim: Number(dim.value), blur: Number(blur.value) }); };
+    for (const r of [dim, blur]) { r.addEventListener('input', preview); r.addEventListener('change', commit); }
+    replaceKids(wrap,
+      h('div', { class: 'val wrap' },
+        bg ? h('div', { class: 'bgthumb', style: `background-image:url("${bg.url}")` }) : h('div', { class: 'faint small' }, t('No background image.')),
+        h('button', { type: 'button', class: 'small', onclick: async () => {
+          let r;
+          try { r = await call('chooseBackground'); } catch { return; }
+          if (r) { setup = r; applyBackground(setup.settings.background); draw(); }
+        } }, bg ? t('Change image…') : t('Choose image…')),
+        bg ? h('button', { type: 'button', class: 'small ghost danger', onclick: async () => {
+          setup = await call('clearBackground');
+          applyBackground(null);
+          draw();
+        } }, t('Remove')) : null),
+      bg ? h('div', { class: 'val wrap' },
+        h('label', { class: 'check' }, t('Darken'), dim),
+        h('label', { class: 'check' }, t('Blur'), blur)) : null);
+  };
+  draw();
+  return wrap;
 }
 
 // ------------------------------------------------------------------ updates
@@ -863,6 +947,7 @@ async function updateDialog(u) {
 async function openDetail(id, opts = {}) {
   currentId = id;
   setView('detail');
+  pushNav();
   await renderDetail(id, opts);
 }
 
@@ -1320,12 +1405,21 @@ $('#search').addEventListener('input', () => {
   if (view !== 'library') setView('library');
   renderGrid();
 });
-$('#backBtn').addEventListener('click', () => { if (prevView === 'library') showLibrary(); else showHome(); });
+$('#backBtn').addEventListener('click', () => navMove(-1));
+// Mouse side buttons (back = 3, forward = 4) and Alt+Left / Alt+Right.
+window.addEventListener('mouseup', (e) => {
+  if (e.button === 3) { e.preventDefault(); navMove(-1); }
+  if (e.button === 4) { e.preventDefault(); navMove(1); }
+});
+window.addEventListener('mousedown', (e) => { if (e.button === 3 || e.button === 4) e.preventDefault(); });
+vns.on('nav', (dir) => navMove(dir === 'back' ? -1 : 1));
 $('#addBtn').addEventListener('click', addGameFlow);
 $('#importBtn').addEventListener('click', importFolderFlow);
 $('#settingsBtn').addEventListener('click', () => settingsDialog(false));
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && view === 'detail' && !$('#dlg').open) $('#backBtn').click();
+  if (e.key === 'Escape' && view === 'detail' && !$('#dlg').open) navMove(-1);
+  if (e.altKey && e.key === 'ArrowLeft') { e.preventDefault(); navMove(-1); }
+  if (e.altKey && e.key === 'ArrowRight') { e.preventDefault(); navMove(1); }
 });
 
 // Drag an .exe onto the window to add it, or a folder to import the games in it.
@@ -1346,6 +1440,7 @@ window.addEventListener('drop', (e) => {
   setup = await vns.call('getSetup');
   setLanguage(setup.settings.language);
   applyStaticText();
+  applyBackground(setup.settings.background);
   if (!setup.configured) await settingsDialog(true);
   games = await call('listGames').catch(() => []);
   showHome();

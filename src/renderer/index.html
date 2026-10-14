@@ -7,6 +7,7 @@
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+  <div id="appBg" class="appbg hidden" aria-hidden="true"></div>
   <header class="topbar">
     <div class="brand">VN Shelf</div>
     <button class="ghost back hidden" id="backBtn" data-t="← Back" data-t-title="Back">← Back</button>
@@ -14,7 +15,7 @@
     <div class="spacer"></div>
     <button id="updatePill" class="pill hidden"></button>
     <button id="importBtn" class="ghost" data-t="Import folder…">Import folder…</button>
-    <button id="addBtn" class="primary" data-t="+ Add game">+ Add game</button>
+    <button id="addBtn" class="primary addbtn" data-t-title="Add game" title="Add game" aria-label="Add game">+</button>
     <button id="settingsBtn" class="ghost icon" data-t-title="Settings" title="Settings" aria-label="Settings">⚙</button>
   </header>
 

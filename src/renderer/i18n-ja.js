@@ -93,6 +93,14 @@ Object.assign(JA, {
   'Continue reading': '続きから読む',
   'Games you play show up here.': 'プレイしたゲームがここに表示されます。',
   'Recently added': '最近追加したもの',
+  'Recently played': '最近プレイしたもの',
+  'Add game': 'ゲームを追加',
+  'Background (this PC)': '背景（このPC）',
+  'No background image.': '背景画像はありません。',
+  'Choose image…': '画像を選択…',
+  'Change image…': '画像を変更…',
+  'Darken': '暗さ',
+  'Blur': 'ぼかし',
 
   // ---- library / sorting
   'Sort by': '並び替え',

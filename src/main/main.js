@@ -32,6 +32,7 @@ let engine = null;
 let roots = null;
 let googleAuth = null; // null when this build has no Google client ID
 let updateInfo = null; // newest release found on GitHub, if any
+const TOPBAR_HEIGHT = 52; // keep in step with .topbar in styles.css
 const running = new Map(); // id -> { ev, watchers, liveTimer, mode }
 
 // Lets tests (and a future portable mode) keep settings somewhere other than %APPDATA%.
@@ -156,6 +157,14 @@ async function decorate(game) {
   };
 }
 
+// ---------------------------------------------------------------- background image
+
+function backgroundInfo() {
+  const b = config.data.background;
+  if (!b || !b.file || !fs.existsSync(b.file)) return null;
+  return { url: `${pathToFileURL(b.file).href}?v=${b.version || 0}`, dim: b.dim ?? 0.72, blur: b.blur ?? 0 };
+}
+
 // ---------------------------------------------------------------- sync glue
 
 /** Run a sync and translate outcomes the UI must act on into { needs } answers. */
@@ -271,6 +280,7 @@ const api = {
         autoUpdate: config.data.autoUpdate,
         tools: config.data.tools,
         categories: config.data.categories,
+        background: backgroundInfo(),
       },
       platform: process.platform,
       version: app.getVersion(),
@@ -759,6 +769,34 @@ const api = {
     return { restarting: true };
   },
 
+  // ---- background
+
+  async chooseBackground() {
+    const f = await api.pickFile('Choose a background image', [{ name: 'Images', extensions: ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp'] }]);
+    if (!f) return null;
+    const ext = (path.extname(f) || '.jpg').toLowerCase();
+    const dest = path.join(app.getPath('userData'), `background${ext}`);
+    const old = config.data.background;
+    if (old && old.file && old.file !== dest) await fs.promises.rm(old.file, { force: true }).catch(() => {});
+    await fs.promises.copyFile(f, dest);
+    await config.set({ background: { file: dest, dim: old ? old.dim ?? 0.72 : 0.72, blur: old ? old.blur ?? 0 : 0, version: Date.now() } });
+    return api.getSetup();
+  },
+
+  async setBackgroundLook({ dim, blur }) {
+    const b = config.data.background;
+    if (!b) return api.getSetup();
+    await config.set({ background: { ...b, dim: Math.max(0, Math.min(0.95, Number(dim))), blur: Math.max(0, Math.min(30, Number(blur) || 0)) } });
+    return api.getSetup();
+  },
+
+  async clearBackground() {
+    const b = config.data.background;
+    if (b && b.file) await fs.promises.rm(b.file, { force: true }).catch(() => {});
+    await config.set({ background: null });
+    return api.getSetup();
+  },
+
   // ---- misc
 
   async openPath(p) { if (p) await shell.openPath(p); return true; },
@@ -777,9 +815,19 @@ async function createWindow() {
     title: 'VN Shelf',
     icon: path.join(__dirname, '..', '..', 'build', 'icon.png'),
     autoHideMenuBar: true,
+    // Windows: one slim top bar. The native title bar is hidden and the window buttons sit over ours.
+    ...(process.platform === 'win32' ? {
+      titleBarStyle: 'hidden',
+      titleBarOverlay: { color: '#00000000', symbolColor: '#c9cdd6', height: TOPBAR_HEIGHT },
+    } : {}),
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
   win.setMenuBarVisibility(false);
+  // Mouse back/forward buttons (and keyboard media keys) on Windows arrive as app commands.
+  win.on('app-command', (_e, cmd) => {
+    if (cmd === 'browser-backward') send('nav', 'back');
+    if (cmd === 'browser-forward') send('nav', 'forward');
+  });
   win.webContents.setWindowOpenHandler(({ url }) => { api.openExternal(url); return { action: 'deny' }; });
   win.webContents.on('will-navigate', (e) => e.preventDefault());
   await win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));

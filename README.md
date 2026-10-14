@@ -13,6 +13,17 @@ The interface is available in English and 日本語. Nothing AI-based runs insid
 **[Download the latest release](https://github.com/stagefuel/vn-shelf/releases)** ·
 [Wiki / guide](https://github.com/stagefuel/vn-shelf/wiki) · [Changelog](CHANGELOG.md)
 
+![Home: the games you played most recently](docs/screenshots/home.png)
+
+| | |
+|---|---|
+| ![Library sorted by VNDB rating, with categories in the sidebar](docs/screenshots/library.png) | ![A game page with its VNDB description, length, rating and launch options](docs/screenshots/game.png) |
+| **Library:** sorting, categories and sync badges | **Game page:** VNDB info, Play, save sync status |
+| ![Importing a whole folder of games, matched on VNDB](docs/screenshots/import.png) | ![Settings with a custom background image](docs/screenshots/settings.png) |
+| **Import folder:** finds every game and matches it on VNDB | **Settings:** storage, language, background, companion tools |
+| ![Home with a blurred cover as the background](docs/screenshots/home-background.png) | ![The Japanese interface](docs/screenshots/game-ja.png) |
+| **Backgrounds:** any image, with darkness and blur | **日本語:** the whole interface in Japanese |
+
 ## Where saves are kept
 
 You pick one on first run, and the same one on every PC:
@@ -25,8 +36,7 @@ You pick one on first run, and the same one on every PC:
 ## Features
 
 ### Library
-- **Home page:** what you played most recently ("Continue reading") and what you added most
-  recently.
+- **Home page:** one row of the games you played most recently, filling the window's width.
 - **Categories:** your own groups (Reading, Finished, Favourites…), shown in the sidebar like
   folders. They're saved with each game, so every PC sees them.
 - **Sorting:** by title, last played, recently added, release date, VNDB rating, length or time
@@ -87,6 +97,13 @@ You pick one on first run, and the same one on every PC:
   - a location over 50 MB or 1000 files asks first; one over 500 MB or 5000 files is refused
 - **Export saves… / Import saves…** saves a game's saves as a `.zip` or puts them back, with a backup
   to History first.
+
+### Look and navigation
+- **One slim top bar on Windows:** the window's own title bar is merged into VN Shelf's bar. Drag it to
+  move the window, double-click to maximise.
+- **Background image:** pick any picture in Settings (stored per PC), with sliders for darkness and blur.
+- **Back and forward:** the mouse's side buttons, Alt+← / Alt+→ and the Back button move through
+  Home, the library, filters and game pages.
 
 ### Updates
 - VN Shelf checks for a new version when it starts (you can turn this off) and shows a pop-up you

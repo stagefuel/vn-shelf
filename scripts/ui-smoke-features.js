@@ -195,6 +195,38 @@ const zipOut = path.join(base, 'k3-saves.zip');
     try { process.kill(pid, 0); result.toolClosedWithGame = false; } catch { result.toolClosedWithGame = true; }
   }
 
+  // ---- mouse back / forward and Alt+arrows
+  await page.click('#sidebar .navitem:has-text("All games")');
+  await page.waitForSelector('#libraryView:not(.hidden) #grid .card');
+  await page.click('#grid .card >> nth=0');
+  await page.waitForSelector('#detailView:not(.hidden) #playBtn');
+  const sideButton = (button) => page.evaluate((b) => window.dispatchEvent(new MouseEvent('mouseup', { button: b, bubbles: true })), button);
+  await sideButton(3);
+  await page.waitForSelector('#libraryView:not(.hidden)');
+  result.mouseBackToLibrary = true;
+  await page.waitForTimeout(300);
+  await sideButton(4);
+  await page.waitForSelector('#detailView:not(.hidden) #playBtn');
+  result.mouseForwardToGame = true;
+  await page.waitForTimeout(300);
+  await page.keyboard.press('Alt+ArrowLeft');
+  await page.waitForSelector('#libraryView:not(.hidden)');
+  result.altLeftBack = true;
+
+  // ---- the + button and a background image
+  result.addButton = await page.textContent('#addBtn');
+  await mockOpen(path.join(__dirname, '..', 'build', 'icon.png'));
+  await page.click('#settingsBtn');
+  await page.click('dialog[open] .bgedit button:has-text("Choose image")');
+  await page.waitForSelector('dialog[open] .bgthumb');
+  await page.click('dialog[open] button:has-text("Save")');
+  await page.waitForTimeout(500);
+  result.backgroundOn = await page.evaluate(() => document.body.classList.contains('has-bg') && !!document.querySelector('#appBg').style.backgroundImage);
+  await page.click('#sidebar .navitem:has-text("Home")');
+  await page.waitForTimeout(500);
+  await shot(page, 'f08b-home-background');
+  result.homeCards = await page.$$eval('#homeView .recentrow .card', (c) => c.length);
+
   // ---- Japanese UI
   await page.click('#settingsBtn');
   await page.selectOption('dialog[open] select >> nth=0', 'ja');
@@ -203,8 +235,9 @@ const zipOut = path.join(base, 'k3-saves.zip');
   await page.click('#sidebar .navitem:has-text("ホーム")');
   await page.waitForTimeout(500);
   await shot(page, 'f09-home-ja');
-  result.homeJa = await page.textContent('#homeView h1');
-  await page.click('#homeView .card:has-text("Kagura"), #homeView .card:has-text("神咒")');
+  result.homeJa = await page.textContent('#homeView .hometitle');
+  await page.click('#sidebar .navitem:has-text("すべてのゲーム")');
+  await page.click('#grid .card:has-text("Kagura"), #grid .card:has-text("神咒")');
   await page.waitForSelector('#detailView .panel h2');
   await page.waitForTimeout(800);
   await shot(page, 'f10-detail-ja');

@@ -90,11 +90,30 @@ async function readJson(p, fallback = null) {
 }
 
 /** Write JSON via a temp file + rename so a sync client never sees a half-written file. */
-async function writeJson(p, data) {
+const writeQueues = new Map(); // path -> promise of the write in progress
+function writeJson(p, data) {
+  // Writes to the same file run one after another: Windows refuses to rename over a file while
+  // another rename of it is in progress (EPERM), and the last write must win.
+  const body = JSON.stringify(data, null, 2);
+  const prev = writeQueues.get(p) || Promise.resolve();
+  const next = prev.catch(() => {}).then(() => writeJsonNow(p, body));
+  writeQueues.set(p, next);
+  next.finally(() => { if (writeQueues.get(p) === next) writeQueues.delete(p); }).catch(() => {});
+  return next;
+}
+
+async function writeJsonNow(p, body) {
   await fsp.mkdir(path.dirname(p), { recursive: true });
-  const tmp = `${p}.${process.pid}.${Date.now()}.tmp`;
-  await fsp.writeFile(tmp, JSON.stringify(data, null, 2));
-  await fsp.rename(tmp, p);
+  // Unique per call, in case another process writes the same file at the same moment.
+  const tmp = `${p}.${process.pid}.${Date.now()}.${crypto.randomBytes(4).toString('hex')}.tmp`;
+  await fsp.writeFile(tmp, body);
+  for (let attempt = 0; ; attempt++) {
+    try { await fsp.rename(tmp, p); return; } catch (e) {
+      // Antivirus, indexers and sync clients can hold a file for a moment on Windows.
+      if (!['EPERM', 'EBUSY', 'EACCES'].includes(e.code) || attempt >= 8) { await fsp.rm(tmp, { force: true }); throw e; }
+      await new Promise((r) => setTimeout(r, 50 * (attempt + 1)));
+    }
+  }
 }
 
 /** Rename, falling back to copy+delete (e.g. across drives, or when a sync client holds a handle briefly). */

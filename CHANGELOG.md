@@ -4,6 +4,37 @@ All notable changes to VN Shelf. Download any version from the
 [Releases page](https://github.com/stagefuel/vn-shelf/releases). From 0.3.0 on, VN Shelf can
 update itself (Settings → Updates).
 
+## 0.4.0
+
+A cleaner look: one slim top bar, a simpler home page, background images, and mouse back/forward.
+
+### New
+- **Back and forward.** VN Shelf remembers where you've been: Home, the library (including the
+  category or tag you filtered by) and game pages. You can move through that history with:
+  - the mouse's side buttons
+  - **Alt+←** / **Alt+→**
+  - the **← Back** button
+- **Background image.** **Settings → Background (this PC)** lets you pick any picture to show behind
+  the app, with **Darken** and **Blur** sliders that preview live. The top bar and sidebar become
+  see-through over it. The image is copied into VN Shelf's settings, so moving or deleting the
+  original doesn't matter, and each PC can have its own.
+
+### Changed
+- **One slim top bar on Windows.** The separate black Windows title bar is gone. The minimise,
+  maximise and close buttons now sit in VN Shelf's own bar, which you can drag to move the window
+  and double-click to maximise. The bar is also shorter. (Linux keeps its normal window frame.)
+- **Home is just your recent games.** One row of the games you played most recently, stretched to the
+  window's width. Before you've played anything, it shows your newest games. The separate rows and
+  play-time line are gone.
+- **Add game** is now a compact **+** button, with "Add game" as its tooltip.
+- The sidebar no longer shows the hint text under Categories.
+- The README and wiki now have screenshots.
+
+### Fixed
+- Two settings saved at the same instant (for example, moving both background sliders) could fail
+  with a "no such file" error, because both used the same temporary file. Every save now uses its
+  own.
+
 ## 0.3.1
 
 ### Fixed

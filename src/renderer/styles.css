@@ -80,12 +80,22 @@ label.check { display: flex; gap: 8px; align-items: center; cursor: pointer; }
 /* ---------- top bar ---------- */
 .topbar {
   display: flex; align-items: center; gap: 12px;
-  padding: 12px 22px;
+  height: 52px; flex: none;
+  padding: 0 22px;
+  /* Leave room for the window buttons drawn over the bar on Windows (Window Controls Overlay). */
+  padding-right: max(22px, calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw) + 14px));
   border-bottom: 1px solid var(--line);
   background: var(--bg);
   position: relative; z-index: 2;
+  -webkit-app-region: drag; /* the bar doubles as the window's title bar: drag to move, double-click to maximise */
+  user-select: none;
 }
-.brand { font-weight: 700; letter-spacing: .02em; font-size: 16px; margin-right: 8px; }
+.topbar button, .topbar input, .topbar select, .topbar .pill { -webkit-app-region: no-drag; }
+.topbar .addbtn { width: 36px; height: 34px; padding: 0; font-size: 22px; line-height: 1; font-weight: 500; }
+
+.brand { font-weight: 700; letter-spacing: .02em; font-size: 16px; margin-right: 8px; white-space: nowrap; flex: none; }
+.topbar .search { min-width: 140px; flex: 0 1 340px; }
+.topbar #importBtn { white-space: nowrap; }
 .search { max-width: 340px; }
 
 /* ---------- layout ---------- */
@@ -272,12 +282,6 @@ input.num { width: 64px; }
 
 /* ---------- home ---------- */
 #homeView { padding: 22px 0 60px; }
-.homehead { padding: 4px 22px 6px; }
-.homehead h1 { margin: 0 0 4px; font-size: 26px; }
-.homerow { margin-top: 22px; }
-.homerow h2 { margin: 0 22px 12px; font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--text-faint); font-weight: 600; }
-.homerow .note { padding: 0 22px; color: var(--text-faint); }
-.rowcards { display: grid; grid-auto-flow: column; grid-auto-columns: 160px; gap: 18px; overflow-x: auto; padding: 4px 22px 14px; }
 
 /* ---------- library toolbar ---------- */
 .libtoolbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 20px 22px 0; }
@@ -342,3 +346,32 @@ textarea.notes:focus { border-color: var(--accent); }
   border: 1px solid rgba(76,195,138,.45); box-shadow: 0 14px 40px rgba(0,0,0,.5); animation: slidein .2s ease;
 }
 .updatepop .t { font-weight: 600; }
+
+/* ---------- home ---------- */
+.hometitle { margin: 4px 22px 14px; font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--text-faint); font-weight: 600; }
+/* One row of covers that always spans the window: columns stretch, extra cards are cut off. */
+.recentrow {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  grid-template-rows: auto; grid-auto-rows: 0; row-gap: 0; column-gap: 20px;
+  overflow: hidden; padding: 6px 22px 8px;
+}
+.recentrow > .card { min-height: 0; overflow: hidden; } /* cards past the first row get a 0-height row: hide them fully */
+.recentrow > .card .art { margin-top: 0; }
+
+/* ---------- background image ---------- */
+body { position: relative; z-index: 0; }
+.appbg {
+  position: fixed; inset: 0; z-index: -2; pointer-events: none;
+  background-size: cover; background-position: center;
+}
+body.has-bg { background: #000; }
+body.has-bg::before {
+  content: ''; position: fixed; inset: 0; z-index: -1; pointer-events: none;
+  background: rgba(10, 11, 14, var(--bg-dim, .72));
+}
+body.has-bg .topbar { background: rgba(12, 14, 18, .55); backdrop-filter: blur(10px); }
+body.has-bg .sidebar { background: rgba(12, 14, 18, .35); }
+body.has-bg .hero .bgfade { background: linear-gradient(180deg, rgba(15,17,21,.15), rgba(15,17,21,.45)); }
+.bgthumb { width: 120px; height: 68px; border-radius: 8px; background-size: cover; background-position: center; border: 1px solid var(--line); }
+.bgedit { display: grid; gap: 10px; }
+.bgedit input[type=range] { width: 160px; }

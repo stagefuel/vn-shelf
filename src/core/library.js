@@ -130,6 +130,7 @@ class LocalConfig {
     d.language = d.language || 'auto'; // 'auto' | 'en' | 'ja'
     d.sort = d.sort || 'title';
     d.autoUpdate = d.autoUpdate !== false;
+    d.background = d.background || null; // { file, dim, blur } — an image shown behind the app, per PC
     await this.save();
     return d;
   }

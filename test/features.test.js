@@ -227,3 +227,11 @@ test('updater (Windows): the swap script outlives its launcher and replaces the 
   const log = fs.readFileSync(script.replace(/\.cmd$/, '.log'), 'utf8');
   assert.match(log, /closed, replacing the program/);
 });
+
+test('settings: many saves at the same moment never collide', async () => {
+  const fsu = require('../src/core/fsutil');
+  const f = path.join(tmp(), 'config.json');
+  await Promise.all(Array.from({ length: 40 }, (_, i) => fsu.writeJson(f, { n: i })));
+  assert.ok(typeof JSON.parse(fs.readFileSync(f, 'utf8')).n === 'number');
+  assert.deepStrictEqual(fs.readdirSync(path.dirname(f)).filter((x) => x.endsWith('.tmp')), []);
+});
