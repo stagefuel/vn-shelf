@@ -58,7 +58,7 @@ function makePc(name) {
 async function start(pc) {
   // VNS_EXE = a packaged build to test (e.g. "VN Shelf.exe" on Windows); otherwise run from source.
   const packaged = process.env.VNS_EXE;
-  const env = { ...process.env, ...pc.env };
+  const env = { ...process.env, ...pc.env, VNS_NO_UPDATE_CHECK: '1' };
   delete env.ELECTRON_RUN_AS_NODE;
   const app = await electron.launch({
     executablePath: packaged || require('electron'),

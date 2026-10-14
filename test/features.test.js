@@ -1,0 +1,200 @@
+'use strict';
+const test = require('node:test');
+const assert = require('node:assert');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { execFileSync } = require('child_process');
+const { createZip, readZip } = require('../src/core/zip');
+const savesio = require('../src/core/savesio');
+const importer = require('../src/core/importer');
+const vndb = require('../src/core/vndb');
+const updater = require('../src/core/updater');
+const tools = require('../src/core/tools');
+const { SyncEngine } = require('../src/core/sync');
+const { Library } = require('../src/core/library');
+
+function tmp() { return fs.mkdtempSync(path.join(os.tmpdir(), 'vns-f-')); }
+function write(p, s = '') { fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, s); }
+
+// ------------------------------------------------------------------ zip
+
+test('zip: round trip keeps names (incl. Japanese), contents and compresses', () => {
+  const big = Buffer.alloc(50000, 'a');
+  const z = createZip([{ name: 'saves/r1/セーブ01.dat', data: Buffer.from('progress') }, { name: 'big.bin', data: big }]);
+  assert.ok(z.length < 2000, 'repetitive data is deflated');
+  const out = readZip(z);
+  assert.deepStrictEqual(out.map((e) => e.name), ['saves/r1/セーブ01.dat', 'big.bin']);
+  assert.strictEqual(out[0].data.toString(), 'progress');
+  assert.ok(out[1].data.equals(big));
+});
+
+test('zip: other tools can read it', { skip: !fs.existsSync('/usr/bin/python3') }, () => {
+  const dir = tmp();
+  const f = path.join(dir, 'x.zip');
+  fs.writeFileSync(f, createZip([{ name: 'a/セーブ.dat', data: Buffer.from('hello') }]));
+  const r = execFileSync('python3', ['-c', 'import sys,zipfile;z=zipfile.ZipFile(sys.argv[1]);print(z.testzip(), z.read(z.namelist()[0]).decode(), z.namelist()[0])', f]).toString().trim();
+  assert.strictEqual(r, 'None hello a/セーブ.dat');
+});
+
+test('zip: damaged data is refused', () => {
+  const z = createZip([{ name: 'a.dat', data: Buffer.from('some save data here') }]);
+  z[40] ^= 0xff;
+  assert.throws(() => readZip(z));
+  assert.throws(() => readZip(Buffer.from('not a zip at all')), /Not a zip/);
+});
+
+// ------------------------------------------------------------------ save export / import
+
+async function twoPcs() {
+  const base = tmp();
+  const cloud = path.join(base, 'cloud');
+  fs.mkdirSync(cloud);
+  const lib = new Library(cloud);
+  let game = await lib.create({ title: 'Muramasa' });
+  game = await lib.addSaveRule(game.id, { path: '<appdata>/Nitroplus/Muramasa' });
+  const pc = (name) => {
+    const roots = { '<appdata>': path.join(base, name, 'appdata'), '<home>': path.join(base, name) };
+    return { roots, install: path.join(base, name, 'game'), dir: path.join(roots['<appdata>'], 'Nitroplus', 'Muramasa'),
+      engine: new SyncEngine({ cloudDir: cloud, deviceId: `${name}-0000-id`, deviceName: name, roots }) };
+  };
+  return { lib, game, a: pc('Desktop'), b: pc('Laptop') };
+}
+
+test('saves: export on one PC, import on another; current saves are backed up first', async () => {
+  const { game, a, b } = await twoPcs();
+  write(path.join(a.dir, 'save01.dat'), 'desktop progress');
+  write(path.join(a.dir, 'sub', 'system.dat'), 'cfg');
+  const { zip, files } = await savesio.exportSaves(a.engine, game, a.install);
+  assert.strictEqual(files, 2);
+
+  write(path.join(b.dir, 'save01.dat'), 'laptop progress');
+  write(path.join(b.dir, 'stale.dat'), 'old');
+  const r = await savesio.importSaves(b.engine, game, b.install, zip);
+  assert.strictEqual(r.files, 2);
+  assert.strictEqual(fs.readFileSync(path.join(b.dir, 'save01.dat'), 'utf8'), 'desktop progress');
+  assert.strictEqual(fs.readFileSync(path.join(b.dir, 'sub', 'system.dat'), 'utf8'), 'cfg');
+  assert.ok(!fs.existsSync(path.join(b.dir, 'stale.dat')), 'import makes the folder match the export');
+  const hist = await b.engine.listHistory(game.id);
+  assert.ok(hist.some((h) => h.kind === 'before-import' && h.files === 2), 'laptop saves were backed up');
+});
+
+test('saves: rules are matched by path when ids differ; unrelated zips are refused', async () => {
+  const { lib, game, a, b } = await twoPcs();
+  write(path.join(a.dir, 'save01.dat'), 'x');
+  const { zip } = await savesio.exportSaves(a.engine, game, a.install);
+  // Same game re-added elsewhere: same save path, new rule id.
+  let other = await lib.create({ title: 'Muramasa again' });
+  other = await lib.addSaveRule(other.id, { path: '<appdata>/Nitroplus/Muramasa' });
+  const r = await savesio.importSaves(b.engine, other, b.install, zip);
+  assert.strictEqual(r.files, 1);
+  let unrelated = await lib.create({ title: 'Other' });
+  unrelated = await lib.addSaveRule(unrelated.id, { path: '<appdata>/Other' });
+  await assert.rejects(() => savesio.importSaves(b.engine, unrelated, b.install, zip), (e) => e.code === 'no-match');
+  await assert.rejects(() => savesio.importSaves(b.engine, unrelated, b.install, createZip([{ name: 'x', data: Buffer.from('1') }])), (e) => e.code === 'not-export');
+});
+
+// ------------------------------------------------------------------ bulk import
+
+test('import: finds game folders and their main .exe, skipping installers and cracks', async () => {
+  const root = tmp();
+  const mk = (rel, size = 10) => write(path.join(root, rel), Buffer.alloc(size));
+  mk('AlphaROMdiE.exe', 100); mk('Cracker.exe', 100); // top-level tools are not games
+  mk('light/Dies Irae/malie.exe', 4e6); mk('light/Dies Irae/MalieCfg.exe', 1e5); mk('light/Dies Irae/data/x.dat');
+  mk('Setoguchi/[S.M.L] CARNIVAL v1.02/carnival.exe', 2e6); mk('Setoguchi/[S.M.L] CARNIVAL v1.02/carnival_patch.exe', 3e6);
+  mk('Unity Game/Bst.exe', 7e5); mk('Unity Game/UnityCrashHandler64.exe', 1e6); fs.mkdirSync(path.join(root, 'Unity Game', 'Bst_Data'));
+  mk('Installers/setup.exe', 5e6); mk('Installers/Real Game/game.exe', 1e6);
+  mk('Manual Only/readme.txt');
+  const found = await importer.scan(root);
+  const by = Object.fromEntries(found.map((f) => [path.relative(root, f.dir).replace(/\\/g, '/'), path.basename(f.exe)]));
+  assert.deepStrictEqual(by, {
+    'Installers/Real Game': 'game.exe',
+    'Setoguchi/[S.M.L] CARNIVAL v1.02': 'carnival.exe',
+    'Unity Game': 'Bst.exe',
+    'light/Dies Irae': 'malie.exe',
+  });
+  assert.strictEqual(found.find((f) => f.dir.includes('CARNIVAL')).title, 'CARNIVAL');
+});
+
+test('import: title cleanup', () => {
+  assert.strictEqual(importer.cleanTitle('[light] 神咒神威神楽'), '神咒神威神楽');
+  assert.strictEqual(importer.cleanTitle('DemonsRoots1.2.1'), 'DemonsRoots');
+  assert.strictEqual(importer.cleanTitle('Some_Game_v1.05'), 'Some Game');
+  assert.strictEqual(importer.cleanTitle('新説魔法少女+v115'), '新説魔法少女');
+  assert.strictEqual(importer.cleanTitle('Fate Stay Night'), 'Fate Stay Night');
+});
+
+// ------------------------------------------------------------------ VNDB
+
+test('vndb: description markup becomes safe text segments', () => {
+  const segs = vndb.parseDescription('Intro [url=/c123]Hero[/url] text [spoiler]twist[/spoiler] [url=javascript:alert(1)]bad[/url]\n[i]end[/i]');
+  assert.deepStrictEqual(segs, [
+    { text: 'Intro ' }, { text: 'Hero', href: 'https://vndb.org/c123' }, { text: ' text ' },
+    { text: 'twist', spoiler: true }, { text: ' ' }, { text: 'bad' }, { text: '\n' }, { text: 'end' },
+  ]);
+});
+
+test('vndb: info keeps meaningful tags, drops lies and weak ones', () => {
+  const i = vndb.info({ id: 'v1', length: 4, length_minutes: 2400, rating: 85.3, votecount: 900, languages: ['ja'],
+    tags: [{ id: 'g1', name: 'Strong', rating: 2.8, spoiler: 0 }, { id: 'g2', name: 'Weak', rating: 0.6, spoiler: 0 },
+      { id: 'g3', name: 'Lie', rating: 2.5, lie: true }, { id: 'g4', name: 'Twist', rating: 2, spoiler: 2 }] });
+  assert.strictEqual(i.length, 'long');
+  assert.deepStrictEqual(i.tags.map((t) => t.name), ['Strong', 'Twist']);
+  assert.strictEqual(i.tags[1].spoiler, 2);
+});
+
+// ------------------------------------------------------------------ updates
+
+test('updater: version order and picking the newest release with its exe', async () => {
+  assert.ok(updater.compareVersions('0.2.10', '0.2.9') > 0);
+  assert.ok(updater.compareVersions('1.0.0-beta.2', '1.0.0') < 0);
+  const releases = [
+    { tag_name: 'v0.3.0', draft: true, assets: [] },
+    { tag_name: 'v0.2.2', prerelease: true, body: 'notes', html_url: 'u', assets: [{ name: 'VN-Shelf-0.2.2-portable.exe', browser_download_url: 'https://github.com/stagefuel/vn-shelf/releases/download/v0.2.2/VN-Shelf-0.2.2-portable.exe', size: 5, digest: 'sha256:ABC' }] },
+    { tag_name: 'v0.2.1', assets: [] },
+  ];
+  const fetchImpl = async () => ({ ok: true, json: async () => releases });
+  const r = await updater.checkForUpdate('0.2.1', { fetchImpl });
+  assert.strictEqual(r.version, '0.2.2');
+  assert.strictEqual(r.asset.sha256, 'abc');
+  assert.strictEqual(await updater.checkForUpdate('0.2.2', { fetchImpl }), null);
+  assert.strictEqual(await updater.checkForUpdate('0.2.1', { fetchImpl, includePrerelease: false }), null);
+});
+
+test('updater: download is checked against size and SHA-256, and only from GitHub releases', async () => {
+  const dir = tmp();
+  const data = Buffer.from('new exe contents');
+  const sha = require('crypto').createHash('sha256').update(data).digest('hex');
+  const url = 'https://github.com/stagefuel/vn-shelf/releases/download/v9/VN-Shelf-9-portable.exe';
+  const fetchImpl = async () => ({ ok: true, body: (async function* () { yield data.subarray(0, 5); yield data.subarray(5); })() });
+  const ok = await updater.download({ url, size: data.length, sha256: sha }, path.join(dir, 'new.exe'), { fetchImpl });
+  assert.strictEqual(fs.readFileSync(ok.path, 'utf8'), 'new exe contents');
+  await assert.rejects(() => updater.download({ url, size: data.length, sha256: 'f'.repeat(64) }, path.join(dir, 'bad.exe'), { fetchImpl }), /checksum/);
+  assert.ok(!fs.existsSync(path.join(dir, 'bad.exe')) && !fs.existsSync(path.join(dir, 'bad.exe.part')));
+  await assert.rejects(() => updater.download({ url: 'https://evil.example/x.exe', size: 1 }, path.join(dir, 'x.exe'), { fetchImpl }), /outside GitHub/);
+});
+
+// ------------------------------------------------------------------ companion tools
+
+test('tools: placeholders are filled and quoted arguments kept together', () => {
+  assert.deepStrictEqual(tools.expandArgs('--attach "{gameExe}" -t {title}', { gameExe: 'C:\\G\\a b.exe', title: 'X' }), ['--attach', 'C:\\G\\a b.exe', '-t', 'X']);
+});
+
+test('tools: started with the game and closed with it (only those set to close)', { skip: process.platform === 'win32' }, async () => {
+  const dir = tmp();
+  const mark = (n) => path.join(dir, `${n}.pid`);
+  const mk = (n) => { const p = path.join(dir, `${n}.sh`); fs.writeFileSync(p, `#!/bin/sh\necho $$ > "${mark(n)}"\nsleep 30\n`); fs.chmodSync(p, 0o755); return p; };
+  const hs = tools.startTools([
+    { id: 'a', name: 'hooker', path: mk('a'), args: '', closeWithGame: true },
+    { id: 'b', name: 'keeps running', path: mk('b'), args: '', closeWithGame: false },
+  ], { gameExe: '/g/x', gameDir: '/g', title: 't' });
+  for (let i = 0; i < 50 && !(fs.existsSync(mark('a')) && fs.existsSync(mark('b'))); i++) await new Promise((r) => setTimeout(r, 100));
+  const pidA = Number(fs.readFileSync(mark('a'), 'utf8'));
+  const pidB = Number(fs.readFileSync(mark('b'), 'utf8'));
+  await tools.stopTools(hs);
+  await new Promise((r) => setTimeout(r, 300));
+  const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  assert.strictEqual(alive(pidA), false, 'closeWithGame tool was stopped');
+  assert.strictEqual(alive(pidB), true, 'other tool keeps running');
+  process.kill(-hs[1].child.pid, 'SIGTERM');
+});

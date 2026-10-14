@@ -9,29 +9,39 @@
 <body>
   <header class="topbar">
     <div class="brand">VN Shelf</div>
-    <button class="ghost back hidden" id="backBtn" title="Back to library">← Library</button>
-    <input id="search" class="search" type="search" placeholder="Search your library" autocomplete="off">
+    <button class="ghost back hidden" id="backBtn" data-t="← Back" data-t-title="Back">← Back</button>
+    <input id="search" class="search" type="search" data-t-placeholder="Search titles, tags, developers" placeholder="Search titles, tags, developers" autocomplete="off">
     <div class="spacer"></div>
-    <button id="addBtn" class="primary">+ Add game</button>
-    <button id="settingsBtn" class="ghost icon" title="Settings" aria-label="Settings">⚙</button>
+    <button id="updatePill" class="pill hidden"></button>
+    <button id="importBtn" class="ghost" data-t="Import folder…">Import folder…</button>
+    <button id="addBtn" class="primary" data-t="+ Add game">+ Add game</button>
+    <button id="settingsBtn" class="ghost icon" data-t-title="Settings" title="Settings" aria-label="Settings">⚙</button>
   </header>
 
-  <main>
-    <section id="libraryView">
-      <div id="grid" class="grid"></div>
-      <div id="empty" class="empty hidden">
-        <h2>Your shelf is empty</h2>
-        <p>Drag a game's .exe onto this window, or use <b>Add game</b>.</p>
-      </div>
-    </section>
-    <section id="detailView" class="hidden"></section>
-  </main>
+  <div class="layout">
+    <nav id="sidebar" class="sidebar"></nav>
+    <main>
+      <section id="homeView" class="hidden"></section>
+      <section id="libraryView" class="hidden">
+        <div id="libToolbar" class="libtoolbar"></div>
+        <div id="grid" class="grid"></div>
+        <div id="noMatch" class="empty hidden"><p data-t="No games match.">No games match.</p></div>
+        <div id="empty" class="empty hidden">
+          <h2 data-t="Your shelf is empty">Your shelf is empty</h2>
+          <p data-t="Drag a game's .exe onto this window, use Add game, or Import folder to add a whole folder of games at once.">Drag a game's .exe onto this window, use Add game, or Import folder to add a whole folder of games at once.</p>
+        </div>
+      </section>
+      <section id="detailView" class="hidden"></section>
+    </main>
+  </div>
 
-  <div id="dropHint" class="drop-hint hidden">Drop a game .exe to add it</div>
+  <div id="dropHint" class="drop-hint hidden" data-t="Drop a game .exe to add it">Drop a game .exe to add it</div>
   <div id="toasts" class="toasts" aria-live="polite"></div>
 
   <dialog id="dlg"><form method="dialog" id="dlgBody"></form></dialog>
 
+  <script src="i18n.js"></script>
+  <script src="i18n-ja.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

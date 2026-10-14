@@ -56,6 +56,10 @@ jobs:
             dist/*.exe
             dist/*.zip
           if-no-files-found: error
+      - name: Release notes from CHANGELOG.md (tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: node scripts/release-notes.js "${{ github.ref_name }}" > release-notes.md
       - name: Publish release (tags only)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
@@ -63,5 +67,5 @@ jobs:
           files: |
             dist/*.exe
             dist/*.zip
-          generate_release_notes: true
+          body_path: release-notes.md
           prerelease: ${{ contains(github.ref_name, '-') || startsWith(github.ref_name, 'v0.') }}

@@ -20,6 +20,10 @@ const { StoreLibrary } = require('../core/store-library');
 const { DriveStore } = require('../core/stores');
 const { DriveClient } = require('../core/gdrive');
 const { GoogleAuth } = require('../core/google-oauth');
+const importer = require('../core/importer');
+const savesio = require('../core/savesio');
+const tools = require('../core/tools');
+const updater = require('../core/updater');
 
 let win = null;
 let config = null;
@@ -27,6 +31,7 @@ let library = null;
 let engine = null;
 let roots = null;
 let googleAuth = null; // null when this build has no Google client ID
+let updateInfo = null; // newest release found on GitHub, if any
 const running = new Map(); // id -> { ev, watchers, liveTimer, mode }
 
 // Lets tests (and a future portable mode) keep settings somewhere other than %APPDATA%.
@@ -147,6 +152,7 @@ async function decorate(game) {
     playMinutes: l.playMinutes || 0,
     pending: !!l.pending,
     running: running.has(game.id) ? running.get(game.id).mode : null,
+    descSegments: game.vndb && game.vndb.description ? vndb.parseDescription(game.vndb.description) : null,
   };
 }
 
@@ -222,10 +228,19 @@ function startGame(game, mode, onExit) {
     useLocaleEmulator: !!(game.launch && game.launch.useLocaleEmulator),
     localeEmulatorPath: config.data.localeEmulatorPath,
   });
-  const entry = { ev, watchers: [], liveTimer: null, mode, startedAt: Date.now() };
+  const entry = { ev, watchers: [], liveTimer: null, mode, startedAt: Date.now(), tools: [] };
   running.set(game.id, entry);
+  // Companion programs (text hooker, upscaler…) chosen for this game on this PC.
+  const chosen = new Set(l.tools || []);
+  const withGame = (config.data.tools || []).filter((t) => t.path && (t.allGames || chosen.has(t.id)));
+  if (withGame.length) {
+    entry.tools = tools.startTools(withGame, { gameExe: l.exePath, gameDir: l.installDir, title: game.title }, {
+      onError: (t, e) => setState(game.id, 'running', { message: `Couldn't start ${t.name}: ${e.message}`, key: 'state.toolFailed', params: { name: t.name } }),
+    });
+  }
   ev.on('exit', async (info) => {
     stopLive(game.id);
+    await tools.stopTools(entry.tools).catch(() => {});
     running.delete(game.id);
     const minutes = Math.round((Date.now() - entry.startedAt) / 60000);
     await config.setGame(game.id, { lastPlayed: new Date().toISOString(), playMinutes: (local(game.id).playMinutes || 0) + minutes });
@@ -251,9 +266,16 @@ const api = {
         historyDepth: config.data.historyDepth,
         liveMode: config.data.liveMode,
         localeEmulatorPath: config.data.localeEmulatorPath,
+        language: config.data.language,
+        sort: config.data.sort,
+        autoUpdate: config.data.autoUpdate,
+        tools: config.data.tools,
+        categories: config.data.categories,
       },
       platform: process.platform,
       version: app.getVersion(),
+      portable: !!process.env.PORTABLE_EXECUTABLE_FILE,
+      update: updateInfo,
     };
   },
 
@@ -298,7 +320,21 @@ const api = {
     if (s.historyDepth !== undefined) patch.historyDepth = Math.max(1, Math.min(100, Number(s.historyDepth) || 10));
     if (s.liveMode !== undefined) patch.liveMode = !!s.liveMode;
     if (s.localeEmulatorPath !== undefined) patch.localeEmulatorPath = s.localeEmulatorPath;
+    if (s.language !== undefined) patch.language = ['auto', 'en', 'ja'].includes(s.language) ? s.language : 'auto';
+    if (s.sort !== undefined) patch.sort = String(s.sort);
+    if (s.autoUpdate !== undefined) patch.autoUpdate = !!s.autoUpdate;
+    if (s.categories !== undefined) patch.categories = [...new Set(s.categories.map((c) => String(c).trim()).filter(Boolean))];
+    if (s.tools !== undefined) {
+      patch.tools = s.tools.filter((t) => t && t.path).map((t) => ({
+        id: t.id || require('crypto').randomBytes(3).toString('hex'),
+        name: String(t.name || path.basename(t.path)).trim(),
+        path: t.path, args: String(t.args || ''), delaySec: Math.max(0, Math.min(120, Number(t.delaySec) || 0)),
+        closeWithGame: t.closeWithGame !== false, allGames: !!t.allGames,
+      }));
+    }
+    const onlyLocal = Object.keys(patch).every((k) => ['language', 'sort', 'autoUpdate', 'categories', 'tools'].includes(k));
     await config.set(patch);
+    if (onlyLocal) return api.getSetup();
     rebuild();
     pushPending().catch(() => {});
     return api.getSetup();
@@ -346,7 +382,9 @@ const api = {
 
   async updateGame(id, patch) {
     const allowed = {};
-    for (const k of ['title', 'titleAlt', 'developer', 'launch']) if (patch[k] !== undefined) allowed[k] = patch[k];
+    for (const k of ['title', 'titleAlt', 'developer', 'launch', 'notes', 'categories']) if (patch[k] !== undefined) allowed[k] = patch[k];
+    if (allowed.notes !== undefined) allowed.notes = String(allowed.notes).slice(0, 100000);
+    if (allowed.categories !== undefined) allowed.categories = [...new Set((allowed.categories || []).map((c) => String(c).trim()).filter(Boolean))];
     const g = await library.update(id, allowed);
     send('games-changed');
     return decorate(g);
@@ -386,7 +424,10 @@ const api = {
   async searchVndb(q) { return vndb.search(q); },
 
   async applyVndb(id, v) {
-    const g = await library.update(id, { title: v.title, titleAlt: v.titleAlt, developer: v.developer, vndbId: v.vndbId });
+    let full = v.info ? v : null;
+    if (!full) full = await vndb.fetchInfo(v.vndbId).catch(() => null);
+    const info = full ? full.info : null;
+    const g = await library.update(id, { title: v.title, titleAlt: v.titleAlt, developer: v.developer, vndbId: v.vndbId, ...(info ? { vndb: info } : {}) });
     if (v.image) {
       try {
         const { buf, ext } = await vndb.downloadImage(v.image);
@@ -588,6 +629,136 @@ const api = {
     return true;
   },
 
+  // ---- VNDB info
+
+  async refreshVndb(id) {
+    const game = await getGame(id);
+    if (!game.vndbId) throw new Error('This game isn\'t linked to VNDB yet. Use "Find on VNDB" first.');
+    const full = await vndb.fetchInfo(game.vndbId);
+    const g = await library.update(id, { vndb: full.info, developer: game.developer || full.developer });
+    send('games-changed');
+    return decorate(g);
+  },
+
+  async vndbBestMatch(q) { return vndb.bestMatch(q); },
+
+  // ---- bulk import
+
+  async scanImport(dir) {
+    requireLibrary();
+    const known = new Set(Object.values(config.data.games).map((l) => (l.exePath || '').toLowerCase()).filter(Boolean));
+    const knownDirs = new Set(Object.values(config.data.games).map((l) => (l.installDir || '').toLowerCase()).filter(Boolean));
+    const found = await importer.scan(dir, { onProgress: (p) => send('import-progress', { phase: 'scan', ...p }) });
+    return found.map((f) => ({ ...f, already: known.has(f.exe.toLowerCase()) || knownDirs.has(f.dir.toLowerCase()) }));
+  },
+
+  /**
+   * Add many games at once. items: [{ exe, dir, title, match }] where match is a VNDB result
+   * (from vndbBestMatch) or null. Each game gets its most likely save folder when one with files
+   * is found and it passes the safety checks; the rest can be set up on the game page.
+   */
+  async importGames(items) {
+    requireLibrary();
+    const results = [];
+    let n = 0;
+    for (const it of items) {
+      n++;
+      send('import-progress', { phase: 'add', done: n - 1, total: items.length, title: it.match ? it.match.title : it.title });
+      try {
+        const found = await detect.detectEngine(it.dir, roots).catch(() => null);
+        let game = await library.create({ title: it.title, exe: path.basename(it.exe), engine: found ? found.engine.name : null });
+        await config.setGame(game.id, { exePath: it.exe, installDir: it.dir });
+        if (it.match) {
+          await api.applyVndb(game.id, it.match).catch(() => {});
+          game = await library.get(game.id);
+        }
+        let savePath = null;
+        const sug = await detect.suggest(game, it.dir, { roots }).catch(() => ({ candidates: [] }));
+        const best = sug.candidates.find((c) => c.exists && c.fileCount > 0
+          && !limits.rejectPath(c.path, c.include, { cloudDir: config.data.cloudDir, abs: c.abs }));
+        if (best) {
+          const added = await api.addSaveRule(game.id, { path: best.path, include: best.include });
+          if (added && added.path && !added.refused && !added.needsConfirm) savePath = added.path;
+        }
+        results.push({ id: game.id, title: game.title, savePath });
+      } catch (e) {
+        results.push({ title: it.title, error: e.message });
+      }
+    }
+    send('import-progress', { phase: 'done', done: items.length, total: items.length });
+    send('games-changed');
+    return results;
+  },
+
+  // ---- companion tools
+
+  async setGameTools(id, toolIds) {
+    await config.setGame(id, { tools: (toolIds || []).map(String) });
+    return true;
+  },
+
+  async gameTools(id) {
+    const chosen = new Set(local(id).tools || []);
+    return (config.data.tools || []).map((t) => ({ ...t, enabled: t.allGames || chosen.has(t.id) }));
+  },
+
+  // ---- save export / import
+
+  async exportSaves(id) {
+    const game = await getGame(id);
+    if (!local(id).exePath) throw new Error('Set the game up on this PC first.');
+    const { zip, files } = await savesio.exportSaves(engine, game, installDir(id));
+    if (!files) throw new Error('There are no save files on this PC to export yet.');
+    const stamp = new Date().toISOString().slice(0, 10);
+    const safe = game.title.replace(/[\\/:*?"<>|]+/g, ' ').trim().slice(0, 60) || 'saves';
+    const r = await dialog.showSaveDialog(win, {
+      title: 'Export saves', defaultPath: path.join(app.getPath('documents'), `${safe} saves ${stamp}.zip`),
+      filters: [{ name: 'Zip', extensions: ['zip'] }],
+    });
+    if (r.canceled || !r.filePath) return null;
+    await fs.promises.writeFile(r.filePath, zip);
+    return { path: r.filePath, files };
+  },
+
+  async importSaves(id) {
+    const game = await getGame(id);
+    if (running.has(id)) throw new Error('Close the game first.');
+    if (!local(id).exePath) throw new Error('Set the game up on this PC first.');
+    const f = await api.pickFile('Choose a VN Shelf save export', [{ name: 'Zip', extensions: ['zip'] }]);
+    if (!f) return null;
+    const buf = await fs.promises.readFile(f);
+    const r = await savesio.importSaves(engine, game, installDir(id), buf);
+    const fresh = await library.get(id);
+    const s = await runSync(fresh, { resolution: 'local' }).catch((e) => ({ error: e.message }));
+    send('games-changed');
+    return { ...r, uploaded: !!s.ok };
+  },
+
+  // ---- updates
+
+  async checkUpdate() {
+    if (process.env.VNS_FAKE_UPDATE) { updateInfo = JSON.parse(process.env.VNS_FAKE_UPDATE); return updateInfo; } // test hook
+    updateInfo = await updater.checkForUpdate(app.getVersion());
+    return updateInfo;
+  },
+
+  async installUpdate() {
+    const info = updateInfo || (await api.checkUpdate());
+    if (!info) return { upToDate: true };
+    const exe = process.env.PORTABLE_EXECUTABLE_FILE;
+    if (process.platform !== 'win32' || !exe || !info.asset) {
+      await shell.openExternal(info.page);
+      return { opened: true };
+    }
+    if (running.size) throw new Error('Close your games first; VN Shelf restarts to update.');
+    const newExe = `${exe}.new`;
+    await updater.download(info.asset, newExe, { onProgress: (p) => send('update-progress', p) });
+    const script = await updater.writeSwapScript({ currentExe: exe, newExe, pid: process.pid, dir: app.getPath('temp') });
+    require('child_process').spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/c', script], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+    setTimeout(() => app.quit(), 300);
+    return { restarting: true };
+  },
+
   // ---- misc
 
   async openPath(p) { if (p) await shell.openPath(p); return true; },
@@ -629,6 +800,14 @@ app.whenReady().then(async () => {
   await createWindow();
   pushPending().catch(() => {});
   setInterval(() => pushPending().catch(() => {}), 5 * 60 * 1000);
+  if (config.data.autoUpdate && !process.env.VNS_NO_UPDATE_CHECK) {
+    setTimeout(async () => {
+      try {
+        const u = await api.checkUpdate();
+        if (u) send('update-available', u);
+      } catch { /* offline: try again next start */ }
+    }, 4000);
+  }
 });
 
 app.on('window-all-closed', () => {

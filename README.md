@@ -1,92 +1,141 @@
 # VN Shelf
 
-A small Steam-style library for visual novels that keeps save files in sync between your PCs.
+A Steam-style library for visual novels that keeps your save files in sync between PCs.
 
-There are two ways to keep saves, and you pick one on first run:
+Add your games (one by one or a whole folder at once), and VN Shelf:
+- fetches each game's cover, description and tags from VNDB
+- finds where the game keeps its saves
+- brings newer saves down from your other PC before you play, and uploads yours when you close
+  the game
 
-- **A folder you already sync:** Google Drive, OneDrive, Dropbox, iCloud Drive, MEGA, pCloud, Box,
-  Syncthing, a NAS share, a USB stick. VN Shelf finds those on first run. No accounts or API keys.
-- **Google Drive directly:** sign in with Google, and no Drive app is needed on the PC. VN Shelf can
-  only see the Drive files it created itself (the `drive.file` permission), nothing else in your Drive.
+The interface is available in English and 日本語. Nothing AI-based runs inside the app.
 
-Nothing AI-based runs inside the app. The only other online lookup is VNDB, for covers and titles,
-and only when you search.
+**[Download the latest release](https://github.com/stagefuel/vn-shelf/releases)** ·
+[Wiki / guide](https://github.com/stagefuel/vn-shelf/wiki) · [Changelog](CHANGELOG.md)
 
-## Using it
+## Where saves are kept
 
-1. **First run:** name this PC and pick where saves are kept. Pick the same service on every PC.
-   VN Shelf makes a `VNShelf` folder inside it.
-2. **Add a game:** drag its `.exe` onto the window (or **+ Add game**), then pick it from the VNDB
-   results to get the cover.
-3. **Tell it where the game saves.** The game page suggests folders on its own. You have four options:
-   - **Auto-detect** recognises common engines (KiriKiri, Ren'Py, RPG Maker, Siglus, BGI, CatSystem2,
-     System 4, Artemis, YU-RIS, NScripter, Unity). It also looks for `save`/`savedata`/`UserData`
-     folders and for AppData/Documents folders named after the game or developer.
-   - **Save once** starts the game. You save once and close it, and VN Shelf lists what changed in the
-     game folder, AppData, Documents and Saved Games.
-   - **Choose folder…** or **Type a path…** if you already know it. Paths like `%APPDATA%\...` work.
-   - **Files…** limits a folder to certain files (for example `Save*.rvdata2`).
-4. **Press Play.** Newer saves from your other PC come down first. When the game closes, yours go up.
+You pick one on first run, and the same one on every PC:
 
-On the other PC the game appears as *Not on this PC*. Press Play once and point it at the `.exe`.
-Save locations are already set up, because they're stored as portable paths like
-`<appdata>/Nitroplus/Muramasa` or `<game>/savedata`.
+| Option | What you need | Notes |
+|---|---|---|
+| **Google Drive (sign in)** | A Google account | No Drive app needed. VN Shelf can only see the files it creates (`drive.file` permission). |
+| **A synced folder** | Google Drive for desktop, OneDrive, Dropbox, iCloud Drive, MEGA, pCloud, Box, Syncthing, a NAS share or a USB drive | Detected automatically on first run. No sign-in; that service's own app moves the files. |
+
+## Features
+
+### Library
+- **Home page:** what you played most recently ("Continue reading") and what you added most
+  recently.
+- **Categories:** your own groups (Reading, Finished, Favourites…), shown in the sidebar like
+  folders. They're saved with each game, so every PC sees them.
+- **Sorting:** by title, last played, recently added, release date, VNDB rating, length or time
+  played.
+- **Search:** matches titles, aliases, developers, categories and VNDB tags. Click a tag on any
+  game to list every game with it.
+- **VNDB info on each game:**
+  - the description (spoilers hidden until clicked)
+  - release date, length (VNDB's category plus the average from votes), rating, languages and
+    platforms
+  - tags, with spoiler tags hidden unless you choose to show them
+- **Notes:** a notes box on each game that saves as you type and syncs to your other PCs.
+
+### Adding games
+- **Drag a game's `.exe`** onto the window, or use **+ Add game**, and pick the match from VNDB.
+- **Import folder…** adds a whole collection at once:
+  1. It finds each game's folder and main program, skipping installers, config tools, cracks and
+     updaters.
+  2. It matches each game on VNDB.
+  3. You review the list before anything is added.
+  4. Save folders are set automatically wherever one with files in it is found.
+
+### Finding save folders
+- **Auto-detect** recognises common engines: KiriKiri, Ren'Py, RPG Maker (2000–MZ), Siglus,
+  BGI/Ethornell, CatSystem2, AliceSoft System 4, Artemis, YU-RIS, NScripter, Unity and age's
+  rUGP. It also finds folders named after the game in AppData, Documents and Saved Games,
+  including inside the developer's folder.
+- **Save once** starts the game. You save once and close it, and VN Shelf lists exactly which
+  files changed.
+- **Choose folder…** or **Type a path…** if you already know it (`%APPDATA%\...` works), and
+  **Files…** limits a folder to certain files (for example `Save*.rvdata2`).
+- Locations are stored as portable paths like `<appdata>/Nitroplus/Muramasa` or `<game>/savedata`,
+  so they work on every PC whatever its username or install drive.
+
+### Playing
+- **Press Play.** Newer saves come down first, and yours go up when the game closes. VN Shelf follows
+  launchers and Locale Emulator to the real game.
+- **Start with this game:** add companion programs once in Settings (a text hooker like
+  LunaHook/Textractor, meikipop, Magpie…), then tick which ones start with each game. Each can:
+  - start after a delay
+  - close when the game closes
+  - start with every game
+
+  Options can include `{gameExe}`, `{gameDir}` and `{title}`, which are filled in for each game.
+- **Locale Emulator:** set `LEProc.exe` in Settings, then tick it per game.
+- **Upload while playing:** optional; pushes saves about 10 s after each save.
 
 ### Safety
-
 - Nothing is overwritten without being copied to **History** first. The newest 10 versions are kept
   by default, and each can be restored.
-- If both PCs saved since they last synced, VN Shelf asks which to keep. The other copy goes to History.
-- If the shared folder looks half-downloaded, VN Shelf waits instead of copying a broken save.
-- If the game looks open on the other PC, VN Shelf warns before launching.
-- If the shared folder isn't reachable, you can still play. Saves upload once it's back.
-- Removing a game from the library moves its shared folder to `games/.removed`. Nothing is deleted.
-- Save locations can't accidentally sweep up a whole game or drive: whole drives and system folders
-  are refused, programs, videos, archives, caches, logs and files over 64 MB are never synced, and a
-  folder over 50 MB or 1000 files asks first (over 500 MB or 5000 files is refused).
+- If both PCs saved since they last synced, you choose which to keep. The other copy goes to History.
+- A half-downloaded shared folder is detected and waited for, never copied over a good save.
+- A warning appears if the game looks open on the other PC. If storage is unreachable, you can play
+  offline and saves upload later.
+- **Save-folder limits:**
+  - whole drives, system folders and game installs are refused
+  - programs, videos, archives, caches, logs and files over 64 MB are never synced
+  - a location over 50 MB or 1000 files asks first; one over 500 MB or 5000 files is refused
+- **Export saves… / Import saves…** saves a game's saves as a `.zip` or puts them back, with a backup
+  to History first.
 
-### Options
-
-- **Locale Emulator:** set `LEProc.exe` in Settings, then tick it per game.
-- **Upload while playing:** pushes saves about 10 s after each save, not only when the game closes.
-- **Stop tracking:** for a game VN Shelf can't tell has closed. VN Shelf normally watches for any
-  program running from the game's folder, which covers launchers and Locale Emulator.
-
-## Shared folder layout
-
-```
-VNShelf/games/<game-id>/
-  game.json     title, cover, .exe name, save locations, launch options
-  cover.jpg
-  state.json    which PC uploaded last, when, file hashes
-  current/      the latest saves
-  history/      older versions
-  lock.json     present while the game is open on some PC
-```
-
-Each PC also keeps its own settings (install paths, last sync) in `%APPDATA%\VN Shelf\config.json`.
+### Updates
+- VN Shelf checks for a new version when it starts (you can turn this off) and shows a pop-up you
+  can hide. You can also use **Settings → Updates → Check now**.
+- The portable `.exe` updates itself. The download is checked against GitHub's SHA-256, then VN
+  Shelf restarts with your settings and library kept.
 
 ## Download
 
-Get `VN-Shelf-<version>-portable.exe` from the Releases page and run it. Nothing needs installing.
-The exe isn't code-signed, so Windows SmartScreen may say "Windows protected your PC": click
+Get `VN-Shelf-<version>-portable.exe` from the [Releases page](https://github.com/stagefuel/vn-shelf/releases)
+and run it. Nothing needs installing.
+
+The exe isn't code-signed, so Windows SmartScreen may say "Windows protected your PC". Click
 **More info**, then **Run anyway**.
+
+## Privacy
+
+VN Shelf talks to three services, and only for the reasons below:
+- **VNDB:** to search for games and fetch their info and covers.
+- **GitHub:** to check for and download updates. You can turn this off.
+- **Google:** only if you choose Google Drive mode.
+
+Your saves go only to the storage you picked. See [PRIVACY.md](PRIVACY.md).
 
 ## Development
 
 ```
 npm install
-npm start                          # run the app
-npm test                           # core tests (sync, paths, detection, launcher)
-npm run dist:win                   # Windows portable .exe + zip into dist/ (works from Linux; Wine embeds the icon)
-node scripts/ui-smoke.js shots/    # drives two fake PCs through the UI (needs a display, e.g. Xvfb)
+npm start                                   # run the app
+npm test                                    # unit tests (sync, Drive, detection, import, zip, updates, tools…)
+npm run dist:win                            # Windows portable .exe + zip into dist/ (works from Linux; Wine embeds the icon)
+node scripts/ui-smoke.js shots/             # end-to-end: two PCs, folder mode (needs a display, e.g. Xvfb)
+node scripts/ui-smoke-drive.js shots/       # end-to-end: two PCs, Google Drive mode against a fake Drive
+node scripts/ui-smoke-features.js shots/    # end-to-end: import, tags, categories, notes, tools, export, updates, Japanese
 ```
 
-Layout: `src/core` is plain Node with no Electron, and holds everything that touches saves.
-`src/main` is the Electron main process and API. `src/renderer` is the UI (no framework).
+Set `VNS_EXE` to a packaged `VN Shelf.exe` to run the end-to-end checks against a real build.
 
-Releases are built by GitHub Actions (`.github/workflows/release.yml`). Every push runs the tests on
-Windows and Linux, and pushing a `v*` tag builds the Windows exe and publishes a release.
+**Layout:**
+- `src/core`: plain Node with no Electron. This holds everything that touches saves, as well as
+  detection, import, VNDB, zip and updates.
+- `src/main`: the Electron main process and its API.
+- `src/renderer`: the UI (no framework), with English and Japanese strings in `i18n.js` and
+  `i18n-ja.js`.
+
+**Releases** are built by GitHub Actions (`.github/workflows/release.yml`):
+- Every push runs the tests on Windows and Linux.
+- Pushing a `v*` tag builds the Windows exe and publishes a release, with notes taken from that
+  version's section of [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 

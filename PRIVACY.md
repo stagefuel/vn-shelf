@@ -9,8 +9,15 @@ system and no analytics. The developer never receives any of your data.
 - **Google Drive, only if you choose to sign in with Google.** VN Shelf asks for the
   `drive.file` permission. That lets it see and change only the files and folders VN Shelf itself
   created in your Drive (your synced save files). It cannot see anything else in your Drive.
-- **VNDB (vndb.org)**, only when you search for a game's title or cover. The search text is sent to
-  VNDB's public API.
+- **VNDB (vndb.org)**, when you search for a game, import a folder of games or refresh a game's info.
+  The search text (a title or folder name) is sent to VNDB's public API, and covers are downloaded
+  from VNDB's image server.
+- **GitHub (github.com)**, to check for a newer version of VN Shelf when the app starts and when you
+  press Check now, and to download an update you choose to install. You can turn the automatic
+  check off in Settings → Updates. Only GitHub's public release list is requested; nothing about
+  you or your games is sent.
+- **Programs you add as companion tools** are started on your computer only when you play a game
+  you enabled them for.
 
 ## What is stored, and where
 

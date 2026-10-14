@@ -124,7 +124,12 @@ class LocalConfig {
     d.historyDepth = d.historyDepth || 10;
     d.liveMode = !!d.liveMode;
     d.localeEmulatorPath = d.localeEmulatorPath || '';
-    d.games = d.games || {}; // id -> { installDir, lastSync, pending, lastPlayed }
+    d.games = d.games || {}; // id -> { installDir, lastSync, pending, lastPlayed, tools: [toolId] }
+    d.tools = d.tools || []; // companion programs on this PC: { id, name, path, args, delaySec, closeWithGame, allGames }
+    d.categories = d.categories || []; // categories created on this PC that no game uses yet
+    d.language = d.language || 'auto'; // 'auto' | 'en' | 'ja'
+    d.sort = d.sort || 'title';
+    d.autoUpdate = d.autoUpdate !== false;
     await this.save();
     return d;
   }
