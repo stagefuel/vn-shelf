@@ -801,6 +801,47 @@ async function vndbSyncOnce({ full }) {
   }
 }
 
+// ---------------------------------------------------------------- VNDB extras cache
+// Game-page extras from VNDB are kept on this PC for a week (never in shared storage). When VNDB
+// can't be reached, the last copy is used however old it is.
+
+const VNDB_EXTRAS_MAX_AGE = 7 * 24 * 3600 * 1000;
+
+async function vndbCached(key, fetcher) {
+  const file = path.join(app.getPath('userData'), 'vndb-extras', `${key.replace(/[^a-z0-9-]/gi, '_')}.json`);
+  const cached = await fsu.readJson(file, null);
+  if (cached && Date.now() - Date.parse(cached.at) < VNDB_EXTRAS_MAX_AGE) return cached.data;
+  try {
+    const data = await fetcher();
+    fsu.writeJson(file, { at: new Date().toISOString(), data }).catch(() => {});
+    return data;
+  } catch (e) {
+    if (cached) return cached.data;
+    logError('vndb-extras', e);
+    return null;
+  }
+}
+
+/** A function telling, for a VN id, which library game has it and its statuses on the owner's VNDB list. */
+async function vndbMarker() {
+  const games = library ? await library.list({ maxAge: STATUS_MAX_AGE }).catch(() => []) : [];
+  const byVid = new Map(games.filter((g) => g.vndbId).map((g) => [g.vndbId, g]));
+  let entries = {};
+  if (config.data.vndb) {
+    const cache = (await fsu.readJson(vndbCacheFile(), null)) || {};
+    if (cache.user === config.data.vndb.userId) entries = cache.entries || {};
+  }
+  return (vid) => {
+    const g = byVid.get(vid);
+    const e = entries[vid];
+    return {
+      gameId: g ? g.id : null,
+      listStatuses: e ? vndbList.statusesOfLabels((e.labels || []).map((l) => l.id || l)) : g ? vndbList.statusesOf(g) : [],
+      onList: !!e,
+    };
+  };
+}
+
 // ---------------------------------------------------------------- API
 
 const api = {
@@ -1371,6 +1412,37 @@ const api = {
     const g = await api.applyVndb(id, full);
     vndbSync().catch(() => {});
     return g;
+  },
+
+  // ---- VNDB extras on a game's page: screenshots, related VNs, staff, characters; works by a person or brand
+
+  async vndbExtras(id) {
+    const game = await peekGame(id);
+    if (!game.vndbId) return null;
+    const x = await vndbCached(`vn-${game.vndbId}`, () => vndb.fetchExtras(game.vndbId));
+    if (!x) return null;
+    const mark = await vndbMarker();
+    return { ...x, relations: x.relations.map((r) => ({ ...r, ...mark(r.vndbId) })) };
+  },
+
+  async vndbCharacters(id) {
+    const game = await peekGame(id);
+    if (!game.vndbId) return [];
+    const chars = (await vndbCached(`chars-${game.vndbId}`, () => vndb.fetchCharacters(game.vndbId))) || [];
+    return chars.map((c) => ({ ...c, descSegments: c.description ? vndb.parseDescription(c.description) : null }));
+  },
+
+  /** Everything a person (s…) or brand (p…) worked on, each marked as in the library / on the VNDB list. */
+  async vndbWorks(who) {
+    const key = String(who || '').toLowerCase();
+    if (!/^[sp]\d+$/.test(key)) throw new Error('Not a VNDB person or brand.');
+    const [works, name] = await Promise.all([
+      vndbCached(`works-${key}`, () => vndb.fetchWorks(key)),
+      vndbCached(`name-${key}`, () => vndb.fetchName(key)),
+    ]);
+    if (!works) throw new Error('Couldn\'t load this from VNDB. Check your connection and try again.');
+    const mark = await vndbMarker();
+    return { id: key, kind: key.startsWith('s') ? 'staff' : 'producer', name: name ? name.name : key, original: name ? name.original : '', works: works.map((w) => ({ ...w, ...mark(w.vndbId) })) };
   },
 
   // ---- bulk import

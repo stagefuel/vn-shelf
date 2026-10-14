@@ -19,6 +19,10 @@ class FakeVndb {
     this.entries = new Map(); // vid -> { id, labels:Set, vote, started, finished, lastmod, vn }
     this.requests = [];
     this.vns = new Map(); // extra VN info for /vn lookups
+    this.extras = new Map(); // vid -> { screenshots, relations, staff, developers } as VNDB returns them
+    this.characters = new Map(); // vid -> [character]
+    this.works = new Map(); // s…/p… -> [vn]
+    this.names = new Map(); // s…/p… -> { name, original }
     this.rateLimitNext = 0;
     this.clock = 1700000000;
   }
@@ -50,6 +54,18 @@ class FakeVndb {
     if (this.rateLimitNext > 0) { this.rateLimitNext--; return this.json(429, undefined); }
     const u = new URL(url, 'http://x');
     const p = u.pathname.replace(/^\/kana/, '');
+    if (method === 'POST' && p === '/vn' && body.filters && ['staff', 'developer'].includes(body.filters[0])) { // works by a person or brand
+      return this.json(200, { results: this.works.get(body.filters[2][2]) || [], more: false });
+    }
+    if (method === 'POST' && p === '/vn' && /screenshots|relations/.test(body.fields || '')) { // a game page's extras
+      const x = this.extras.get(body.filters[2]);
+      return this.json(200, { results: x ? [{ id: body.filters[2], screenshots: [], relations: [], staff: [], developers: [], ...x }] : [], more: false });
+    }
+    if (method === 'POST' && p === '/character') return this.json(200, { results: this.characters.get(body.filters[2][2]) || [], more: false });
+    if (method === 'POST' && (p === '/staff' || p === '/producer')) {
+      const n = this.names.get(body.filters[2]);
+      return this.json(200, { results: n ? [{ id: body.filters[2], ...n }] : [], more: false });
+    }
     if (method === 'POST' && p === '/vn') { // VN lookups by id (no token needed), from the entries' VN info
       const id = body.filters && body.filters[0] === 'id' ? body.filters[2] : null;
       const vn = id && (this.vns.get(id) || (this.entries.get(id) || {}).vn);

@@ -292,6 +292,8 @@ function setView(v) {
   $('#libraryView').classList.toggle('hidden', v !== 'library');
   $('#detailView').classList.toggle('hidden', v !== 'detail');
   $('#vndbView').classList.toggle('hidden', v !== 'vndb');
+  $('#worksView').classList.toggle('hidden', v !== 'works');
+  closeLightbox();
   $('main').scrollTop = 0;
   renderSidebar();
 }
@@ -304,6 +306,7 @@ function navState() {
   if (view === 'detail') return { view, id: currentId };
   if (view === 'library') return { view, filter: { ...filter } };
   if (view === 'vndb') return { view };
+  if (view === 'works') return { view, who: $('#worksView').dataset.who };
   return { view: 'home' };
 }
 
@@ -323,7 +326,7 @@ function pushNav() {
 // The Back button shows on game pages and tag lists only; Home and the sidebar's tabs (All games,
 // categories) are reached from the sidebar. The mouse's back button and Alt+← still work everywhere.
 function updateBackBtn() {
-  const offTab = view === 'detail' || (view === 'library' && !!filter.tag);
+  const offTab = view === 'detail' || view === 'works' || (view === 'library' && !!filter.tag);
   $('#backBtn').classList.toggle('hidden', nav.index <= 0 || !offTab);
 }
 
@@ -331,6 +334,7 @@ async function restoreNav(st) {
   if (st.view === 'detail' && games.some((g) => g.id === st.id)) { currentId = st.id; setView('detail'); await renderDetail(st.id, { noAuto: true }); }
   else if (st.view === 'library') { Object.assign(filter, st.filter || {}); setView('library'); renderGrid(); }
   else if (st.view === 'vndb' && setup.vndb && setup.vndb.connected) { setView('vndb'); renderVndbList(); }
+  else if (st.view === 'works') { setView('works'); $('#worksView').dataset.who = st.who; renderWorks(st.who); }
   else { setView(games.length ? 'home' : 'library'); if (view === 'home') renderHome(); else renderGrid(); }
   updateBackBtn();
 }
@@ -501,6 +505,204 @@ function renderGrid() {
   $('#grid').replaceChildren(...list.map(cardFor));
   $('#empty').classList.toggle('hidden', games.length > 0);
   $('#noMatch').classList.toggle('hidden', !(games.length > 0 && list.length === 0));
+}
+
+// ------------------------------------------------------------------ VNDB extras on the game page
+// Screenshots (Japanese release first, else English, else none), related VNs, characters, staff and
+// brands. Loaded after the page shows; the main process keeps them on this PC for a week.
+
+const RELATION_TEXT = () => ({
+  preq: t('Prequel'), seq: t('Sequel'), fan: t('Fandisc'), side: t('Side story'), par: t('Parent story'),
+  ser: t('Same series'), set: t('Same setting'), alt: t('Alternative version'), char: t('Shares characters'), orig: t('Original game'),
+});
+const STAFF_ROLE_TEXT = () => ({
+  director: t('Director'), scenario: t('Scenario'), chardesign: t('Character design'), art: t('Artist'), music: t('Composer'),
+  songs: t('Vocals'), translator: t('Translator'), editor: t('Editor'), qa: t('Quality assurance'), staff: t('Staff'),
+});
+const MAIN_ROLES = ['director', 'scenario', 'chardesign', 'art', 'music', 'songs'];
+const CHAR_ROLE_TEXT = () => ({ main: t('Protagonist'), primary: t('Main character'), side: t('Side character'), appears: t('Makes an appearance') });
+
+const extrasCache = new Map(); // vndbId -> { extras, chars } for this session (redraws without waiting)
+
+function extrasSection(g) {
+  const host = h('div', { class: 'vnextras', 'data-vid': g.vndbId });
+  const draw = (extras, chars) => {
+    if (!host.isConnected && host.dataset.drawn) return;
+    host.dataset.drawn = '1';
+    replaceKids(host,
+      extras && extras.screenshots.length ? [h('h2', {}, t('Screenshots')), galleryEl(extras.screenshots)] : null,
+      extras && extras.relations.length ? [h('h2', {}, t('Related')), vnGrid(extras.relations, { sub: (r) => `${RELATION_TEXT()[r.relation] || r.relation}${r.official ? '' : ` (${t('unofficial')})`}`, onAdded: () => redraw() })] : null,
+      chars && chars.length ? [h('h2', {}, t('Characters')), charactersEl(chars, () => redraw())] : null,
+      extras && (extras.staff.length || extras.developers.length) ? [h('h2', {}, t('Staff')), staffEl(extras)] : null,
+      extras === null ? h('div', { class: 'faint small' }, t('Couldn\'t load screenshots, characters and staff from VNDB.')) : null);
+  };
+  const redraw = () => { const c = extrasCache.get(g.vndbId); if (c) draw(c.extras, c.chars); };
+  const cached = extrasCache.get(g.vndbId);
+  if (cached) { draw(cached.extras, cached.chars); return host; }
+  replaceKids(host, h('div', { class: 'faint small' }, t('Loading screenshots, characters and staff from VNDB…')));
+  (async () => {
+    const [extras, chars] = await Promise.all([vns.call('vndbExtras', g.id).catch(() => null), vns.call('vndbCharacters', g.id).catch(() => [])]);
+    extrasCache.set(g.vndbId, { extras, chars });
+    if (host.isConnected) draw(extras, chars);
+  })();
+  return host;
+}
+
+function galleryEl(shots) {
+  return h('div', { class: 'shots' }, shots.map((sh, i) => h('button', { type: 'button', class: 'shot', title: t('View screenshot'), onclick: () => openLightbox(shots, i) },
+    h('img', { src: sh.thumb, alt: '', loading: 'lazy', draggable: 'false' }))));
+}
+
+let lightboxKeys = null;
+function openLightbox(shots, index) {
+  closeLightbox();
+  let i = index;
+  const img = h('img', { alt: '' });
+  const count = h('div', { class: 'lbcount' });
+  const show = () => { img.src = shots[i].url; count.textContent = `${i + 1} / ${shots.length}`; };
+  const move = (d) => { i = (i + d + shots.length) % shots.length; show(); };
+  const box = h('div', { class: 'lightbox', onclick: (e) => { if (e.target === box) closeLightbox(); } },
+    img, count,
+    shots.length > 1 ? h('button', { type: 'button', class: 'lbnav prev', title: t('Previous'), onclick: () => move(-1) }, '‹') : null,
+    shots.length > 1 ? h('button', { type: 'button', class: 'lbnav next', title: t('Next'), onclick: () => move(1) }, '›') : null,
+    h('button', { type: 'button', class: 'lbclose', title: t('Close'), onclick: closeLightbox }, '×'));
+  show();
+  document.body.append(box);
+  lightboxKeys = (e) => {
+    // Keys belong to the viewer while it's open (Escape isn't also "Back").
+    if (e.key === 'Escape') closeLightbox();
+    else if (e.key === 'ArrowLeft' && !e.altKey) move(-1);
+    else if (e.key === 'ArrowRight' && !e.altKey) move(1);
+    else return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+  };
+  document.addEventListener('keydown', lightboxKeys, true);
+}
+
+function closeLightbox() {
+  const box = document.querySelector('.lightbox');
+  if (box) box.remove();
+  if (lightboxKeys) document.removeEventListener('keydown', lightboxKeys, true);
+  lightboxKeys = null;
+}
+
+/** Small cover cards for VNs from VNDB (related VNs, works): open the game if it's in the library, else + Add. */
+function vnGrid(list, { sub, onAdded }) {
+  return h('div', { class: 'minigrid' }, list.map((v) => {
+    const mark = v.gameId ? h('span', { class: 'vmark lib' }, t('In your library'))
+      : (v.listStatuses || []).length ? h('span', { class: 'vmark' }, v.listStatuses.map((x) => STATUS_TEXT()[x]).join(', '))
+        : v.onList ? h('span', { class: 'vmark' }, t('On your VNDB list')) : null;
+    const add = v.gameId ? null : h('button', { type: 'button', class: 'small', onclick: async (e) => {
+      e.stopPropagation();
+      add.disabled = true;
+      try {
+        const ng = await call('vndbAddFromList', v.vndbId);
+        v.gameId = ng.id;
+        toast(t('Added {title}. Find its program on its page to play it on this PC.', { title: v.title }), 'good');
+        games = await call('listGames');
+        renderSidebar();
+        if (onAdded) onAdded();
+      } catch { add.disabled = false; }
+    } }, t('+ Add'));
+    return h('div', { class: 'card mini', title: v.gameId ? null : t('Open on VNDB'),
+      onclick: () => (v.gameId ? openDetail(v.gameId) : vns.call('openExternal', `https://vndb.org/${v.vndbId}`)) },
+    h('div', { class: 'art' }, v.image ? h('img', { src: v.image, alt: '', loading: 'lazy', draggable: 'false' }) : h('div', { class: 'placeholder' }, v.title)),
+    h('div', { class: 'title' }, v.title),
+    h('div', { class: 'sub' }, [sub(v), (v.released || '').slice(0, 4)].filter(Boolean).join(' · ')),
+    mark, add);
+  }));
+}
+
+function charactersEl(chars, redraw) {
+  const shown = chars.filter((c) => showSpoilers || !c.spoiler);
+  const hidden = chars.length - shown.length;
+  return h('div', {},
+    h('div', { class: 'chargrid' }, shown.map((c) => h('button', { type: 'button', class: `charcard${c.spoiler ? ' spoil' : ''}`, onclick: () => characterDialog(c) },
+      c.image ? h('img', { src: c.image, alt: '', loading: 'lazy', draggable: 'false' }) : h('div', { class: 'noimg' }),
+      h('div', { class: 'cname' }, c.original || c.name),
+      c.original ? h('div', { class: 'csub' }, c.name) : null,
+      h('div', { class: 'csub' }, CHAR_ROLE_TEXT()[c.role] || c.role)))),
+    hidden ? h('button', { type: 'button', class: 'ghost tiny', onclick: () => { showSpoilers = true; redraw(); } }, t('Show {n} spoiler characters', { n: hidden })) : null,
+    showSpoilers && chars.some((c) => c.spoiler) ? h('button', { type: 'button', class: 'ghost tiny', onclick: () => { showSpoilers = false; redraw(); } }, t('Hide spoiler characters')) : null);
+}
+
+function characterDialog(c) {
+  let spoil = showSpoilers;
+  const body = h('div', { class: 'chardlg' });
+  const draw = () => {
+    const bday = Array.isArray(c.birthday) ? c.birthday.filter(Boolean).join('/') : '';
+    const facts = [
+      [t('Role'), CHAR_ROLE_TEXT()[c.role] || c.role],
+      c.sex ? [t('Sex'), { m: t('Male'), f: t('Female'), b: t('Both'), n: t('Sexless') }[c.sex] || c.sex] : null,
+      c.age ? [t('Age'), String(c.age)] : null,
+      bday ? [t('Birthday'), bday] : null,
+      c.height ? [t('Height'), `${c.height} cm`] : null,
+      c.bloodType ? [t('Blood type'), c.bloodType.toUpperCase()] : null,
+    ].filter(Boolean);
+    const groups = new Map();
+    let hiddenTraits = 0;
+    for (const tr of c.traits || []) {
+      if (tr.spoiler && !spoil) { hiddenTraits++; continue; }
+      if (!groups.has(tr.group)) groups.set(tr.group, []);
+      groups.get(tr.group).push(tr);
+    }
+    replaceKids(body,
+      c.image ? h('img', { class: 'charimg', src: c.image, alt: '' }) : null,
+      h('div', { class: 'grow' },
+        c.original ? h('div', { class: 'alt' }, c.name) : null,
+        h('div', { class: 'facts' }, facts.map(([k, v]) => h('div', { class: 'fact' }, h('span', { class: 'k' }, k), h('span', {}, v)))),
+        c.descSegments && c.descSegments.length ? descriptionEl(c.descSegments) : null,
+        [...groups].map(([grp, list]) => h('div', { class: 'traitrow' }, h('span', { class: 'k' }, grp || t('Traits')),
+          h('span', {}, list.map((x, i) => [i ? ', ' : null, h('span', { class: x.spoiler ? 'spoiltrait' : null }, x.name)])))),
+        hiddenTraits ? h('button', { type: 'button', class: 'ghost tiny', onclick: () => { spoil = true; draw(); } }, t('Show {n} spoiler traits', { n: hiddenTraits })) : null,
+        h('div', { class: 'boxactions' }, h('button', { type: 'button', class: 'small', onclick: () => vns.call('openExternal', `https://vndb.org/${c.id}`) }, t('VNDB page')))));
+  };
+  draw();
+  dialog({ title: c.original || c.name, body, wide: true, buttons: [{ label: t('Close'), value: true, cls: 'primary' }] });
+}
+
+function staffEl(extras) {
+  const person = (p, roleNote) => h('button', { type: 'button', class: 'person', title: [p.original ? p.name : null, ...(p.notes || [])].filter(Boolean).join('\n') || null,
+    onclick: () => showWorks(p.id, p.original || p.name) }, p.original || p.name, roleNote ? h('span', { class: 'faint' }, ` ${roleNote}`) : null);
+  const byRole = (role) => extras.staff.filter((p) => p.roles.includes(role));
+  const others = extras.staff.filter((p) => !p.roles.some((r) => MAIN_ROLES.includes(r)));
+  return h('div', { class: 'box staffbox' },
+    extras.developers.length ? h('div', { class: 'staffrow' }, h('span', { class: 'k' }, t('Brand')),
+      h('span', { class: 'people' }, extras.developers.map((d) => person(d)))) : null,
+    MAIN_ROLES.filter((r) => byRole(r).length).map((r) => h('div', { class: 'staffrow' }, h('span', { class: 'k' }, STAFF_ROLE_TEXT()[r]),
+      h('span', { class: 'people' }, byRole(r).map((p) => person(p))))),
+    others.length ? h('details', { class: 'staffmore' }, h('summary', {}, t('Other staff ({n})', { n: others.length })),
+      h('div', { class: 'people' }, others.map((p) => person(p, `(${p.roles.map((r) => STAFF_ROLE_TEXT()[r] || r).join(', ')})`)))) : null);
+}
+
+// ---- a person's or brand's works
+
+let worksSeq = 0;
+function showWorks(who, name) {
+  setView('works');
+  $('#worksView').dataset.who = who;
+  renderWorks(who, name);
+  pushNav();
+}
+
+async function renderWorks(who, name) {
+  const seq = ++worksSeq;
+  replaceKids($('#worksView'), h('div', { class: 'libtoolbar' }, h('h1', {}, name || who)), h('div', { class: 'empty' }, h('p', {}, t('Loading from VNDB…'))));
+  let r;
+  try { r = await vns.call('vndbWorks', who); } catch (e) {
+    if (seq === worksSeq) replaceKids($('#worksView'), h('div', { class: 'libtoolbar' }, h('h1', {}, name || who)), h('div', { class: 'empty' }, h('p', {}, cleanError(e))));
+    return;
+  }
+  if (seq !== worksSeq || view !== 'works') return;
+  const inLib = r.works.filter((w) => w.gameId).length;
+  replaceKids($('#worksView'),
+    h('div', { class: 'libtoolbar' },
+      h('h1', {}, r.original || r.name), r.original ? h('span', { class: 'dim' }, r.name) : null,
+      h('span', { class: 'dim' }, `${plural(r.works.length, '{n} VN', '{n} VNs')} · ${t('{n} in your library', { n: inLib })}`),
+      h('div', { class: 'spacer' }),
+      h('button', { class: 'small', onclick: () => vns.call('openExternal', `https://vndb.org/${r.id}`) }, t('VNDB page'))),
+    h('div', { class: 'worksgrid' }, vnGrid(r.works, { sub: (w) => (w.roles || []).map((x) => STAFF_ROLE_TEXT()[x] || x).join(', '), onAdded: () => renderWorks(who, name) })));
 }
 
 // ------------------------------------------------------------------ your VNDB list
@@ -1917,7 +2119,8 @@ function paintDetail(g, data, opts = {}) {
       h('h2', {}, t('Categories')), categoryBox(g),
       h('h2', {}, t('Save backup')), backupBox(g),
       h('h2', {}, t('History')), histBox,
-      h('h2', {}, t('Details')), detailsBox)));
+      h('h2', {}, t('Details')), detailsBox)),
+    g.vndbId ? extrasSection(g) : null);
   main$.scrollTop = scroll;
   updateLive(id);
   if (loading) return;

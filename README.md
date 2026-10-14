@@ -51,6 +51,12 @@ You pick one on first run, and the same one on every PC:
   - release date, length (VNDB's category plus the average from votes), rating, languages and
     platforms
   - tags, with spoiler tags hidden unless you choose to show them
+- **More from VNDB on each game page:**
+  - **screenshots**, in a full-size viewer: the Japanese release's, else the English release's
+  - **related VNs** (sequels, fandiscs, same series…), marked when they're in your library or on your
+    VNDB list, with **+ Add**
+  - **characters**, with details and traits; spoiler characters stay hidden until you ask
+  - **staff and brand**: click a name to see everything that writer, artist or brand made
 - **Notes:** a notes box on each game that saves as you type and syncs to your other PCs.
 - **Reading status:** Plan to read, Reading, On hold, Finished, Dropped, with a sidebar filter. Like
   VNDB's list labels, a game can have several (Reading and Finished when re-reading, for example).
@@ -181,8 +187,9 @@ The exe isn't code-signed, so Windows SmartScreen may say "Windows protected you
 ## Privacy
 
 VN Shelf talks to three services, and only for the reasons below:
-- **VNDB:** to search for games and fetch their info and covers. If you connect your VNDB account,
-  also to read and update your list (status, labels, rating, dates; never notes).
+- **VNDB:** to search for games and fetch their info, covers, screenshots, characters and staff.
+  If you connect your VNDB account, also to read and update your list (status, labels, rating,
+  dates; never notes).
 - **GitHub:** to check for and download updates. You can turn this off.
 - **Google:** only if you choose Google Drive mode.
 

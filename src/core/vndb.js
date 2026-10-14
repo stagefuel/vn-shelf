@@ -2,7 +2,7 @@
 // VNDB lookups for titles, cover art and game info (https://api.vndb.org/kana). No key needed for reads.
 
 // VNS_VNDB_API points every VNDB request at a stand-in server (tests).
-const apiUrl = () => `${process.env.VNS_VNDB_API || 'https://api.vndb.org/kana'}/vn`;
+const apiUrl = (endpoint = 'vn') => `${process.env.VNS_VNDB_API || 'https://api.vndb.org/kana'}/${endpoint}`;
 const SEARCH_FIELDS = 'id,title,alttitle,released,developers.name,image.url,image.sexual,image.dims';
 const INFO_FIELDS = `${SEARCH_FIELDS},aliases,description,length,length_minutes,rating,votecount,languages,platforms,olang,`
   + 'tags.id,tags.name,tags.rating,tags.spoiler,tags.lie,tags.category';
@@ -15,8 +15,8 @@ function idFilter(q) {
   return m ? m[1].toLowerCase() : null;
 }
 
-async function post(body, fetchImpl) {
-  const res = await fetchImpl(apiUrl(), {
+async function post(body, fetchImpl, endpoint = 'vn') {
+  const res = await fetchImpl(apiUrl(endpoint), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'User-Agent': 'VN-Shelf' },
     body: JSON.stringify(body),
@@ -144,4 +144,122 @@ function normaliseUrl(u) {
   return /^https?:\/\//i.test(u) ? u : null;
 }
 
-module.exports = { search, bestMatch, fetchInfo, downloadImage, parseDescription, info, LENGTHS };
+// ---------------------------------------------------------------- extras for a game's page
+// Screenshots, related VNs, staff and brands (one request), characters (one more), and everything a
+// person or brand worked on. Shown on the game page; cached on this PC only, never in game.json.
+
+const EXTRA_FIELDS = 'relations.id,relations.relation,relations.relation_official,relations.title,relations.alttitle,'
+  + 'relations.released,relations.image.url,'
+  + 'screenshots.url,screenshots.dims,screenshots.thumbnail,screenshots.thumbnail_dims,screenshots.release.languages.lang,'
+  + 'staff.id,staff.name,staff.original,staff.role,staff.note,developers.id,developers.name,developers.original';
+
+/**
+ * The screenshots to show: the Japanese release's if there are any, else the English release's,
+ * else none (other languages' screenshots are never shown).
+ */
+function pickScreenshots(shots) {
+  const langs = (s) => ((s.release && s.release.languages) || []).map((l) => l.lang);
+  for (const lang of ['ja', 'en']) {
+    const set = (shots || []).filter((s) => langs(s).includes(lang));
+    if (set.length) {
+      return set.map((s) => ({ url: s.url, dims: s.dims || null, thumb: s.thumbnail || s.url, thumbDims: s.thumbnail_dims || null, lang }));
+    }
+  }
+  return [];
+}
+
+// Relation codes, in the order they're shown.
+const RELATIONS = ['preq', 'seq', 'fan', 'side', 'par', 'ser', 'set', 'alt', 'char', 'orig'];
+
+async function fetchExtras(vndbId, { fetchImpl = fetch } = {}) {
+  const id = idFilter(vndbId);
+  if (!id) throw new Error(`Not a VNDB id: ${vndbId}`);
+  const data = await post({ filters: ['id', '=', id], fields: EXTRA_FIELDS, results: 1 }, fetchImpl);
+  const v = (data.results || [])[0];
+  if (!v) throw new Error(`VNDB has no entry ${id}`);
+  // One entry per person, with all their roles (and notes) on this VN.
+  const people = new Map();
+  for (const st of v.staff || []) {
+    const p = people.get(st.id) || { id: st.id, name: st.name, original: st.original || '', roles: [], notes: [] };
+    if (!p.roles.includes(st.role)) p.roles.push(st.role);
+    if (st.note && !p.notes.includes(st.note)) p.notes.push(st.note);
+    people.set(st.id, p);
+  }
+  return {
+    screenshots: pickScreenshots(v.screenshots),
+    relations: (v.relations || [])
+      .map((r) => ({ vndbId: r.id, relation: r.relation, official: r.relation_official !== false, title: r.title, titleAlt: r.alttitle || '', released: r.released || '', image: r.image ? r.image.url : null }))
+      .sort((a, b) => (RELATIONS.indexOf(a.relation) - RELATIONS.indexOf(b.relation)) || String(a.released).localeCompare(String(b.released))),
+    staff: [...people.values()],
+    developers: (v.developers || []).map((d) => ({ id: d.id, name: d.name, original: d.original || '' })),
+    fetchedAt: new Date().toISOString(),
+  };
+}
+
+const ROLE_ORDER = ['main', 'primary', 'side', 'appears'];
+
+/** The characters of a VN, protagonist and main heroines first. `spoiler` > 0 means knowing about them is a spoiler. */
+async function fetchCharacters(vndbId, { fetchImpl = fetch, maxPages = 5 } = {}) {
+  const id = idFilter(vndbId);
+  if (!id) throw new Error(`Not a VNDB id: ${vndbId}`);
+  const out = [];
+  for (let page = 1; page <= maxPages; page++) {
+    const data = await post({
+      filters: ['vn', '=', ['id', '=', id]],
+      fields: 'name,original,image.url,description,blood_type,height,weight,bust,waist,hips,birthday,age,sex,vns.id,vns.role,vns.spoiler,traits.id,traits.name,traits.group_name,traits.spoiler',
+      results: 100, page,
+    }, fetchImpl, 'character');
+    for (const c of data.results || []) {
+      const mine = (c.vns || []).filter((x) => x.id === id);
+      if (!mine.length) continue;
+      const role = ROLE_ORDER.find((r) => mine.some((x) => x.role === r)) || 'appears';
+      out.push({
+        id: c.id, name: c.name, original: c.original || '', image: c.image ? c.image.url : null,
+        description: c.description || '', role, spoiler: Math.min(...mine.map((x) => x.spoiler || 0)),
+        sex: Array.isArray(c.sex) ? c.sex[0] : null, age: c.age || null, birthday: c.birthday || null,
+        bloodType: c.blood_type || null, height: c.height || null,
+        traits: (c.traits || []).map((x) => ({ id: x.id, name: x.name, group: x.group_name || '', spoiler: x.spoiler || 0 })),
+      });
+    }
+    if (!data.more) break;
+  }
+  return out.sort((a, b) => ROLE_ORDER.indexOf(a.role) - ROLE_ORDER.indexOf(b.role) || a.spoiler - b.spoiler);
+}
+
+/** Everything a person (s123) or brand (p123) worked on, newest first, with the person's roles. */
+async function fetchWorks(personOrBrand, { fetchImpl = fetch, maxPages = 5 } = {}) {
+  const m = /^(?:https?:\/\/vndb\.org\/)?([sp]\d+)$/i.exec(String(personOrBrand || '').trim());
+  if (!m) throw new Error(`Not a VNDB staff or producer id: ${personOrBrand}`);
+  const id = m[1].toLowerCase();
+  const staff = id.startsWith('s');
+  const out = [];
+  for (let page = 1; page <= maxPages; page++) {
+    const data = await post({
+      filters: [staff ? 'staff' : 'developer', '=', ['id', '=', id]],
+      fields: `title,alttitle,released,image.url,rating${staff ? ',staff.id,staff.role' : ''}`,
+      sort: 'released', reverse: true, results: 100, page,
+    }, fetchImpl);
+    for (const v of data.results || []) {
+      out.push({
+        vndbId: v.id, title: v.title, titleAlt: v.alttitle || '', released: v.released || '', image: v.image ? v.image.url : null,
+        rating: v.rating || null,
+        roles: staff ? [...new Set((v.staff || []).filter((x) => x.id === id).map((x) => x.role))] : [],
+      });
+    }
+    if (!data.more) break;
+  }
+  return out;
+}
+
+/** The name of a person or brand (for the page heading). */
+async function fetchName(personOrBrand, { fetchImpl = fetch } = {}) {
+  const id = String(personOrBrand).toLowerCase();
+  const data = await post({ filters: ['id', '=', id], fields: 'name,original', results: 1 }, fetchImpl, id.startsWith('s') ? 'staff' : 'producer');
+  const r = (data.results || [])[0];
+  return r ? { name: r.name, original: r.original || '' } : null;
+}
+
+module.exports = {
+  search, bestMatch, fetchInfo, downloadImage, parseDescription, info, LENGTHS,
+  fetchExtras, fetchCharacters, fetchWorks, fetchName, pickScreenshots, RELATIONS,
+};

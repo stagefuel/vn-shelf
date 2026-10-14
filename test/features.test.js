@@ -264,3 +264,41 @@ test('settings: many saves at the same moment never collide', async () => {
   assert.ok(typeof JSON.parse(fs.readFileSync(f, 'utf8')).n === 'number');
   assert.deepStrictEqual(fs.readdirSync(path.dirname(f)).filter((x) => x.endsWith('.tmp')), []);
 });
+
+// ------------------------------------------------------------------ VNDB extras
+
+test('vndb extras: Japanese screenshots first, English only when there are none, nothing otherwise', () => {
+  const shot = (n, ...langs) => ({ url: `u${n}`, thumbnail: `t${n}`, release: { languages: langs.map((lang) => ({ lang })) } });
+  assert.deepStrictEqual(vndb.pickScreenshots([shot(1, 'en'), shot(2, 'ru'), shot(3, 'ja'), shot(4, 'ja', 'en')]).map((x) => x.url), ['u3', 'u4']);
+  assert.deepStrictEqual(vndb.pickScreenshots([shot(1, 'en'), shot(2, 'ru'), shot(3, 'en')]).map((x) => x.url), ['u1', 'u3']);
+  assert.deepStrictEqual(vndb.pickScreenshots([shot(1, 'ru'), shot(2, 'zh-Hans')]), []);
+  assert.deepStrictEqual(vndb.pickScreenshots(undefined), []);
+});
+
+test('vndb extras: staff merged per person, relations ordered, characters by role with spoilers kept apart', async () => {
+  const { FakeVndb } = require('./helpers/fake-vndb');
+  const fake = new FakeVndb();
+  fake.extras.set('v5', {
+    screenshots: [{ url: 'a', thumbnail: 'ta', release: { languages: [{ lang: 'en' }] } }],
+    relations: [{ id: 'v9', relation: 'ser', relation_official: true, title: 'Series' }, { id: 'v8', relation: 'seq', relation_official: true, title: 'Sequel' }, { id: 'v7', relation: 'preq', relation_official: false, title: 'Before' }],
+    staff: [{ id: 's1', name: 'A', original: 'エー', role: 'director', note: null }, { id: 's1', name: 'A', original: 'エー', role: 'scenario', note: 'route 1' }, { id: 's2', name: 'B', role: 'music' }],
+    developers: [{ id: 'p1', name: 'Brand' }],
+  });
+  fake.characters.set('v5', [
+    { id: 'c1', name: 'Side', vns: [{ id: 'v5', role: 'side', spoiler: 0 }], traits: [] },
+    { id: 'c2', name: 'Hero', vns: [{ id: 'v5', role: 'main', spoiler: 0 }], traits: [{ id: 'i1', name: 'Brown', group_name: 'Hair', spoiler: 0 }] },
+    { id: 'c3', name: 'Secret', vns: [{ id: 'v5', role: 'primary', spoiler: 2 }], traits: [] },
+  ]);
+  process.env.VNS_VNDB_API = 'http://fake/kana';
+  try {
+    const x = await vndb.fetchExtras('v5', { fetchImpl: fake.fetch });
+    assert.deepStrictEqual(x.screenshots.map((s) => s.url), ['a'], 'English when there is no Japanese set');
+    assert.deepStrictEqual(x.relations.map((r) => r.relation), ['preq', 'seq', 'ser']);
+    assert.strictEqual(x.relations[0].official, false);
+    assert.deepStrictEqual(x.staff[0], { id: 's1', name: 'A', original: 'エー', roles: ['director', 'scenario'], notes: ['route 1'] });
+    assert.strictEqual(x.developers[0].id, 'p1');
+    const c = await vndb.fetchCharacters('v5', { fetchImpl: fake.fetch });
+    assert.deepStrictEqual(c.map((y) => `${y.name}/${y.role}/${y.spoiler}`), ['Hero/main/0', 'Secret/primary/2', 'Side/side/0']);
+    assert.deepStrictEqual(c[0].traits, [{ id: 'i1', name: 'Brown', group: 'Hair', spoiler: 0 }]);
+  } finally { delete process.env.VNS_VNDB_API; }
+});

@@ -46,6 +46,22 @@ async function until(what, fn, ms = 20000) {
   fake.setEntry('v11', { labels: [1, 10], vote: 80, started: '2026-01-01', vn: { title: 'Linked Game' } });
   fake.setEntry('v12', { labels: [5], vn: { title: 'Only On The List' } });
   fake.setEntry('v13', { labels: [2], vote: 70, vn: { title: 'Wanted Game' } });
+  // Game-page extras: Japanese and English screenshot sets (only the Japanese should show), a relation
+  // to a game in the library, a spoiler character, staff and a brand.
+  const px = 'data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACwAAAAAAQABAAACAkQBADs=';
+  const shotOf = (lang) => ({ url: px, thumbnail: px, dims: [800, 600], thumbnail_dims: [136, 102], release: { languages: [{ lang }] } });
+  fake.extras.set('v11', {
+    screenshots: [shotOf('en'), shotOf('ja'), shotOf('ru'), shotOf('ja')],
+    relations: [{ id: 'v13', relation: 'seq', relation_official: true, title: 'Wanted Game', released: '2021-01-01' }, { id: 'v99', relation: 'fan', relation_official: true, title: 'A Fandisc', released: '2022-01-01' }],
+    staff: [{ id: 's1', name: 'Writer Person', original: '書き手', role: 'scenario', note: null }],
+    developers: [{ id: 'p1', name: 'Brand Co', original: 'ブランド' }],
+  });
+  fake.characters.set('v11', [
+    { id: 'c1', name: 'Heroine', original: 'ヒロイン', vns: [{ id: 'v11', role: 'primary', spoiler: 0 }], traits: [{ id: 'i1', name: 'Kind', group_name: 'Personality', spoiler: 0 }] },
+    { id: 'c2', name: 'Twist', vns: [{ id: 'v11', role: 'main', spoiler: 2 }], traits: [] },
+  ]);
+  fake.works.set('s1', [{ id: 'v11', title: 'Linked Game', released: '2020-01-01', staff: [{ id: 's1', role: 'scenario' }] }, { id: 'v77', title: 'Another Work', released: '2019-01-01', staff: [{ id: 's1', role: 'scenario' }] }]);
+  fake.names.set('s1', { name: 'Writer Person', original: '書き手' });
   const srv = await fake.listen();
   const result = {};
   let app;
@@ -126,6 +142,38 @@ async function until(what, fn, ms = 20000) {
     await page.locator('.listfields').scrollIntoViewIfNeeded();
     await shot(page, '04-game-page');
 
+    // ---- VNDB extras on the game page
+    await page.waitForSelector('.vnextras h2:has-text("Characters")', { timeout: 20000 });
+    result.extras = {
+      sections: await page.$$eval('.vnextras h2', (x) => x.map((y) => y.textContent)),
+      screenshots: await page.locator('.vnextras .shot').count(),
+      related: await page.$$eval('.vnextras .card.mini', (x) => x.map((y) => y.textContent)),
+      characters: await page.locator('.vnextras .charcard').count(),
+    };
+    if (result.extras.screenshots !== 2) throw new Error(`expected the 2 Japanese screenshots, got ${result.extras.screenshots}`);
+    if (result.extras.characters !== 1) throw new Error('spoiler character should be hidden');
+    if (!result.extras.related.some((x) => x.includes('Wanted Game') && x.includes('In your library'))) throw new Error('related game not marked as in the library');
+    await page.click('.vnextras .shot >> nth=0');
+    await page.waitForSelector('.lightbox');
+    await page.keyboard.press('ArrowRight');
+    result.lightboxCount = await page.textContent('.lightbox .lbcount');
+    await page.keyboard.press('Escape');
+    result.lightboxClosedStaysOnPage = !(await page.$('.lightbox')) && await page.isVisible('#detailView');
+    await page.click('.vnextras button:has-text("Show 1 spoiler characters")');
+    result.spoilerShown = await page.locator('.vnextras .charcard').count();
+    await page.click('.vnextras .charcard >> nth=0');
+    await page.waitForSelector('.chardlg');
+    result.characterDialog = await page.textContent('.chardlg');
+    await page.click('#dlg button:has-text("Close")');
+    await page.locator('.vnextras .person:has-text("書き手")').scrollIntoViewIfNeeded();
+    await shot(page, '05-extras');
+    await page.click('.vnextras .person:has-text("書き手")');
+    await page.waitForSelector('#worksView .card.mini');
+    result.works = await page.$$eval('#worksView .card.mini', (x) => x.map((y) => y.textContent));
+    await shot(page, '06-works');
+    await page.click('#backBtn');
+    await page.waitForSelector('#detailView:not(.hidden)');
+
     // ---- a change made on VNDB comes back with Sync now
     fake.setEntry('v11', { labels: [2, 7, 10], vote: 50, started: '2026-01-01', finished: today, vn: { title: 'Linked Game' } });
     await page.click('#settingsBtn');
@@ -144,7 +192,7 @@ async function until(what, fn, ms = 20000) {
     await page.click('#dlg button:has-text("Cancel")');
     result.sidebarGone = (await page.locator('.navitem:has-text("Your VNDB list")').count()) === 0;
     console.log(JSON.stringify(result, null, 2));
-    const bad = ['bothStatuses', 'badTokenRefused', 'tokenNotInConfig', 'tokenNotShared', 'tokenRemoved', 'sidebarGone'].filter((k) => !result[k]);
+    const bad = ['lightboxClosedStaysOnPage', 'bothStatuses', 'badTokenRefused', 'tokenNotInConfig', 'tokenNotShared', 'tokenRemoved', 'sidebarGone'].filter((k) => !result[k]);
     if (bad.length) throw new Error(`failed: ${bad.join(', ')}`);
     console.log('VNDB SMOKE OK');
   } catch (e) {

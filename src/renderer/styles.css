@@ -498,3 +498,47 @@ body.has-bg .homehero .bgfade { background: linear-gradient(180deg, color-mix(in
 .plainlist { margin: 4px 0 0; padding-left: 18px; color: var(--text-dim); }
 .plainlist li { margin: 2px 0; }
 .small.warn, .warn.small { color: var(--warn); }
+
+/* ---------- VNDB extras: screenshots, related, characters, staff, works ---------- */
+.vnextras { padding: 0 34px 60px; margin-top: -50px; }
+.vnextras h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--text-faint); font-weight: 600; margin: 26px 0 10px; }
+.vnextras .box { background: var(--bg-raised); border: 1px solid var(--line); border-radius: var(--radius); }
+.shots { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; }
+.shot { padding: 0; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--bg-raised); cursor: zoom-in; aspect-ratio: 4 / 3; }
+.shot img { width: 100%; height: 100%; object-fit: cover; display: block; transition: transform .15s ease; }
+.shot:hover img { transform: scale(1.03); }
+.lightbox { position: fixed; inset: 0; z-index: 80; background: rgba(0,0,0,.88); display: flex; align-items: center; justify-content: center; }
+.lightbox img { max-width: 92vw; max-height: 88vh; object-fit: contain; box-shadow: 0 10px 40px rgba(0,0,0,.6); }
+.lightbox .lbcount { position: absolute; bottom: 14px; left: 50%; transform: translateX(-50%); color: #eee; font-size: 13px; background: rgba(0,0,0,.6); padding: 3px 10px; border-radius: 999px; }
+.lightbox .lbnav, .lightbox .lbclose { position: absolute; background: rgba(255,255,255,.08); color: #fff; border: 0; border-radius: 999px; width: 44px; height: 44px; font-size: 28px; line-height: 1; cursor: pointer; }
+.lightbox .lbnav:hover, .lightbox .lbclose:hover { background: rgba(255,255,255,.18); }
+.lightbox .prev { left: 20px; top: 50%; transform: translateY(-50%); }
+.lightbox .next { right: 20px; top: 50%; transform: translateY(-50%); }
+.lightbox .lbclose { top: 16px; right: 20px; font-size: 24px; }
+.minigrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 18px 14px; }
+.worksgrid { padding: 22px; }
+.card.mini .title { font-size: 12.5px; }
+.card.mini .vmark { display: inline-block; margin-top: 4px; font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-dim); }
+.card.mini .vmark.lib { border-color: var(--accent); color: var(--accent); }
+.card.mini button.small { display: block; margin-top: 6px; padding: 3px 10px; }
+.chargrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 12px; margin-bottom: 8px; }
+.charcard { display: flex; flex-direction: column; align-items: stretch; text-align: left; padding: 0; background: none; border: 0; cursor: pointer; color: var(--text); }
+.charcard img, .charcard .noimg { width: 100%; aspect-ratio: 5 / 6; object-fit: cover; object-position: top; border-radius: 8px; border: 1px solid var(--line); background: var(--bg-raised); }
+.charcard:hover img { border-color: var(--accent); }
+.charcard .cname { margin-top: 6px; font-size: 13px; font-weight: 600; }
+.charcard .csub { font-size: 11.5px; color: var(--text-faint); }
+.charcard.spoil .cname::after { content: ' ⚠'; color: var(--warn); font-weight: 400; }
+.chardlg { display: flex; gap: 18px; align-items: flex-start; }
+.chardlg .charimg { width: 180px; border-radius: 8px; border: 1px solid var(--line); flex: none; }
+.chardlg .alt { color: var(--text-dim); margin-bottom: 8px; }
+.chardlg .desc { margin: 10px 0; white-space: pre-wrap; }
+.traitrow { font-size: 13px; margin: 3px 0; }
+.traitrow .k, .staffrow .k { color: var(--text-faint); display: inline-block; min-width: 120px; }
+.spoiltrait { color: var(--warn); }
+.staffbox { padding: 10px 14px; }
+.staffrow { display: flex; gap: 8px; align-items: baseline; padding: 4px 0; }
+.people { display: inline-flex; flex-wrap: wrap; gap: 4px 6px; }
+.person { background: none; border: 0; padding: 1px 2px; color: var(--accent); cursor: pointer; font: inherit; font-size: 13.5px; }
+.person:hover { text-decoration: underline; }
+.staffmore summary { cursor: pointer; color: var(--text-dim); font-size: 13px; padding: 6px 0; }
+@media (max-width: 700px) { .chardlg { flex-direction: column; } }

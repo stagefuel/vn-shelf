@@ -11,7 +11,8 @@ system and no analytics. The developer never receives any of your data.
   created in your Drive (your synced save files). It cannot see anything else in your Drive.
 - **VNDB (vndb.org)**, when you search for a game, import a folder of games or refresh a game's info.
   The search text (a title or folder name) is sent to VNDB's public API, and covers are downloaded
-  from VNDB's image server.
+  from VNDB's image server. A game's page also asks VNDB for its screenshots, related VNs, characters
+  and staff (by the game's VNDB id), and shows images from VNDB's image server.
 - **Your VNDB list, only if you connect your VNDB account** (Settings → VNDB). VN Shelf then reads
   your list and its labels and sends VNDB changes to the reading status, labels, rating and
   started/finished dates of the VNs in your library. It never reads or sends your list notes.

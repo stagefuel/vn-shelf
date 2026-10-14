@@ -4,6 +4,43 @@ All notable changes to VN Shelf. Download any version from the
 [Releases page](https://github.com/stagefuel/vn-shelf/releases). From 0.3.0 on, VN Shelf can
 update itself (Settings → Updates).
 
+## 0.9.0
+
+Game pages now show more from VNDB: screenshots, related VNs, characters and staff. You can also
+open everything a writer, artist or brand has made.
+
+### New
+- **Screenshots.** A gallery on each game page linked to VNDB. Click one to view it full size;
+  ← and → move between them, and Escape or a click outside closes the viewer.
+  - Only the Japanese release's screenshots are shown. If VNDB has none from a Japanese release,
+    the English release's are shown instead. If there are neither, no screenshots are shown
+    (screenshots from other languages' releases never are).
+- **Related VNs:** prequels, sequels, fandiscs, side stories, same series or setting, alternative
+  versions and so on, each with its cover and year.
+  - Each one is marked **In your library**, with its statuses on your VNDB list, or **On your VNDB
+    list**.
+  - Click one to open its page in VN Shelf (if it's in your library) or on vndb.org. **+ Add** puts it
+    in your library.
+  - Unofficial relations are marked as such.
+- **Characters:** protagonists first, then main, side and minor characters, with their pictures.
+  - Click a character for their details: role, sex, age, birthday, height and blood type, the
+    description (spoilers hidden until clicked) and traits by group (hair, personality…).
+  - Characters whose existence is a spoiler, and spoiler traits, are hidden until you choose
+    **Show spoiler characters** or **Show spoiler traits**. **Show spoiler tags** on the game also
+    shows spoiler characters.
+- **Staff and brand:** the brand, director, scenario, character design, art, music and songs, with
+  everyone else (translators, editors, QA…) under **Other staff**. Point at a name to see their
+  notes for this game (which routes they wrote, for example).
+- **Everything by a person or brand.** Click any name under Staff to see all the VNs they worked on,
+  newest first, with their role in each, which ones are in your library, and **+ Add** for the rest.
+  **Back** returns to the game.
+
+### How it loads
+- These need only two requests to VNDB per game (three for a person's page). They're kept on this PC
+  for a week, so pages open instantly after the first time, and the last copy is used when VNDB
+  can't be reached. Nothing is added to your shared storage.
+- No VNDB account is needed. A connected account is only used to show which VNs are on your list.
+
 ## 0.8.1
 
 Reading statuses now work like labels on VNDB.
