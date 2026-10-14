@@ -181,3 +181,30 @@ test('lock shows another PC has the game open', async () => {
   await a.engine.releaseLock(game.id);
   assert.strictEqual(await a.engine.readLock(game.id), null);
 });
+
+test('progress: uploads and downloads report every file and the bytes copied', async () => {
+  const { game, a, b } = await setup();
+  a.save('save01.dat', 'x'.repeat(1000));
+  a.save('save02.dat', 'y'.repeat(500));
+  a.gameSave('sys.dat', 'z'.repeat(250));
+  const up = [];
+  assert.strictEqual(await sync(a, game, { onProgress: (p) => up.push(p) }), 'push');
+  assert.deepStrictEqual(up.map((p) => p.done), [0, 1, 2, 3]);
+  assert.ok(up.every((p) => p.phase === 'upload' && p.total === 3 && p.totalBytes === 1750));
+  assert.strictEqual(up[up.length - 1].bytes, 1750);
+
+  // The laptop already has one older save: it's backed up, then the 3 new files come down.
+  b.save('save01.dat', 'old');
+  const down = [];
+  await sync(b, game, { resolution: 'cloud', onProgress: (p) => down.push(p) });
+  const backup = down.filter((p) => p.phase === 'backup');
+  const dl = down.filter((p) => p.phase === 'download');
+  assert.deepStrictEqual(backup.map((p) => p.done), [0, 1]);
+  assert.strictEqual(dl[dl.length - 1].done, 3);
+  assert.strictEqual(dl[dl.length - 1].total, 3);
+  assert.strictEqual(dl[dl.length - 1].bytes, 1750);
+
+  // A listener that throws never breaks a sync.
+  a.save('save03.dat', 'w');
+  assert.strictEqual(await sync(a, game, { onProgress: () => { throw new Error('boom'); } }), 'push');
+});

@@ -59,6 +59,8 @@ const mockOpen = (app, f) => app.evaluate(({ dialog }, p) => { dialog.showOpenDi
   await page.click('dialog button:has-text("Start")');
   await page.waitForSelector('#empty:not(.hidden)');
 
+  await page.evaluate(() => vns.call('saveSettings', { allowUmineko: true }));
+
   // The import dialog, as a user sees it.
   await mockOpen(app, vnDir);
   await page.click('#importBtn');
@@ -134,6 +136,7 @@ const mockOpen = (app, f) => app.evaluate(({ dialog }, p) => { dialog.showOpenDi
   const cover = path.join(cloud, 'VNShelf', 'games', byV.v11.id, byV.v11.cover || 'cover.jpg');
   await mockOpen(app, cover);
   await page.click('#settingsBtn');
+  await page.click('dialog[open] .tab[data-tab="look"]');
   await page.waitForSelector('dialog[open] .bgedit');
   await page.click('dialog[open] .bgedit button:has-text("Choose image")');
   await page.waitForSelector('dialog[open] .bgthumb');
@@ -144,14 +147,15 @@ const mockOpen = (app, f) => app.evaluate(({ dialog }, p) => { dialog.showOpenDi
   });
   await page.waitForTimeout(600);
   await shot(page, 'settings');
-  await page.click('dialog[open] button:has-text("Save")');
+  await page.click('dialog[open] .dfoot button:has-text("Save")');
   await page.click('#sidebar .navitem:has-text("Home")');
   await shot(page, 'home-background');
 
   // Japanese interface.
   await page.click('#settingsBtn');
+  await page.click('dialog[open] .tab[data-tab="general"]');
   await page.selectOption('dialog[open] select >> nth=0', 'ja');
-  await page.click('dialog[open] button:has-text("Save")');
+  await page.click('dialog[open] .dfoot button:has-text("Save")');
   await page.waitForSelector('#sidebar .navitem:has-text("ホーム")');
   await page.click('#sidebar .navitem:has-text("すべてのゲーム")');
   await page.click('#grid .card:has-text("Kajiri")');

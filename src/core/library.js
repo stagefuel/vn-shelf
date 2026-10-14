@@ -131,6 +131,10 @@ class LocalConfig {
     d.sort = d.sort || 'title';
     d.autoUpdate = d.autoUpdate !== false;
     d.background = d.background || null; // { file, dim, blur } — an image shown behind the app, per PC
+    d.startWithSystem = !!d.startWithSystem; // start quietly in the tray when the user signs in
+    d.closeToTray = d.closeToTray !== false; // the window's X hides VN Shelf to the tray instead of quitting
+    d.trayHintShown = !!d.trayHintShown;
+    d.allowUmineko = !!d.allowUmineko;
     await this.save();
     return d;
   }

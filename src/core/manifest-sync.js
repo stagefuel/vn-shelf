@@ -13,7 +13,7 @@ const fsp = require('fs').promises;
 const path = require('path');
 const crypto = require('crypto');
 const fsu = require('./fsutil');
-const { SyncEngine, SyncError, decide } = require('./sync');
+const { SyncEngine, SyncError, Progress, decide, totalSize } = require('./sync');
 
 const sha1 = (buf) => crypto.createHash('sha1').update(buf).digest('hex');
 
@@ -42,7 +42,7 @@ class ManifestSyncEngine extends SyncEngine {
     return this.store.readJson(id, 'state.json');
   }
 
-  async sync(game, installDir, lastSync, { resolution } = {}) {
+  async sync(game, installDir, lastSync, { resolution, onProgress } = {}) {
     await this.requireCloud();
     const local = await this.scanLocal(game, installDir);
     const cloud = await this.readCloudState(game.id);
@@ -54,11 +54,11 @@ class ManifestSyncEngine extends SyncEngine {
     }
     const expected = cloud ? cloud.generation : null;
     if (action === 'push') {
-      const state = await this.push(game, local, { expected });
+      const state = await this.push(game, local, { expected, onProgress });
       return { action, cloud: state, lastSync: { generation: state.generation, hashes: state.hashes } };
     }
     if (action === 'pull') {
-      await this.pull(game, installDir, local, cloud);
+      await this.pull(game, installDir, local, cloud, { onProgress });
       return { action, cloud, lastSync: { generation: cloud.generation, hashes: cloud.hashes } };
     }
     return { action, cloud, lastSync: cloud ? { generation: cloud.generation, hashes: cloud.hashes } : lastSync || null };
@@ -72,19 +72,22 @@ class ManifestSyncEngine extends SyncEngine {
   }
 
   /** Upload any of this PC's save files the store doesn't have yet. Returns {key: sha1} of what was read. */
-  async uploadBlobs(gameId, local) {
+  async uploadBlobs(gameId, local, { onProgress, phase = 'upload' } = {}) {
     await this.store.createGame(gameId);
     const blobs = await this.store.listBlobs(gameId);
     const hashes = {};
+    const keys = Object.keys(local.files);
+    const progress = new Progress(onProgress, phase, keys.length, totalSize(local, keys));
     for (const [key, p] of Object.entries(local.files)) {
       let buf;
-      try { buf = await fsp.readFile(p); } catch { continue; } // vanished since the scan
+      try { buf = await fsp.readFile(p); } catch { progress.step(); continue; } // vanished since the scan
       const h = sha1(buf); // hash what we actually read; the game may have written since the scan
       hashes[key] = h;
       if (!blobs.has(h)) {
         await this.store.putBlob(gameId, h, buf);
         blobs.set(h, { modified: Date.now() });
       }
+      progress.step(buf.length);
     }
     return hashes;
   }
@@ -95,9 +98,9 @@ class ManifestSyncEngine extends SyncEngine {
    * @param {string|null} [o.expected]  generation we based the decision on; if the store moved on
    *                                    meanwhile (another PC pushed), refuse instead of overwriting
    */
-  async push(game, local, { expected } = {}) {
+  async push(game, local, { expected, onProgress } = {}) {
     const id = game.id;
-    const hashes = await this.uploadBlobs(id, local);
+    const hashes = await this.uploadBlobs(id, local, { onProgress });
     if (this.store.refresh) this.store.refresh(id);
     const prev = await this.store.readJson(id, 'state.json');
     if (expected !== undefined && (prev ? prev.generation : null) !== expected) {
@@ -116,10 +119,10 @@ class ManifestSyncEngine extends SyncEngine {
     return state;
   }
 
-  async pull(game, installDir, local, cloud) {
+  async pull(game, installDir, local, cloud, { onProgress } = {}) {
     await this.requireBlobs(game.id, cloud.hashes);
-    await this.backupLocal(game, local, 'before-pull');
-    await this.applyFromStore(game, installDir, cloud.hashes, local);
+    await this.backupLocal(game, local, 'before-pull', { onProgress });
+    await this.applyFromStore(game, installDir, cloud.hashes, local, { onProgress });
   }
 
   async requireBlobs(gameId, hashes) {
@@ -133,7 +136,9 @@ class ManifestSyncEngine extends SyncEngine {
   }
 
   /** Make this PC's save folders match a manifest exactly. */
-  async applyFromStore(game, installDir, hashes, local) {
+  async applyFromStore(game, installDir, hashes, local, { onProgress } = {}) {
+    const changed = Object.entries(hashes).filter(([key, h]) => local.hashes[key] !== h).length;
+    const progress = new Progress(onProgress, 'download', changed);
     for (const { rule, abs, error } of this.resolveRules(game, installDir)) {
       if (!abs) throw new SyncError('bad-path', `Can't resolve save location ${rule.path}: ${error}`);
       const prefix = `${rule.id}/`;
@@ -151,14 +156,15 @@ class ManifestSyncEngine extends SyncEngine {
         const tmp = `${dest}.vns-tmp`;
         await fsp.writeFile(tmp, buf);
         await fsp.rename(tmp, dest);
+        progress.step(buf.length);
       }
     }
   }
 
   /** Keep a copy of this PC's current saves in history before anything overwrites them. */
-  async backupLocal(game, local, kind) {
+  async backupLocal(game, local, kind, { onProgress } = {}) {
     if (!Object.keys(local.files).length) return null;
-    const hashes = await this.uploadBlobs(game.id, local);
+    const hashes = await this.uploadBlobs(game.id, local, { onProgress, phase: 'backup' });
     return this.addHistory(game.id, {
       kind, deviceName: this.deviceName, at: new Date().toISOString(), generation: null, hashes,
     });

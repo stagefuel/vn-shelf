@@ -148,6 +148,7 @@ async function mockDialog(app, file) {
 
   // Sign out from Settings
   await page.click('#settingsBtn');
+  await page.click('dialog[open] .tab[data-tab="saves"]');
   await page.waitForSelector('dialog[open] button:has-text("Sign out")');
   await shot(page, 'd07-settings');
   await page.click('dialog button:has-text("Sign out")');

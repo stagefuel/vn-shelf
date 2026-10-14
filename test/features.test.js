@@ -228,6 +228,35 @@ test('updater (Windows): the swap script outlives its launcher and replaces the 
   assert.match(log, /closed, replacing the program/);
 });
 
+test('updater: the updated exe gets the new version in its name', () => {
+  const dir = path.join(path.sep, 'apps');
+  assert.strictEqual(updater.updatedExePath(path.join(dir, 'VN-Shelf-0.4.0-portable.exe'), '0.4.0', '0.4.1'), path.join(dir, 'VN-Shelf-0.4.1-portable.exe'));
+  // A renamed copy without the version in its name keeps its name.
+  assert.strictEqual(updater.updatedExePath(path.join(dir, 'VN Shelf.exe'), '0.4.0', '0.4.1'), path.join(dir, 'VN Shelf.exe'));
+});
+
+test('updater (Windows): the swap script saves the update under the new name and removes the old exe', { skip: process.platform !== 'win32', timeout: 60000 }, async () => {
+  const { spawn } = require('child_process');
+  const dir = tmp();
+  const sys32 = path.join(process.env.SystemRoot, 'System32');
+  const cur = path.join(dir, 'VN-Shelf-0.4.0-portable.exe');
+  const target = updater.updatedExePath(cur, '0.4.0', '0.4.1');
+  const nw = `${cur}.new`;
+  fs.copyFileSync(path.join(sys32, 'whoami.exe'), cur);
+  fs.copyFileSync(path.join(sys32, 'hostname.exe'), nw);
+  const want = fs.readFileSync(nw);
+  // Two stand-ins: VN Shelf itself and the portable launcher, which exits a little later.
+  const app = spawn(path.join(sys32, 'PING.EXE'), ['-n', '2', '127.0.0.1'], { stdio: 'ignore' });
+  const launcher = spawn(path.join(sys32, 'PING.EXE'), ['-n', '4', '127.0.0.1'], { stdio: 'ignore' });
+  const script = await updater.writeSwapScript({ currentExe: cur, newExe: nw, targetExe: target, pids: [app.pid, launcher.pid], dir });
+  updater.launchSwapScript(script);
+  await new Promise((r) => setTimeout(r, 2000));
+  assert.ok(!fs.existsSync(target), 'nothing moved while the launcher still runs');
+  for (let i = 0; i < 40 && (fs.existsSync(nw) || fs.existsSync(cur)); i++) await new Promise((r) => setTimeout(r, 500));
+  assert.ok(fs.readFileSync(target).equals(want), 'new version saved under the new name');
+  assert.ok(!fs.existsSync(cur), 'old version removed');
+});
+
 test('settings: many saves at the same moment never collide', async () => {
   const fsu = require('../src/core/fsutil');
   const f = path.join(tmp(), 'config.json');

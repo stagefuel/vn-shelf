@@ -36,13 +36,15 @@ You pick one on first run, and the same one on every PC:
 ## Features
 
 ### Library
-- **Home page:** one row of the games you played most recently, filling the window's width.
+- **Home page:** the game you played last, large, with its details and a big Play button, then a
+  row of your other recent games.
 - **Categories:** your own groups (Reading, Finished, Favourites…), shown in the sidebar like
   folders. They're saved with each game, so every PC sees them.
 - **Sorting:** by title, last played, recently added, release date, VNDB rating, length or time
   played.
-- **Search:** matches titles, aliases, developers, categories and VNDB tags. Click a tag on any
-  game to list every game with it.
+- **Search:** matches titles, aliases, developers, categories and VNDB tags, and suggests matching
+  games, tags, developers and categories as you type. Click a tag on any game to list every game
+  with it.
 - **VNDB info on each game:**
   - the description (spoilers hidden until clicked)
   - release date, length (VNDB's category plus the average from votes), rating, languages and
@@ -83,6 +85,13 @@ You pick one on first run, and the same one on every PC:
   Options can include `{gameExe}`, `{gameDir}` and `{title}`, which are filled in for each game.
 - **Locale Emulator:** set `LEProc.exe` in Settings, then tick it per game.
 - **Upload while playing:** optional; pushes saves about 10 s after each save.
+- **Progress bars:** bigger syncs show how many files and MB are done, on the cover and the game page.
+
+### Running in the background
+- **Start with Windows** (optional, per PC): VN Shelf starts quietly in the tray and keeps your saves
+  in sync.
+- **Closing the window keeps it in the tray** by default, so saves still sync. Right-click the tray
+  icon to quit, or set the X to quit in **Settings → General**.
 
 ### Safety
 - Nothing is overwritten without being copied to **History** first. The newest 10 versions are kept
@@ -103,15 +112,18 @@ You pick one on first run, and the same one on every PC:
   move the window, double-click to maximise.
 - **Background image:** pick any picture in Settings (stored per PC), with sliders for darkness and blur.
 - **Back and forward:** the mouse's side buttons and Alt+← / Alt+→ move through Home, the library,
-  filters and game pages. The Back button appears on game pages and tag lists.
+  filters and game pages. The Back button appears on game pages and tag lists. Clicking "VN Shelf"
+  goes Home.
+- **Settings in tabs:** General, Saves & sync, Games & tools, Look, and Updates & about.
 - **Quick start-up:** the library from last time appears at once and refreshes in the background. In
   Google Drive mode, game details are cached, so only changes are downloaded.
 
 ### Updates
 - VN Shelf checks for a new version when it starts (you can turn this off) and shows a pop-up you
   can hide. You can also use **Settings → Updates → Check now**.
-- The portable `.exe` updates itself. The download is checked against GitHub's SHA-256, then VN
-  Shelf restarts with your settings and library kept.
+- The portable `.exe` updates itself. The download is checked against GitHub's SHA-256, saved
+  under the new version's file name, and VN Shelf restarts with your settings and library kept.
+- **Settings → Updates & about** shows the patch notes for your version and links to this page.
 
 ## Download
 

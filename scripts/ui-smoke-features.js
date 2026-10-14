@@ -1,6 +1,7 @@
 'use strict';
-// End-to-end check of the library features: update pop-up, bulk import with VNDB matching,
-// tags, categories, sorting, notes, companion tools, save export/import and the Japanese UI.
+// End-to-end check of the library features: update pop-up and patch notes, bulk import with VNDB
+// matching, tags, categories, sorting, notes, companion tools, save export/import, search
+// suggestions, the game page, Home, Settings tabs, start with the computer and the Japanese UI.
 // Linux: DISPLAY=:97 node scripts/ui-smoke-features.js <shots dir>   (needs internet for VNDB)
 // Windows / a packaged build: set VNS_EXE to the app's .exe.
 const { _electron: electron } = require('playwright-core');
@@ -69,7 +70,7 @@ const zipOut = path.join(base, 'k3-saves.zip');
     executablePath: process.env.VNS_EXE || require('electron'),
     args: process.env.VNS_EXE ? [] : [path.join(__dirname, '..'), '--no-sandbox'],
     env: (() => {
-      const e = { ...process.env, ...env, VNS_FAKE_UPDATE: JSON.stringify({ version: '9.9.9', notes: 'A big update\n- New things', page: 'https://github.com/stagefuel/vn-shelf/releases', asset: null }) };
+      const e = { ...process.env, ...env, VNS_FAKE_UPDATE: JSON.stringify({ version: '9.9.9', notes: '### New\n- **Bold** thing\n  - nested item\n  continued line\n- Second thing', page: 'https://github.com/stagefuel/vn-shelf/releases', asset: null }) };
       delete e.ELECTRON_RUN_AS_NODE;
       return e;
     })(),
@@ -94,6 +95,18 @@ const zipOut = path.join(base, 'k3-saves.zip');
   await page.click('.updatepop button:has-text("Hide")');
   result.updatePopupHidden = (await page.$('.updatepop')) === null;
   result.updatePill = await page.textContent('#updatePill');
+  // The update window: current version only, and the notes formatted (lists, bold, nesting).
+  await page.click('#updatePill');
+  await page.waitForSelector('dialog[open] .notes-view .md');
+  result.updateText = await page.textContent('dialog[open] .dhead p');
+  result.updateNotes = await page.evaluate(() => {
+    const md = document.querySelector('dialog[open] .notes-view .md');
+    return { heading: md.querySelector('h5') && md.querySelector('h5').textContent, items: md.querySelectorAll('li').length,
+      nested: md.querySelectorAll('ul ul li').length, bold: md.querySelector('strong') && md.querySelector('strong').textContent,
+      continued: md.querySelector('ul ul li').parentNode.parentNode.textContent.includes('continued line') };
+  });
+  await shot(page, 'f01b-update-dialog');
+  await page.click('dialog[open] button:has-text("Later")');
 
   // ---- bulk import
   await mockOpen(vn);
@@ -172,12 +185,13 @@ const zipOut = path.join(base, 'k3-saves.zip');
 
   // ---- companion tool starts with a game and closes with it
   await page.click('#settingsBtn');
+  await page.click('dialog[open] .tab[data-tab="games"]');
   await page.click('dialog[open] button:has-text("+ Add a tool")');
   await page.fill('dialog[open] .toolrow input >> nth=0', 'Hooker');
   await page.fill('dialog[open] .toolrow input >> nth=1', toolPath);
   await page.check('dialog[open] .toolrow label:has-text("Start with every game") input');
   await shot(page, 'f08-settings-tools');
-  await page.click('dialog[open] button:has-text("Save")');
+  await page.click('dialog[open] .dfoot button:has-text("Save")');
   await page.waitForTimeout(500);
   await page.evaluate((exe) => { addGameFromExe(exe); }, runGame);
   await page.waitForSelector('dialog[open] button:has-text("Skip")', { timeout: 20000 });
@@ -216,29 +230,93 @@ const zipOut = path.join(base, 'k3-saves.zip');
   await page.waitForSelector('#libraryView:not(.hidden)');
   result.altLeftBack = true;
 
+  // ---- game page: the new page shows at once, never the previous game's
+  await page.click('#grid .card >> nth=0');
+  await page.waitForSelector('#detailView:not(.hidden) #playBtn');
+  await page.waitForTimeout(400); // back/forward ignore repeats within 250 ms
+  await page.keyboard.press('Alt+ArrowLeft');
+  await page.waitForSelector('#libraryView:not(.hidden)');
+  await page.waitForTimeout(300);
+  result.instantGamePage = await page.evaluate(() => {
+    const card = document.querySelectorAll('#grid .card')[1];
+    const want = card.querySelector('.title').textContent;
+    card.click(); // in the same moment, before anything has loaded
+    const shown = document.querySelector('#detailView h1');
+    return { want, shown: shown && shown.textContent };
+  });
+  await page.waitForTimeout(800);
+
+  // ---- clicking "VN Shelf" goes Home
+  await page.click('#brand');
+  await page.waitForSelector('#homeView:not(.hidden)');
+  result.brandGoesHome = true;
+
+  // ---- search suggestions
+  const q = firstTag.slice(0, Math.min(4, firstTag.length)).toLowerCase();
+  await page.click('#search');
+  await page.fill('#search', q);
+  await page.waitForSelector('#suggest:not(.hidden) .sugitem');
+  await shot(page, 'f05b-suggestions');
+  result.suggestions = await page.$$eval('#suggest .sugitem', (r) => r.map((x) => `${x.querySelector('.kind').textContent}: ${x.querySelector('.label').textContent}`));
+  const tagIndex = await page.$$eval('#suggest .sugitem', (r) => r.findIndex((x) => x.querySelector('.kind').textContent === 'Tag'));
+  for (let i = 0; i <= tagIndex; i++) await page.keyboard.press('ArrowDown');
+  await page.keyboard.press('Enter');
+  await page.waitForSelector('#libraryView:not(.hidden) .chip.on:has-text("Tag")');
+  result.suggestionOpensTag = await page.textContent('.libtoolbar h1');
+  result.suggestHiddenAfter = await page.evaluate(() => document.querySelector('#suggest').classList.contains('hidden'));
+
   // ---- the + button and a background image
   result.addButton = await page.textContent('#addBtn');
   await mockOpen(path.join(__dirname, '..', 'build', 'icon.png'));
   await page.click('#settingsBtn');
+  await page.click('dialog[open] .tab[data-tab="look"]');
   await page.click('dialog[open] .bgedit button:has-text("Choose image")');
   await page.waitForSelector('dialog[open] .bgthumb');
-  await page.click('dialog[open] button:has-text("Save")');
+  await page.click('dialog[open] .dfoot button:has-text("Save")');
   await page.waitForTimeout(500);
   result.backgroundOn = await page.evaluate(() => document.body.classList.contains('has-bg') && !!document.querySelector('#appBg').style.backgroundImage);
   await page.click('#sidebar .navitem:has-text("Home")');
   await page.waitForTimeout(500);
   await shot(page, 'f08b-home-background');
-  result.homeCards = await page.$$eval('#homeView .recentrow .card', (c) => c.length);
+  result.homeHero = await page.evaluate(() => {
+    const hero = document.querySelector('#homeView .homehero');
+    return hero && { title: hero.querySelector('h1').textContent, facts: [...hero.querySelectorAll('.fact .k')].map((x) => x.textContent), play: !!hero.querySelector('button.play.big') };
+  });
+
+  // ---- Settings tabs: patch notes, GitHub link, start with the computer
+  await page.click('#settingsBtn');
+  result.settingsTabs = await page.$$eval('dialog[open] .tab', (b) => b.map((x) => x.textContent));
+  await page.click('dialog[open] .tab[data-tab="about"]');
+  await page.click('dialog[open] button:has-text("View patch notes")');
+  await page.waitForSelector('dialog[open] .notes-view .md li');
+  result.patchNotesItems = await page.$$eval('dialog[open] .notes-view .md li', (l) => l.length);
+  result.githubButton = !!(await page.$('dialog[open] button:has-text("GitHub page")'));
+  await shot(page, 'f08c-settings-about');
+  await page.click('dialog[open] .tab[data-tab="general"]');
+  await page.check('dialog[open] label:has-text("Start VN Shelf when") input');
+  await shot(page, 'f08d-settings-general');
+  await page.click('dialog[open] .dfoot button:has-text("Save")');
+  await page.waitForTimeout(500);
+  const autostart = WIN ? null : path.join(appdata, 'autostart', 'vn-shelf.desktop');
+  result.startWithSystemOn = WIN
+    ? await app.evaluate(({ app: a }) => a.getLoginItemSettings().openAtLogin)
+    : fs.existsSync(autostart) && /--hidden/.test(fs.readFileSync(autostart, 'utf8'));
+  await page.click('#settingsBtn');
+  await page.uncheck('dialog[open] label:has-text("Start VN Shelf when") input');
+  await page.click('dialog[open] .dfoot button:has-text("Save")');
+  await page.waitForTimeout(500);
+  result.startWithSystemOff = WIN ? !(await app.evaluate(({ app: a }) => a.getLoginItemSettings().openAtLogin)) : !fs.existsSync(autostart);
 
   // ---- Japanese UI
   await page.click('#settingsBtn');
+  await page.click('dialog[open] .tab[data-tab="general"]');
   await page.selectOption('dialog[open] select >> nth=0', 'ja');
-  await page.click('dialog[open] button:has-text("Save")');
+  await page.click('dialog[open] .dfoot button:has-text("Save")');
   await page.waitForSelector('#sidebar .navitem:has-text("ホーム")');
   await page.click('#sidebar .navitem:has-text("ホーム")');
   await page.waitForTimeout(500);
   await shot(page, 'f09-home-ja');
-  result.homeJa = await page.textContent('#homeView .hometitle');
+  result.homeJa = await page.textContent('#homeView .homehero .eyebrow');
   await page.click('#sidebar .navitem:has-text("すべてのゲーム")');
   await page.click('#grid .card:has-text("Kagura"), #grid .card:has-text("神咒")');
   await page.waitForSelector('#detailView .panel h2');

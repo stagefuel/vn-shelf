@@ -9,9 +9,12 @@
 <body>
   <div id="appBg" class="appbg hidden" aria-hidden="true"></div>
   <header class="topbar">
-    <div class="brand">VN Shelf</div>
+    <button class="brand" id="brand" type="button" data-t-title="Home" title="Home">VN Shelf</button>
     <button class="ghost back hidden" id="backBtn" data-t="← Back" data-t-title="Back">← Back</button>
-    <input id="search" class="search" type="search" data-t-placeholder="Search titles, tags, developers" placeholder="Search titles, tags, developers" autocomplete="off">
+    <div class="searchwrap">
+      <input id="search" class="search" type="search" data-t-placeholder="Search titles, tags, developers" placeholder="Search titles, tags, developers" autocomplete="off">
+      <div id="suggest" class="suggestbox hidden" role="listbox"></div>
+    </div>
     <div class="spacer"></div>
     <button id="updatePill" class="pill hidden"></button>
     <button id="importBtn" class="ghost" data-t="Import folder…">Import folder…</button>

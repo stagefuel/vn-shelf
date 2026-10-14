@@ -92,39 +92,71 @@ async function download(asset, dest, { fetchImpl = fetch, onProgress } = {}) {
 }
 
 /**
- * Windows: a script that waits for VN Shelf to exit, swaps the new .exe in, and starts it.
+ * The file name the updated exe should get: "VN-Shelf-0.4.0-portable.exe" becomes
+ * "VN-Shelf-0.4.1-portable.exe". A name without the old version in it is kept as it is.
+ */
+function updatedExePath(currentExe, oldVersion, newVersion) {
+  const dir = path.dirname(currentExe);
+  const base = path.basename(currentExe);
+  if (!oldVersion || !newVersion || !base.includes(oldVersion)) return currentExe;
+  return path.join(dir, base.split(oldVersion).join(newVersion));
+}
+
+/**
+ * Windows: a script that waits for VN Shelf to exit, puts the new .exe in place (under `targetExe`,
+ * the new version's name, removing the old file), and starts it.
+ * `pids`: VN Shelf's process and the portable launcher that started it; both must be gone first.
  * Returns the script path; run it detached, then quit the app.
  */
-async function writeSwapScript({ currentExe, newExe, pid, dir }) {
+async function writeSwapScript({ currentExe, newExe, targetExe = currentExe, pid, pids = [pid], dir }) {
   const q = (s) => s.replace(/"/g, '');
+  const waits = [...new Set(pids.filter(Boolean))];
+  const renamed = path.resolve(targetExe).toLowerCase() !== path.resolve(currentExe).toLowerCase();
   const script = [
     '@echo off',
     'setlocal',
     `set "CUR=${q(currentExe)}"`,
     `set "NEW=${q(newExe)}"`,
+    `set "TARGET=${q(targetExe)}"`,
     'set "LOG=%~dpn0.log"',
-    `echo %DATE% %TIME% waiting for VN Shelf (pid ${pid}) to close>"%LOG%"`,
+    `echo %DATE% %TIME% waiting for VN Shelf (pid ${waits.join(', ')}) to close>"%LOG%"`,
     'set /a WAITED=0',
     ':wait',
-    `tasklist /FI "PID eq ${pid}" /NH 2>nul | find " ${pid} " >nul || goto closed`,
-    'set /a WAITED+=1',
     'if %WAITED% GEQ 120 goto closed',
+    ...waits.map((p) => `tasklist /FI "PID eq ${p}" /NH 2>nul | find " ${p} " >nul && goto waitmore`),
+    'goto closed',
+    ':waitmore',
+    'set /a WAITED+=1',
     'ping -n 2 127.0.0.1 >nul',
     'goto wait',
     ':closed',
     'echo %TIME% closed, replacing the program>>"%LOG%"',
     'set /a TRIES=0',
     ':swap',
-    'move /y "%NEW%" "%CUR%" >>"%LOG%" 2>&1 && goto start',
+    'move /y "%NEW%" "%TARGET%" >>"%LOG%" 2>&1 && goto swapped',
     'set /a TRIES+=1',
     'if %TRIES% GEQ 30 goto failed',
     'ping -n 2 127.0.0.1 >nul',
     'goto swap',
+    ':swapped',
+    ...(renamed ? [
+      'echo %TIME% removing the old version>>"%LOG%"',
+      'set /a TRIES=0',
+      ':delold',
+      'del /f /q "%CUR%" >>"%LOG%" 2>&1',
+      'if not exist "%CUR%" goto start',
+      'set /a TRIES+=1',
+      'if %TRIES% GEQ 15 goto start',
+      'ping -n 2 127.0.0.1 >nul',
+      'goto delold',
+    ] : []),
+    'goto start',
     ':failed',
     'echo %TIME% could not replace the program; starting the old one>>"%LOG%"',
+    'set "TARGET=%CUR%"',
     ':start',
     'echo %TIME% starting VN Shelf>>"%LOG%"',
-    'start "" "%CUR%"',
+    'start "" "%TARGET%"',
     '(goto) 2>nul & del "%~f0"',
     '',
   ].join('\r\n');
@@ -145,4 +177,4 @@ function launchSwapScript(script) {
   }).unref();
 }
 
-module.exports = { checkForUpdate, download, writeSwapScript, launchSwapScript, compareVersions, parseVersion, RELEASES_PAGE, REPO };
+module.exports = { checkForUpdate, download, writeSwapScript, updatedExePath, launchSwapScript, compareVersions, parseVersion, RELEASES_PAGE, REPO };

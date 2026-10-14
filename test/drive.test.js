@@ -174,6 +174,25 @@ async function sync(p, game, opts) {
 }
 
 for (const kind of ['drive', 'dir']) {
+  test(`[${kind}] progress: uploads and downloads report every file`, async () => {
+    const env = await twoPcs(kind);
+    const { game, a, b } = env;
+    try {
+      a.save('save01.dat', 'x'.repeat(800));
+      a.save('save02.dat', 'y'.repeat(200));
+      const up = [];
+      await sync(a, game, { onProgress: (p) => up.push(p) });
+      assert.deepStrictEqual(up.map((p) => p.done), [0, 1, 2]);
+      assert.ok(up.every((p) => p.phase === 'upload' && p.total === 2 && p.totalBytes === 1000));
+      const down = [];
+      await sync(b, game, { onProgress: (p) => down.push(p) });
+      const last = down[down.length - 1];
+      assert.deepStrictEqual([last.phase, last.done, last.total, last.bytes], ['download', 2, 2, 1000]);
+    } finally { await env.close(); }
+  });
+}
+
+for (const kind of ['drive', 'dir']) {
   test(`[${kind}] saves move PC → laptop → PC, deletions follow, history is kept`, async () => {
     const env = await twoPcs(kind);
     const { game, a, b } = env;

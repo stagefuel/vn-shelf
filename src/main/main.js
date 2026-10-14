@@ -1,5 +1,5 @@
 'use strict';
-const { app, BrowserWindow, ipcMain, dialog, shell, Notification, safeStorage } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, Notification, safeStorage, Tray, Menu, nativeImage } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -32,6 +32,10 @@ let engine = null;
 let roots = null;
 let googleAuth = null; // null when this build has no Google client ID
 let updateInfo = null; // newest release found on GitHub, if any
+let tray = null;
+let quitting = false; // true once the user chose Quit (the window's X only hides it, by default)
+const startHidden = process.argv.includes('--hidden'); // started with the computer: stay in the tray
+const REPO_URL = 'https://github.com/stagefuel/vn-shelf';
 const TOPBAR_HEIGHT = 52; // keep in step with .topbar in styles.css
 const running = new Map(); // id -> { ev, watchers, liveTimer, mode }
 const starting = new Set(); // ids whose Play is still checking saves
@@ -40,7 +44,7 @@ const starting = new Set(); // ids whose Play is still checking saves
 if (process.env.VNS_USER_DATA) app.setPath('userData', process.env.VNS_USER_DATA);
 
 if (!app.requestSingleInstanceLock()) app.quit();
-app.on('second-instance', () => { if (win) { if (win.isMinimized()) win.restore(); win.focus(); } });
+app.on('second-instance', () => showWindow());
 
 function send(channel, payload) {
   if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
@@ -48,6 +52,98 @@ function send(channel, payload) {
 
 function setState(id, state, extra = {}) {
   send('game-state', { id, state, ...extra });
+}
+
+/** Sends sync progress for one game to the window, at most ~10 times a second (the last step always). */
+function progressSender(id) {
+  let last = 0;
+  return (p) => {
+    const now = Date.now();
+    if (p.done > 0 && p.done < p.total && now - last < 100) return;
+    last = now;
+    send('sync-progress', { id, ...p });
+  };
+}
+
+// ---------------------------------------------------------------- window, tray, start with the computer
+
+function showWindow() {
+  if (!win || win.isDestroyed()) return;
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
+}
+
+function quitApp() {
+  quitting = true;
+  if (running.size === 0) { app.quit(); return; }
+  // A game is still open: its saves upload when it closes, then VN Shelf quits.
+  if (win && !win.isDestroyed()) win.hide();
+  const check = setInterval(() => { if (running.size === 0) { clearInterval(check); app.quit(); } }, 2000);
+}
+
+/** The few strings the main process shows itself (tray menu, tray notice), in the UI's language. */
+function mainText(key) {
+  const lang = config.data.language === 'auto' ? (app.getLocale().startsWith('ja') ? 'ja' : 'en') : config.data.language;
+  const ja = {
+    open: 'VN Shelf を開く', quit: '終了',
+    hiddenTitle: 'VN Shelf は実行中です', hiddenBody: 'トレイからセーブの同期を続けます。終了するにはトレイアイコンを右クリックしてください。',
+  };
+  const en = {
+    open: 'Open VN Shelf', quit: 'Quit',
+    hiddenTitle: 'VN Shelf is still running', hiddenBody: 'It keeps your saves in sync from the tray. Right-click the tray icon to quit.',
+  };
+  return (lang === 'ja' ? ja : en)[key];
+}
+
+function trayMenu() {
+  return Menu.buildFromTemplate([
+    { label: mainText('open'), click: () => showWindow() },
+    { type: 'separator' },
+    { label: mainText('quit'), click: () => quitApp() },
+  ]);
+}
+
+function createTray() {
+  if (tray) return;
+  try {
+    const icon = nativeImage.createFromPath(path.join(__dirname, '..', '..', 'build', 'icon.png')).resize({ width: 16, height: 16 });
+    tray = new Tray(icon);
+  } catch { tray = null; return; } // no tray on this desktop
+  tray.setToolTip('VN Shelf');
+  tray.setContextMenu(trayMenu());
+  tray.on('click', () => showWindow());
+  tray.on('double-click', () => showWindow());
+}
+
+/** The program to start when the user signs in: the portable .exe itself, not its unpacked copy. */
+function startupCommand() {
+  if (process.env.PORTABLE_EXECUTABLE_FILE) return { exe: process.env.PORTABLE_EXECUTABLE_FILE, args: [] };
+  if (process.env.APPIMAGE) return { exe: process.env.APPIMAGE, args: [] };
+  return { exe: process.execPath, args: app.isPackaged ? [] : [app.getAppPath()] };
+}
+
+function linuxAutostartFile() {
+  const base = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config');
+  return path.join(base, 'autostart', 'vn-shelf.desktop');
+}
+
+/**
+ * Register (or remove) VN Shelf as a program that starts with the computer, in the tray.
+ * Called on every start too, so the entry follows the .exe when an update renames it.
+ */
+async function applyStartWithSystem(on) {
+  const { exe, args } = startupCommand();
+  if (process.platform === 'linux') {
+    const file = linuxAutostartFile();
+    if (!on) { await fs.promises.rm(file, { force: true }).catch(() => {}); return; }
+    const quote = (s) => (/[\s"]/.test(s) ? `"${s.replace(/"/g, '\\"')}"` : s);
+    await fs.promises.mkdir(path.dirname(file), { recursive: true });
+    await fs.promises.writeFile(file, ['[Desktop Entry]', 'Type=Application', 'Name=VN Shelf',
+      `Exec=${[exe, ...args, '--hidden'].map(quote).join(' ')}`, 'X-GNOME-Autostart-enabled=true', ''].join('\n'));
+    return;
+  }
+  app.setLoginItemSettings({ openAtLogin: !!on, path: exe, args: [...args, '--hidden'] });
 }
 
 function notify(title, body) {
@@ -122,6 +218,13 @@ function rebuild() {
 
 function local(id) { return config.game(id); }
 
+function refuseBlocked(...names) {
+  if (config.data.allowUmineko) return;
+  if (names.flat().some((n) => /umineko|うみねこ/i.test(String(n || '')))) {
+    throw new Error('Adding Umineko no Naku Koro ni is turned off in Settings.');
+  }
+}
+
 function installDir(id) { return local(id).installDir || null; }
 
 function requireLibrary() {
@@ -172,7 +275,7 @@ function backgroundInfo() {
 async function runSync(game, opts = {}) {
   const dir = installDir(game.id);
   try {
-    const r = await engine.sync(game, dir, local(game.id).lastSync || null, opts);
+    const r = await engine.sync(game, dir, local(game.id).lastSync || null, { ...opts, onProgress: progressSender(game.id) });
     await config.setGame(game.id, { lastSync: r.lastSync, pending: false });
     return { ok: true, action: r.action };
   } catch (e) {
@@ -282,9 +385,13 @@ const api = {
         tools: config.data.tools,
         categories: config.data.categories,
         background: backgroundInfo(),
+        startWithSystem: config.data.startWithSystem,
+        closeToTray: config.data.closeToTray,
+        allowUmineko: config.data.allowUmineko,
       },
       platform: process.platform,
       version: app.getVersion(),
+      repoUrl: REPO_URL,
       portable: !!process.env.PORTABLE_EXECUTABLE_FILE,
       update: updateInfo,
     };
@@ -334,6 +441,9 @@ const api = {
     if (s.language !== undefined) patch.language = ['auto', 'en', 'ja'].includes(s.language) ? s.language : 'auto';
     if (s.sort !== undefined) patch.sort = String(s.sort);
     if (s.autoUpdate !== undefined) patch.autoUpdate = !!s.autoUpdate;
+    if (s.startWithSystem !== undefined) patch.startWithSystem = !!s.startWithSystem;
+    if (s.closeToTray !== undefined) patch.closeToTray = !!s.closeToTray;
+    if (s.allowUmineko !== undefined) patch.allowUmineko = !!s.allowUmineko;
     if (s.categories !== undefined) patch.categories = [...new Set(s.categories.map((c) => String(c).trim()).filter(Boolean))];
     if (s.tools !== undefined) {
       patch.tools = s.tools.filter((t) => t && t.path).map((t) => ({
@@ -343,8 +453,10 @@ const api = {
         closeWithGame: t.closeWithGame !== false, allGames: !!t.allGames,
       }));
     }
-    const onlyLocal = Object.keys(patch).every((k) => ['language', 'sort', 'autoUpdate', 'categories', 'tools'].includes(k));
+    const onlyLocal = Object.keys(patch).every((k) => ['language', 'sort', 'autoUpdate', 'categories', 'tools', 'startWithSystem', 'closeToTray', 'allowUmineko'].includes(k));
     await config.set(patch);
+    if (patch.startWithSystem !== undefined) await applyStartWithSystem(patch.startWithSystem).catch(() => {});
+    if (patch.language !== undefined && tray) tray.setContextMenu(trayMenu());
     if (onlyLocal) return api.getSetup();
     rebuild();
     pushPending().catch(() => {});
@@ -392,6 +504,7 @@ const api = {
     requireLibrary();
     const dir = path.dirname(exePath);
     const title = path.basename(dir).replace(/[\[(【].*?[\])】]/g, ' ').replace(/[_]+/g, ' ').replace(/\s+/g, ' ').trim() || path.basename(dir);
+    refuseBlocked(title, path.basename(dir));
     const found = await detect.detectEngine(dir).catch(() => null);
     const game = await library.create({ title, exe: path.basename(exePath), engine: found ? found.engine.name : null });
     await config.setGame(game.id, { exePath, installDir: dir });
@@ -443,9 +556,11 @@ const api = {
   async searchVndb(q) { return vndb.search(q); },
 
   async applyVndb(id, v) {
+    refuseBlocked(v.title, v.titleAlt);
     let full = v.info ? v : null;
     if (!full) full = await vndb.fetchInfo(v.vndbId).catch(() => null);
     const info = full ? full.info : null;
+    refuseBlocked(info && info.aliases);
     const g = await library.update(id, { title: v.title, titleAlt: v.titleAlt, developer: v.developer, vndbId: v.vndbId, ...(info ? { vndb: info } : {}) });
     if (v.image) {
       try {
@@ -700,6 +815,7 @@ const api = {
       n++;
       send('import-progress', { phase: 'add', done: n - 1, total: items.length, title: it.match ? it.match.title : it.title });
       try {
+        refuseBlocked(it.title, it.match && [it.match.title, it.match.titleAlt]);
         const found = await detect.detectEngine(it.dir, roots).catch(() => null);
         let game = await library.create({ title: it.title, exe: path.basename(it.exe), engine: found ? found.engine.name : null });
         await config.setGame(game.id, { exePath: it.exe, installDir: it.dir });
@@ -788,7 +904,11 @@ const api = {
     if (running.size) throw new Error('Close your games first; VN Shelf restarts to update.');
     const newExe = `${exe}.new`;
     await updater.download(info.asset, newExe, { onProgress: (p) => send('update-progress', p) });
-    const script = await updater.writeSwapScript({ currentExe: exe, newExe, pid: process.pid, dir: app.getPath('temp') });
+    // The portable launcher (our parent) holds the exe open until it has cleaned up, so wait for it too.
+    const script = await updater.writeSwapScript({
+      currentExe: exe, newExe, targetExe: updater.updatedExePath(exe, app.getVersion(), info.version),
+      pids: [process.pid, process.ppid], dir: app.getPath('temp'),
+    });
     updater.launchSwapScript(script);
     setTimeout(() => app.quit(), 300);
     return { restarting: true };
@@ -822,6 +942,17 @@ const api = {
     return api.getSetup();
   },
 
+  // ---- about
+
+  /** Patch notes from CHANGELOG.md: the given version's section (default: this one), or all of it. */
+  async changelog({ version = app.getVersion(), all = false } = {}) {
+    let text = '';
+    try { text = await fs.promises.readFile(path.join(__dirname, '..', '..', 'CHANGELOG.md'), 'utf8'); } catch { return null; }
+    if (all) return text.replace(/^# Changelog\s*\n/, '').trim();
+    const m = text.match(new RegExp(`^## ${version.replace(/\./g, '\\.')}\\s*$([\\s\\S]*?)(?=^## |(?![\\s\\S]))`, 'm'));
+    return m ? m[1].trim() : null;
+  },
+
   // ---- misc
 
   async openPath(p) { if (p) await shell.openPath(p); return true; },
@@ -836,6 +967,7 @@ ipcMain.handle('api', async (_e, method, ...args) => {
 async function createWindow() {
   win = new BrowserWindow({
     width: 1280, height: 820, minWidth: 820, minHeight: 560,
+    show: !startHidden,
     backgroundColor: '#0f1115',
     title: 'VN Shelf',
     icon: path.join(__dirname, '..', '..', 'build', 'icon.png'),
@@ -852,6 +984,16 @@ async function createWindow() {
   win.on('app-command', (_e, cmd) => {
     if (cmd === 'browser-backward') send('nav', 'back');
     if (cmd === 'browser-forward') send('nav', 'forward');
+  });
+  // The X hides VN Shelf to the tray (if there is one) so saves keep syncing; Quit is in the tray menu.
+  win.on('close', (e) => {
+    if (quitting || !config.data.closeToTray || !tray) return;
+    e.preventDefault();
+    win.hide();
+    if (!config.data.trayHintShown) {
+      notify(mainText('hiddenTitle'), mainText('hiddenBody'));
+      config.set({ trayHintShown: true }).catch(() => {});
+    }
   });
   win.webContents.setWindowOpenHandler(({ url }) => { api.openExternal(url); return { action: 'deny' }; });
   win.webContents.on('will-navigate', (e) => e.preventDefault());
@@ -876,6 +1018,8 @@ app.whenReady().then(async () => {
       fs.promises.rm(leftover, { force: true }).catch(() => {});
     }
   }
+  createTray();
+  if (config.data.startWithSystem) applyStartWithSystem(true).catch(() => {});
   await createWindow();
   pushPending().catch(() => {});
   setInterval(() => pushPending().catch(() => {}), 5 * 60 * 1000);
@@ -888,6 +1032,8 @@ app.whenReady().then(async () => {
     }, 4000);
   }
 });
+
+app.on('before-quit', () => { quitting = true; });
 
 app.on('window-all-closed', () => {
   // Keep tracking a running game even if the window is closed? Simpler and safer: stay alive until it exits.

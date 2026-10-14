@@ -73,6 +73,77 @@ function baseName(p) { return String(p || '').split(/[\\/]/).filter(Boolean).pop
 
 function plural(n, one, many) { return t(n === 1 ? one : many, { n }); }
 
+function sizeText(bytes) {
+  if (bytes < 1024) return t('{n} B', { n: bytes });
+  if (bytes < 1024 * 1024) return t('{n} KB', { n: Math.round(bytes / 1024) });
+  return t('{n} MB', { n: (bytes / 1048576).toFixed(1) });
+}
+
+function openLink(url) { return (e) => { e.preventDefault(); vns.call('openExternal', url); }; }
+
+/** **bold**, `code` and links inside one line of Markdown, as DOM nodes (never HTML). */
+function inlineMd(text) {
+  const out = [];
+  const re = /\*\*(.+?)\*\*|`([^`]+)`|\[([^\]]+)\]\((https?:[^)\s]+)\)|<(https?:[^>\s]+)>/g;
+  let last = 0;
+  let m;
+  while ((m = re.exec(text))) {
+    if (m.index > last) out.push(text.slice(last, m.index));
+    if (m[1]) out.push(h('strong', {}, inlineMd(m[1])));
+    else if (m[2]) out.push(h('code', {}, m[2]));
+    else out.push(h('a', { href: '#', onclick: openLink(m[4] || m[5]) }, m[3] || m[5]));
+    last = re.lastIndex;
+  }
+  if (last < text.length) out.push(text.slice(last));
+  return out;
+}
+
+/**
+ * The small part of Markdown that patch notes use: headings, nested "-" lists, paragraphs, and
+ * lines that continue a list item. Builds DOM nodes, so nothing in the notes can run as HTML.
+ */
+function markdownEl(md) {
+  const root = h('div', { class: 'md' });
+  let lists = []; // open lists, innermost last: { indent, list, li }
+  let cont = null; // where a continuation line's text goes
+  let blank = false;
+  for (const raw of String(md || '').replace(/\r/g, '').split('\n')) {
+    const line = raw.replace(/\s+$/, '');
+    if (!line.trim()) { blank = true; continue; }
+    const indent = line.length - line.trimStart().length;
+    const head = line.match(/^(#{1,6})\s+(.*)$/);
+    const item = line.match(/^(\s*)(?:[-*]|\d+\.)\s+(.*)$/);
+    if (head) {
+      lists = [];
+      cont = null;
+      root.append(h(`h${Math.min(6, head[1].length + 2)}`, {}, inlineMd(head[2])));
+    } else if (item) {
+      while (lists.length && lists[lists.length - 1].indent > indent) lists.pop();
+      let top = lists[lists.length - 1];
+      if (!top || indent > top.indent) {
+        const list = h('ul', {});
+        (top && top.li ? top.li : root).append(list);
+        top = { indent, list, li: null };
+        lists.push(top);
+      }
+      top.li = h('li', {}, inlineMd(item[2]));
+      top.list.append(top.li);
+      cont = top.li;
+    } else if (lists.length && indent > 0) {
+      while (lists.length > 1 && lists[lists.length - 1].indent >= indent) lists.pop();
+      const li = lists[lists.length - 1].li;
+      if (!blank && cont && li.contains(cont)) cont.append(' ', ...inlineMd(line.trim()));
+      else { cont = h('p', {}, inlineMd(line.trim())); li.append(cont); }
+    } else {
+      lists = [];
+      if (!blank && cont && cont.parentNode === root && cont.tagName === 'P') cont.append(' ', ...inlineMd(line.trim()));
+      else { cont = h('p', {}, inlineMd(line.trim())); root.append(cont); }
+    }
+    blank = false;
+  }
+  return root;
+}
+
 // ------------------------------------------------------------------ dialog
 
 /**
@@ -124,6 +195,7 @@ const filter = { category: null, tag: null };
 const live = {};      // id -> { state, message }
 const badges = {};    // id -> gameStatus result
 let showSpoilers = false;
+const progress = {};  // id -> latest sync-progress event, plus when this sync started
 
 const BADGE_TEXT = () => ({
   synced: t('Synced'), upload: t('To upload'), download: t('Newer saves'), conflict: t('Conflict'), offline: t('Offline'),
@@ -269,6 +341,8 @@ function cardFor(g) {
     g.coverUrl ? h('img', { src: g.coverUrl, alt: '', loading: 'lazy', draggable: 'false' }) : h('div', { class: 'placeholder' }, g.title));
   const b = badgeFor(g);
   if (b) art.append(h('span', { class: `badge ${b}` }, BADGE_TEXT()[b] || b));
+  const pr = progressShown(g.id);
+  if (pr) art.append(h('div', { class: 'syncbar' }, h('div', { style: `width:${progressPct(pr)}%` })));
   if (g.installed && !(live[g.id] && ['running', 'syncing'].includes(live[g.id].state))) {
     art.append(h('button', { class: 'quickplay', onclick: (e) => { e.stopPropagation(); play(g.id); } }, t('▶ Play')));
   }
@@ -284,6 +358,7 @@ function updateCards(id) {
   const g = games.find((x) => x.id === id);
   if (!g) return;
   for (const old of document.querySelectorAll(`.card[data-id="${CSS.escape(id)}"]`)) old.replaceWith(cardFor(g));
+  updateLive(id);
 }
 
 // ------------------------------------------------------------------ home
@@ -294,13 +369,48 @@ function showHome() {
   pushNav();
 }
 
-/** Home: one row of the most recently played games (or the newest, before anything is played). */
+/** The description as plain text, without spoilers, for short previews. */
+function plainDescription(g) {
+  return (g.descSegments || []).filter((seg) => !seg.spoiler).map((seg) => seg.text).join('').replace(/\s+/g, ' ').trim();
+}
+
+/** Home's top: the game played last, with its details and a big Play button. */
+function homeHero(g) {
+  const v = g.vndb || {};
+  const year = (v.released || '').slice(0, 4);
+  const about = plainDescription(g);
+  const fact = (k, val) => (val ? h('div', { class: 'fact' }, h('span', { class: 'k' }, k), h('span', {}, val)) : null);
+  return h('div', { class: 'homehero', 'data-id': g.id },
+    h('div', { class: 'bgimg', style: g.coverUrl ? `background-image:url("${g.coverUrl}")` : null }),
+    h('div', { class: 'bgfade' }),
+    h('div', { class: 'inner' },
+      h('div', { class: 'cover', onclick: () => openDetail(g.id), title: t('Open the game page') },
+        g.coverUrl ? h('img', { src: g.coverUrl, alt: '', draggable: 'false' }) : h('div', { class: 'placeholder' }, g.title)),
+      h('div', { class: 'grow' },
+        h('div', { class: 'eyebrow' }, t('Last played')),
+        h('h1', { onclick: () => openDetail(g.id) }, g.title),
+        g.titleAlt ? h('div', { class: 'alt' }, g.titleAlt) : null,
+        h('div', { class: 'facts' },
+          fact(t('Developer'), g.developer),
+          fact(t('Released'), year),
+          fact(t('Time played'), g.playMinutes ? hours(g.playMinutes) : t('Under a minute')),
+          fact(t('Last played'), ago(g.lastPlayed))),
+        about ? h('div', { class: 'about' }, about) : null,
+        h('div', { class: 'actions' },
+          h('button', { class: 'play big playbtn', 'data-id': g.id, onclick: () => playOrStop(g.id) }, t('▶ Play')),
+          h('button', { onclick: () => openDetail(g.id) }, t('Game page'))),
+        h('div', { class: 'statusline', 'data-id': g.id }))));
+}
+
+/** Home: the game played last at the top, then a row of other recent games (or the newest, before anything is played). */
 function renderHome() {
   const played = games.filter((g) => g.lastPlayed).sort((a, b) => b.lastPlayed.localeCompare(a.lastPlayed));
-  const list = played.length ? played : [...games].sort((a, b) => String(b.addedAt || '').localeCompare(String(a.addedAt || '')));
+  const list = played.length ? played.slice(1) : [...games].sort((a, b) => String(b.addedAt || '').localeCompare(String(a.addedAt || '')));
   replaceKids($('#homeView'),
-    h('h2', { class: 'hometitle' }, played.length ? t('Recently played') : t('Recently added')),
-    h('div', { class: 'recentrow' }, list.slice(0, 24).map(cardFor)));
+    played.length ? homeHero(played[0]) : null,
+    list.length ? h('h2', { class: 'hometitle' }, played.length ? t('Recently played') : t('Recently added')) : null,
+    list.length ? h('div', { class: 'recentrow' }, list.slice(0, 24).map(cardFor)) : null);
+  if (played.length) updateLive(played[0].id);
 }
 
 // ------------------------------------------------------------------ library grid
@@ -418,6 +528,11 @@ async function conflictDialog(info) {
   });
 }
 
+function playOrStop(id) {
+  if (live[id] && live[id].state === 'running') vns.call('stopTracking', id);
+  else play(id);
+}
+
 async function play(id, opts = {}) {
   let r;
   try { r = await call('play', id, opts); } catch { return; }
@@ -529,7 +644,11 @@ async function addGameFromExe(exe) {
   if (!setup.configured) { await settingsDialog(true); if (!setup.configured) return; }
   let g;
   try { g = await call('addGame', exe); } catch { return; }
-  await vndbDialog(g, true);
+  if ((await vndbDialog(g, true)) === 'blocked') {
+    await vns.call('removeGame', g.id).catch(() => {});
+    await loadGames();
+    return;
+  }
   await openDetail(g.id, { suggest: true });
 }
 
@@ -569,8 +688,11 @@ async function vndbDialog(g, isNew) {
   run();
   const v = await p;
   if (v === 'pick' && chosen) {
-    try { await call('applyVndb', g.id, chosen); } catch { /* toasted */ }
+    try { await call('applyVndb', g.id, chosen); } catch (e) {
+      if (/Umineko/.test(String(e && e.message))) return 'blocked';
+    }
   }
+  return v;
 }
 
 // ------------------------------------------------------------------ bulk import
@@ -673,11 +795,14 @@ async function importFolderFlow() {
 async function storageChooser(current) {
   const wrap = h('div', { style: 'display:grid;gap:8px' }, h('div', { class: 'faint' }, t('Looking for cloud storage apps…')));
   let selected = current.backend === 'gdrive' ? { backend: 'gdrive' } : (current.cloudDir ? { cloudDir: current.cloudDir } : null);
+  // Where saves will go, shown under the option it belongs to.
+  const drivePreview = h('div', { class: 'faint small' });
   const preview = h('div', { class: 'faint mono' });
   const setPreview = () => {
-    if (!selected) preview.textContent = '';
-    else if (selected.backend === 'gdrive') preview.textContent = t('Saves will be kept in a "VN Shelf" folder in your Google Drive{email}.', { email: setup.googleEmail ? ` (${setup.googleEmail})` : '' });
-    else preview.textContent = t('Saves will be kept in: {dir}', { dir: selected.cloudDir });
+    const drive = !!(selected && selected.backend === 'gdrive');
+    drivePreview.textContent = drive ? t('Saves will be kept in a "VN Shelf" folder in your Google Drive{email}.', { email: setup.googleEmail ? ` (${setup.googleEmail})` : '' }) : '';
+    drivePreview.classList.toggle('hidden', !drive);
+    preview.textContent = selected && selected.cloudDir ? t('Saves will be kept in: {dir}', { dir: selected.cloudDir }) : '';
   };
   const list = await vns.call('detectProviders').catch(() => []);
   const choices = [];
@@ -693,7 +818,7 @@ async function storageChooser(current) {
     const sub = h('div', { class: 'p' });
     const setSub = () => {
       sub.textContent = setup.googleSignedIn
-        ? t('Signed in as {email}. Nothing else to install.', { email: setup.googleEmail || t('your Google account') })
+        ? t('Signed in as {email}.', { email: setup.googleEmail || t('your Google account') })
         : t('Sign in with Google. No Drive app needed; VN Shelf can only see the files it creates.');
     };
     setSub();
@@ -713,7 +838,7 @@ async function storageChooser(current) {
       pick(driveEl, { backend: 'gdrive' });
     } }, h('div', { class: 'grow' }, h('div', {}, t('Google Drive (sign in)')), sub));
     choices.push(driveEl);
-    parts.push(h('div', { class: 'faint' }, t('Sync directly with Google Drive:')), driveEl,
+    parts.push(h('div', { class: 'faint' }, t('Sync directly with Google Drive:')), driveEl, drivePreview,
       h('div', { class: 'faint', style: 'margin-top:6px' }, t('Or keep saves in a folder that a cloud app, Syncthing or a NAS keeps in sync:')));
   }
   for (const p of list) {
@@ -731,7 +856,7 @@ async function storageChooser(current) {
   choices.push(other);
   parts.push(other);
   if (selected && selected.cloudDir && !list.some((p) => joinPath(p.path, 'VNShelf') === selected.cloudDir)) other.classList.add('sel');
-  if (!list.length) parts.splice(setup.driveAvailable ? 3 : 0, 0, h('div', { class: 'faint' }, t('No cloud storage apps found on this PC.')));
+  if (!list.length) parts.splice(setup.driveAvailable ? 4 : 0, 0, h('div', { class: 'faint' }, t('No cloud storage apps found on this PC.')));
   wrap.replaceChildren(...parts, preview);
   setPreview();
   return { el: wrap, get: () => selected };
@@ -774,34 +899,77 @@ function toolsEditor() {
   return { el: wrap, get: () => tools.filter((x) => x.path) };
 }
 
+let settingsTab = 'general';
+
+/** Patch notes in Settings → About: this version's, with a link to show every version. */
+function patchNotesBox() {
+  const box = h('div', { class: 'notes-view hidden' });
+  const show = async (all) => {
+    const text = await vns.call('changelog', all ? { all: true } : {}).catch(() => null);
+    replaceKids(box,
+      text ? markdownEl(text) : h('div', { class: 'faint' }, t('No release notes.')),
+      all ? null : h('button', { type: 'button', class: 'small ghost', onclick: () => show(true) }, t('Show every version')));
+    box.classList.remove('hidden');
+  };
+  const btn = h('button', { type: 'button', class: 'small', onclick: () => {
+    if (box.classList.contains('hidden')) show(false); else box.classList.add('hidden');
+  } }, t('View patch notes'));
+  return { btn, box };
+}
+
 async function settingsDialog(first = false) {
   const s = setup.settings;
   const name = h('input', { type: 'text', value: s.deviceName, placeholder: t('e.g. Desktop, Laptop') });
   const chooser = await storageChooser({ backend: setup.backend, cloudDir: s.cloudDir });
   const langSel = h('select', {},
     [['auto', t('Automatic (follow Windows)')], ['en', 'English'], ['ja', '日本語']].map(([v, l]) => h('option', { value: v, selected: s.language === v }, l)));
+  const field = (label, ...kids) => h('div', { class: 'field' }, label ? h('div', { class: 'lbl' }, label) : null, ...kids);
+  if (first) {
+    const ok = await dialog({
+      title: t('Welcome to VN Shelf'),
+      text: t('Pick where your saves are kept. Use the same cloud service on each PC and they\'ll share saves automatically.'),
+      body: [
+        field(t('Language'), langSel),
+        field(t('Name of this PC (shown on the other PC)'), name),
+        field(t('Where to keep saves — choose the same cloud service on every PC'), chooser.el),
+      ],
+      buttons: [{ label: t('Start'), value: true, cls: 'primary', validate: () => {
+        if (!chooser.get()) { toast(t('Choose where to keep saves.'), 'bad'); return false; }
+        return true;
+      } }],
+    });
+    if (!ok) return;
+    setup = await call('saveSettings', { deviceName: name.value, ...chooser.get(), language: langSel.value });
+    setLanguage(setup.settings.language);
+    applyStaticText();
+    await loadGames();
+    return;
+  }
+
   const depth = h('input', { type: 'number', min: '1', max: '100', value: String(s.historyDepth) });
   const liveBox = h('input', { type: 'checkbox', checked: s.liveMode });
   const upd = h('input', { type: 'checkbox', checked: s.autoUpdate !== false });
+  const startBox = h('input', { type: 'checkbox', checked: !!s.startWithSystem });
+  const closeSel = h('select', {},
+    [['tray', t('Keep running in the tray')], ['quit', t('Quit VN Shelf')]].map(([v, l]) => h('option', { value: v, selected: (s.closeToTray !== false) === (v === 'tray') }, l)));
+  const allowU = h('input', { type: 'checkbox', checked: !!s.allowUmineko });
   const lePath = h('input', { type: 'text', value: s.localeEmulatorPath || '', placeholder: t('Path to LEProc.exe (optional)') });
   const tools = toolsEditor();
-  const body = [
-    h('div', { class: 'field' }, h('div', { class: 'lbl' }, t('Language')), langSel),
-    first ? null : h('div', { class: 'field' }, h('div', { class: 'lbl' }, t('Background (this PC)')), backgroundEditor()),
-    h('div', { class: 'field' }, h('div', { class: 'lbl' }, t('Name of this PC (shown on the other PC)')), name),
-    h('div', { class: 'field' }, h('div', { class: 'lbl' }, t('Where to keep saves — choose the same cloud service on every PC')), chooser.el),
-  ];
-  if (!first) {
-    body.push(
-      h('div', { class: 'field' }, h('div', { class: 'lbl' }, t('Older versions to keep per game')), depth),
-      h('div', { class: 'field' }, h('label', { class: 'check' }, liveBox, t('Upload saves while playing (about 10 seconds after each save)'))),
-      h('div', { class: 'field' }, h('div', { class: 'lbl' }, t('Locale Emulator (for games that need Japanese locale)')),
-        h('div', { class: 'val' }, lePath, h('button', { type: 'button', onclick: async () => {
-          const f = await vns.call('pickFile', t('Find LEProc.exe'), [{ name: 'LEProc', extensions: ['exe'] }]);
-          if (f) lePath.value = f;
-        } }, t('Browse…')))),
-      h('div', { class: 'field' }, h('div', { class: 'lbl' }, t('Companion tools on this PC (text hooker, meikipop, Magpie…). Pick which start with each game on its page.')), tools.el),
-      setup.googleSignedIn ? h('div', { class: 'field' }, h('div', { class: 'lbl' }, t('Google account')),
+  const notes = patchNotesBox();
+
+  const tabs = [
+    ['general', t('General'), [
+      field(t('Language'), langSel),
+      field(t('Name of this PC (shown on the other PC)'), name),
+      field(null, h('label', { class: 'check' }, startBox,
+        setup.platform === 'win32' ? t('Start VN Shelf when Windows starts') : t('Start VN Shelf when you log in')),
+      h('div', { class: 'faint small' }, t('It starts in the tray and keeps your saves in sync.'))),
+      field(t('When you close the window'), closeSel),
+      h('label', { class: 'check tinyopt' }, allowU, t('Allow adding Umineko no Naku Koro ni')),
+    ]],
+    ['saves', t('Saves & sync'), [
+      field(t('Where to keep saves — choose the same cloud service on every PC'), chooser.el),
+      setup.googleSignedIn ? field(t('Google account'),
         h('div', { class: 'val' }, h('div', { class: 'grow' }, setup.googleEmail || t('Signed in')),
           h('button', { type: 'button', class: 'small', onclick: async () => {
             setup = await call('googleSignOut');
@@ -810,30 +978,65 @@ async function settingsDialog(first = false) {
             if (!setup.configured) await settingsDialog(true);
             await loadGames();
           } }, t('Sign out')))) : null,
-      h('div', { class: 'field' }, h('div', { class: 'lbl' }, t('Updates')),
+      field(t('Older versions to keep per game'), depth),
+      field(null, h('label', { class: 'check' }, liveBox, t('Upload saves while playing (about 10 seconds after each save)'))),
+      h('div', { class: 'faint small' }, t('Switching where saves are kept doesn\'t move games already added; add them again on the new storage.')),
+    ]],
+    ['games', t('Games & tools'), [
+      field(t('Locale Emulator (for games that need Japanese locale)'),
+        h('div', { class: 'val' }, lePath, h('button', { type: 'button', onclick: async () => {
+          const f = await vns.call('pickFile', t('Find LEProc.exe'), [{ name: 'LEProc', extensions: ['exe'] }]);
+          if (f) lePath.value = f;
+        } }, t('Browse…')))),
+      field(t('Companion tools on this PC (text hooker, meikipop, Magpie…). Pick which start with each game on its page.'), tools.el),
+    ]],
+    ['look', t('Look'), [
+      field(t('Background (this PC)'), backgroundEditor()),
+    ]],
+    ['about', t('Updates & about'), [
+      field(null, h('div', { class: 'aboutline' }, h('strong', {}, 'VN Shelf'), ` ${t('Version {version}', { version: setup.version })}`)),
+      field(null, h('div', { class: 'val wrap' }, notes.btn,
+        h('button', { type: 'button', class: 'small', onclick: () => vns.call('openExternal', setup.repoUrl) }, t('GitHub page'))), notes.box),
+      field(t('Updates'),
         h('div', { class: 'val wrap' }, h('label', { class: 'check' }, upd, t('Check for updates when VN Shelf starts')),
           h('button', { type: 'button', class: 'small', onclick: () => checkUpdatesNow() }, t('Check now')))),
-      h('div', { class: 'faint' }, t('Switching where saves are kept doesn\'t move games already added; add them again on the new storage.')),
-      h('div', { class: 'faint' }, `VN Shelf ${setup.version}`),
-    );
+    ]],
+  ];
+  if (!tabs.some(([k]) => k === settingsTab)) settingsTab = 'general';
+  const panes = {};
+  const tabBtns = {};
+  const select = (k) => {
+    settingsTab = k;
+    for (const [key] of tabs) {
+      panes[key].classList.toggle('hidden', key !== k);
+      tabBtns[key].classList.toggle('on', key === k);
+    }
+  };
+  for (const [k, label, kids] of tabs) {
+    panes[k] = h('div', { class: 'tabpane', 'data-tab': k }, kids);
+    tabBtns[k] = h('button', { type: 'button', class: 'tab', 'data-tab': k, onclick: () => select(k) }, label);
   }
+  select(settingsTab);
+
   const ok = await dialog({
-    title: first ? t('Welcome to VN Shelf') : t('Settings'),
-    text: first ? t('Pick where your saves are kept. Use the same cloud service on each PC and they\'ll share saves automatically.') : null,
-    body,
+    title: t('Settings'),
+    body: [h('div', { class: 'tabs' }, tabs.map(([k]) => tabBtns[k])), ...tabs.map(([k]) => panes[k])],
+    wide: true,
     buttons: [
-      ...(first ? [] : [{ label: t('Cancel'), value: false, cls: 'ghost' }]),
-      { label: first ? t('Start') : t('Save'), value: true, cls: 'primary', validate: () => {
-        if (!chooser.get()) { toast(t('Choose where to keep saves.'), 'bad'); return false; }
+      { label: t('Cancel'), value: false, cls: 'ghost' },
+      { label: t('Save'), value: true, cls: 'primary', validate: () => {
+        if (!chooser.get()) { select('saves'); toast(t('Choose where to keep saves.'), 'bad'); return false; }
         return true;
       } },
     ],
   });
   applyBackground(setup.settings.background);
   if (!ok) return;
-  const patch = { deviceName: name.value, ...chooser.get(), language: langSel.value };
-  if (!first) Object.assign(patch, { historyDepth: depth.value, liveMode: liveBox.checked, localeEmulatorPath: lePath.value.trim(), autoUpdate: upd.checked, tools: tools.get() });
-  setup = await call('saveSettings', patch);
+  setup = await call('saveSettings', {
+    deviceName: name.value, ...chooser.get(), language: langSel.value,
+    historyDepth: depth.value, liveMode: liveBox.checked, localeEmulatorPath: lePath.value.trim(), autoUpdate: upd.checked, tools: tools.get(),
+    startWithSystem: startBox.checked, closeToTray: closeSel.value === 'tray', allowUmineko: allowU.checked,
+  });
   setLanguage(setup.settings.language);
   applyStaticText();
   showUpdatePill(lastUpdate);
@@ -911,7 +1114,7 @@ function showUpdatePopup(u) {
   const pop = h('div', { class: 'updatepop', role: 'status' },
     h('div', { class: 'grow' },
       h('div', { class: 't' }, t('VN Shelf {version} is available', { version: u.version })),
-      h('div', { class: 'faint small' }, firstLine ? `${firstLine.slice(0, 140)}` : t('You have {current}.', { current: setup.version }))),
+      h('div', { class: 'faint small' }, firstLine ? `${firstLine.replace(/\*\*/g, '').slice(0, 140)}` : t('Current version {current}', { current: setup.version }))),
     h('button', { class: 'small primary', onclick: () => { pop.remove(); updateDialog(u); } }, t('View & update')),
     h('button', { class: 'small ghost', title: t('Hide until the next update'), onclick: () => {
       try { localStorage.setItem('vns-update-hidden', u.version); } catch { /* storage unavailable */ }
@@ -932,12 +1135,10 @@ async function checkUpdatesNow() {
 
 async function updateDialog(u) {
   const canInstall = setup.platform === 'win32' && setup.portable && u.asset;
-  const notes = h('div', { class: 'notes-view' }, u.notes || t('No release notes.'));
+  const notes = h('div', { class: 'notes-view' }, u.notes ? markdownEl(u.notes) : t('No release notes.'));
   const v = await dialog({
     title: t('VN Shelf {version} is available', { version: u.version }),
-    text: canInstall
-      ? t('You have {current}. Updating downloads the new version, restarts VN Shelf and keeps all your settings.', { current: setup.version })
-      : t('You have {current}. Download the new version from GitHub.', { current: setup.version }),
+    text: t('Current version {current}', { current: setup.version }),
     body: notes,
     wide: true,
     buttons: [{ label: t('Later'), value: null, cls: 'ghost' }, { label: canInstall ? t('Update and restart') : t('Open download page'), value: 'go', cls: 'primary' }],
@@ -960,6 +1161,7 @@ async function updateDialog(u) {
 
 async function openDetail(id, opts = {}) {
   currentId = id;
+  detailNotes = null;
   setView('detail');
   pushNav();
   await renderDetail(id, opts);
@@ -989,22 +1191,7 @@ function statusText(g) {
 }
 
 function updateStatusLine() {
-  const g = games.find((x) => x.id === currentId);
-  const el = $('#statusline');
-  if (!g || !el) return;
-  const s = statusText(g);
-  el.textContent = s.text;
-  el.className = `statusline ${s.cls}`;
-  const isRunning = live[g.id] && live[g.id].state === 'running';
-  const btn = $('#playBtn');
-  if (btn) {
-    const syncing = live[g.id] && live[g.id].state === 'syncing';
-    btn.textContent = isRunning ? t('Stop tracking') : syncing ? t('Syncing saves…') : t('▶ Play');
-    btn.classList.toggle('stop', !!isRunning);
-    btn.classList.toggle('busy', !!syncing);
-    btn.disabled = !!syncing;
-    btn.title = isRunning ? t('Use this if the game is closed but VN Shelf still thinks it\'s running') : '';
-  }
+  if (currentId) updateLive(currentId);
 }
 
 function descriptionEl(segments) {
@@ -1099,8 +1286,7 @@ function categoryBox(g) {
   return box;
 }
 
-async function toolsBox(g) {
-  const list = await vns.call('gameTools', g.id).catch(() => []);
+function toolsBox(g, list) {
   const box = h('div', { class: 'box' });
   if (!list.length) {
     box.append(h('div', { class: 'note' }, t('Start a text hooker, meikipop, Magpie or other programs with this game. Add them once in Settings, then tick them here.')),
@@ -1139,13 +1325,46 @@ function backupBox(g) {
       } }, t('Import saves…'))));
 }
 
+let detailSeq = 0;
+let detailNotes = null; // { id, el }: kept across repaints so typing in it isn't interrupted
+
+/**
+ * Show a game's page. It appears at once from what's already loaded (the library list), with save
+ * folders, history and tools filled in as soon as they've been read; nothing from the previous game
+ * is ever left on screen.
+ */
 async function renderDetail(id, opts = {}) {
+  const seq = ++detailSeq;
+  const view$ = $('#detailView');
+  if (view$.dataset.id !== id) {
+    const cached = games.find((x) => x.id === id);
+    if (cached) paintDetail(cached, null, opts);
+    else { view$.replaceChildren(); view$.dataset.id = id; }
+  }
   let g;
-  try { g = await vns.call('getGame', id); } catch (e) { toast(cleanError(e), 'bad'); showHome(); return; }
+  let saves;
+  let history;
+  let tools;
+  try {
+    [g, saves, history, tools] = await Promise.all([
+      vns.call('getGame', id),
+      vns.call('describeSaves', id).catch(() => []),
+      vns.call('history', id).catch(() => []),
+      vns.call('gameTools', id).catch(() => []),
+    ]);
+  } catch (e) { if (seq === detailSeq) { toast(cleanError(e), 'bad'); showHome(); } return; }
+  if (seq !== detailSeq || currentId !== id || view !== 'detail') return;
   const idx = games.findIndex((x) => x.id === id);
   if (idx >= 0) games[idx] = g; else games.push(g);
-  const saves = await vns.call('describeSaves', id).catch(() => []);
-  const history = await vns.call('history', id).catch(() => []);
+  paintDetail(g, { saves, history, tools }, opts);
+}
+
+/** Build the game page. `data` is null while save folders, history and tools are still loading. */
+function paintDetail(g, data, opts = {}) {
+  const id = g.id;
+  const loading = !data;
+  const saves = data ? data.saves : [];
+  const history = data ? data.history : [];
 
   const hero = h('div', { class: 'hero' },
     h('div', { class: 'bgimg', style: g.coverUrl ? `background-image:url("${g.coverUrl}")` : null }),
@@ -1162,16 +1381,15 @@ async function renderDetail(id, opts = {}) {
           g.lastPlayed ? h('span', {}, t('Last played {when}', { when: ago(g.lastPlayed) })) : null,
           (g.categories || []).map((c) => h('span', { class: 'tag' }, c))),
         h('div', { class: 'actions' },
-          h('button', { id: 'playBtn', class: 'play', onclick: () => {
-            if (live[id] && live[id].state === 'running') vns.call('stopTracking', id);
-            else play(id);
-          } }, t('▶ Play')),
-          h('button', { onclick: () => syncNow(id), disabled: !g.installed || !saves.length }, t('Sync now'))),
-        h('div', { id: 'statusline', class: 'statusline' }))));
+          h('button', { id: 'playBtn', class: 'play playbtn', 'data-id': id, onclick: () => playOrStop(id) }, t('▶ Play')),
+          h('button', { onclick: () => syncNow(id), disabled: loading || !g.installed || !saves.length }, t('Sync now'))),
+        h('div', { id: 'statusline', class: 'statusline', 'data-id': id }))));
+  const loadingNote = () => h('div', { class: 'note' }, t('Loading…'));
 
   // ---- save locations
   const saveBox = h('div', { class: 'box' });
-  if (!saves.length) saveBox.append(h('div', { class: 'note' }, t('No save folder yet. Auto-detect usually finds it; if not, use Save once or pick the folder yourself.')));
+  if (loading) saveBox.append(loadingNote());
+  else if (!saves.length) saveBox.append(h('div', { class: 'note' }, t('No save folder yet. Auto-detect usually finds it; if not, use Save once or pick the folder yourself.')));
   for (const s of saves) {
     const inc = s.include && s.include.length ? s.include.join(', ') : t('all files');
     saveBox.append(h('div', { class: 'row' },
@@ -1216,7 +1434,8 @@ async function renderDetail(id, opts = {}) {
 
   // ---- history
   const histBox = h('div', { class: 'box' });
-  if (!history.length) histBox.append(h('div', { class: 'note' }, t('Older versions appear here after saves sync. The newest {n} are kept.', { n: setup.settings.historyDepth })));
+  if (loading) histBox.append(loadingNote());
+  else if (!history.length) histBox.append(h('div', { class: 'note' }, t('Older versions appear here after saves sync. The newest {n} are kept.', { n: setup.settings.historyDepth })));
   const KIND = { pushed: t('Uploaded'), 'before-pull': t('Backup before download'), 'before-restore': t('Backup before restore'), 'before-import': t('Backup before import') };
   for (const v of history) {
     histBox.append(h('div', { class: 'row' },
@@ -1243,13 +1462,16 @@ async function renderDetail(id, opts = {}) {
         if (ok) { await call('removeGame', id); await loadGames(); showHome(); }
       } }, t('Remove from library'))));
 
-  const tools = await toolsBox(g);
-  if (currentId !== id || view !== 'detail') return;
+  const tools = loading ? h('div', { class: 'box' }, loadingNote()) : toolsBox(g, data.tools);
+  if (!detailNotes || detailNotes.id !== id) detailNotes = { id, el: notesBox(g) };
+  const main$ = $('main');
+  const scroll = $('#detailView').dataset.id === id ? main$.scrollTop : 0;
+  $('#detailView').dataset.id = id;
   $('#detailView').replaceChildren(hero, h('div', { class: 'panels' },
     h('div', { class: 'panel' },
       h('h2', {}, t('About')), aboutBox(g),
       h('h2', {}, t('Save locations')), saveBox, suggestBox,
-      h('h2', {}, t('Notes')), notesBox(g)),
+      h('h2', {}, t('Notes')), detailNotes.el),
     h('div', { class: 'panel' },
       h('h2', {}, t('Launch')), launchBox,
       h('h2', {}, t('Start with this game')), tools,
@@ -1257,7 +1479,9 @@ async function renderDetail(id, opts = {}) {
       h('h2', {}, t('Save backup')), backupBox(g),
       h('h2', {}, t('History')), histBox,
       h('h2', {}, t('Details')), detailsBox)));
-  updateStatusLine();
+  main$.scrollTop = scroll;
+  updateLive(id);
+  if (loading) return;
   if (!badges[id]) refreshStatus(id);
   if (opts.suggest || (!saves.length && g.installed && !opts.noAuto)) runSuggest(id, suggestBox);
 }
@@ -1390,10 +1614,126 @@ async function showSaveOnceResult({ id, candidates }) {
   refreshStatus(id);
 }
 
+// ------------------------------------------------------------------ search suggestions
+
+/** What the search box could mean: games, tags, developers and categories that match the text. */
+function suggestionsFor(q) {
+  const has = (x) => String(x || '').toLowerCase().includes(q);
+  const out = [];
+  const titles = games.filter((g) => has(g.title) || has(g.titleAlt) || (g.vndb && (g.vndb.aliases || []).some(has)));
+  for (const g of sortGames(titles, 'title').slice(0, 5)) {
+    out.push({ kind: t('Game'), label: g.title, sub: g.titleAlt || g.developer || '', go: () => { $('#search').value = ''; openDetail(g.id); } });
+  }
+  const tags = new Map(); // id -> { name, n }
+  for (const g of games) {
+    for (const x of (g.vndb && g.vndb.tags) || []) {
+      if ((x.spoiler && !showSpoilers) || !has(x.name)) continue;
+      const e = tags.get(x.id) || { name: x.name, n: 0 };
+      e.n++;
+      tags.set(x.id, e);
+    }
+  }
+  for (const [id, e] of [...tags].sort((a, b) => b[1].n - a[1].n || a[1].name.localeCompare(b[1].name)).slice(0, 5)) {
+    out.push({ kind: t('Tag'), label: e.name, sub: plural(e.n, '{n} game', '{n} games'), go: () => { $('#search').value = ''; showLibrary({ tag: { id, name: e.name }, category: null }); } });
+  }
+  const devs = new Map();
+  for (const g of games) if (g.developer && has(g.developer)) devs.set(g.developer, (devs.get(g.developer) || 0) + 1);
+  for (const [name, n] of [...devs].sort((a, b) => b[1] - a[1]).slice(0, 3)) {
+    out.push({ kind: t('Developer'), label: name, sub: plural(n, '{n} game', '{n} games'), go: () => { $('#search').value = name; showLibrary({ tag: null, category: null }); } });
+  }
+  for (const c of categoriesAll().filter(has).slice(0, 3)) {
+    out.push({ kind: t('Category'), label: c, sub: '', go: () => { $('#search').value = ''; showLibrary({ category: c, tag: null }); } });
+  }
+  return out;
+}
+
+function showSuggestions() {
+  const box = $('#suggest');
+  const q = $('#search').value.trim().toLowerCase();
+  const list = q ? suggestionsFor(q) : [];
+  if (!list.length) { hideSuggestions(); return; }
+  const pick = (it) => (e) => { e.preventDefault(); hideSuggestions(); it.go(); };
+  replaceKids(box, list.map((it) => h('div', { class: 'sugitem', onmousedown: pick(it) },
+    h('span', { class: 'kind' }, it.kind), h('span', { class: 'label' }, it.label), it.sub ? h('span', { class: 'sub' }, it.sub) : null)));
+  box.classList.remove('hidden');
+}
+
+function hideSuggestions() { $('#suggest').classList.add('hidden'); }
+
+// ------------------------------------------------------------------ sync progress
+
+/** The progress to show for a game: only once a sync has run for a moment, so quick ones don't flicker. */
+function progressShown(id) {
+  const p = progress[id];
+  if (!p || !p.total) return null;
+  return Date.now() - p.startedAt >= 600 ? p : null;
+}
+
+function progressPct(p) {
+  if (p.totalBytes) return Math.min(100, Math.round((p.bytes / p.totalBytes) * 100));
+  return Math.min(100, Math.round((p.done / p.total) * 100));
+}
+
+function progressText(p) {
+  const what = { upload: t('Uploading saves…'), backup: t('Backing up saves…'), download: t('Downloading saves…') }[p.phase] || t('Syncing…');
+  const size = p.totalBytes ? t('{done} of {total}', { done: sizeText(p.bytes), total: sizeText(p.totalBytes) }) : (p.bytes ? sizeText(p.bytes) : '');
+  return `${what} ${t('{done} / {total} files', { done: p.done, total: p.total })}${size ? ` · ${size}` : ''}`;
+}
+
+vns.on('sync-progress', (p) => {
+  const prev = progress[p.id];
+  if (prev) clearTimeout(prev.endTimer);
+  const entry = { ...p, startedAt: prev ? prev.startedAt : Date.now() };
+  progress[p.id] = entry;
+  // Show the bar once the sync has taken long enough to be worth showing.
+  if (!prev) setTimeout(() => { if (progress[p.id]) updateProgressUi(p.id); }, 650);
+  // A finished step clears itself, unless another step (download after backup) follows at once.
+  if (p.done >= p.total) {
+    entry.endTimer = setTimeout(() => {
+      if (progress[p.id] === entry) { delete progress[p.id]; updateProgressUi(p.id); }
+    }, 500);
+  }
+  updateProgressUi(p.id);
+});
+
+function updateProgressUi(id) {
+  const pr = progressShown(id);
+  for (const card of document.querySelectorAll(`.card[data-id="${CSS.escape(id)}"] .art`)) {
+    let bar = card.querySelector('.syncbar');
+    if (pr && !bar) { bar = h('div', { class: 'syncbar' }, h('div', {})); card.append(bar); }
+    if (bar && !pr) bar.remove();
+    if (bar && pr) bar.firstChild.style.width = `${progressPct(pr)}%`;
+  }
+  updateLive(id);
+}
+
+/** Refresh every status line and Play button for a game (game page and Home). */
+function updateLive(id) {
+  const g = games.find((x) => x.id === id);
+  if (!g) return;
+  const isRunning = live[id] && live[id].state === 'running';
+  const syncing = live[id] && live[id].state === 'syncing';
+  const pr = progressShown(id);
+  for (const el of document.querySelectorAll(`.statusline[data-id="${CSS.escape(id)}"]`)) {
+    const st = statusText(g);
+    el.className = `statusline ${pr ? '' : st.cls}`;
+    replaceKids(el, pr ? progressText(pr) : st.text,
+      pr ? h('div', { class: 'syncbar inline' }, h('div', { style: `width:${progressPct(pr)}%` })) : null);
+  }
+  for (const btn of document.querySelectorAll(`.playbtn[data-id="${CSS.escape(id)}"]`)) {
+    btn.textContent = isRunning ? t('Stop tracking') : syncing ? t('Syncing saves…') : t('▶ Play');
+    btn.classList.toggle('stop', !!isRunning);
+    btn.classList.toggle('busy', !!syncing);
+    btn.disabled = !!syncing;
+    btn.title = isRunning ? t('Use this if the game is closed but VN Shelf still thinks it\'s running') : '';
+  }
+}
+
 // ------------------------------------------------------------------ events & boot
 
 vns.on('game-state', async (s) => {
   live[s.id] = s;
+  if (s.state !== 'syncing') delete progress[s.id];
   const g = games.find((x) => x.id === s.id);
   if (s.state === 'idle' && s.message) toast(`${g ? g.title : ''}: ${translateMessage(s.message)}`, 'good');
   if (s.state === 'error') toast(translateMessage(s.message), 'bad');
@@ -1421,7 +1761,29 @@ vns.on('update-available', (u) => showUpdatePopup(u));
 $('#search').addEventListener('input', () => {
   if (view !== 'library') setView('library');
   renderGrid();
+  showSuggestions();
 });
+$('#search').addEventListener('focus', () => showSuggestions());
+$('#search').addEventListener('blur', () => setTimeout(hideSuggestions, 120));
+$('#search').addEventListener('keydown', (e) => {
+  const box = $('#suggest');
+  const items = [...box.querySelectorAll('.sugitem')];
+  if (box.classList.contains('hidden') || !items.length) return;
+  let i = items.findIndex((x) => x.classList.contains('on'));
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    if (i >= 0) items[i].classList.remove('on');
+    i = e.key === 'ArrowDown' ? (i + 1) % items.length : (i <= 0 ? items.length - 1 : i - 1);
+    items[i].classList.add('on');
+    items[i].scrollIntoView({ block: 'nearest' });
+  } else if (e.key === 'Enter' && i >= 0) {
+    e.preventDefault();
+    items[i].dispatchEvent(new MouseEvent('mousedown'));
+  } else if (e.key === 'Escape') {
+    hideSuggestions();
+  }
+});
+$('#brand').addEventListener('click', () => { hideSuggestions(); showHome(); });
 $('#backBtn').addEventListener('click', () => navMove(-1));
 // Mouse side buttons (back = 3, forward = 4) and Alt+Left / Alt+Right.
 window.addEventListener('mouseup', (e) => {

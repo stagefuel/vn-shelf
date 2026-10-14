@@ -55,6 +55,35 @@ function decide(localHashes, cloudState, lastSync) {
   return sameHashes(localHashes, cloudState.hashes) ? 'adopt' : 'conflict';
 }
 
+/**
+ * Counts the files (and bytes) one step of a sync has copied, and reports them through
+ * onProgress({ phase, done, total, bytes, totalBytes }). Does nothing without a callback.
+ * phase: 'upload' | 'backup' | 'download'.
+ */
+class Progress {
+  constructor(onProgress, phase, total, totalBytes = 0) {
+    Object.assign(this, { cb: onProgress, phase, total, totalBytes, done: 0, bytes: 0 });
+    this.report();
+  }
+
+  step(bytes = 0) {
+    this.done++;
+    this.bytes += bytes || 0;
+    this.report();
+  }
+
+  report() {
+    if (!this.cb) return;
+    try {
+      this.cb({ phase: this.phase, done: this.done, total: this.total, bytes: this.bytes, totalBytes: this.totalBytes });
+    } catch { /* a broken listener must never break a sync */ }
+  }
+}
+
+function totalSize(local, keys) {
+  return keys.reduce((n, k) => n + ((local.sizes && local.sizes[k]) || 0), 0);
+}
+
 class SyncEngine {
   /**
    * @param {object} o
@@ -119,10 +148,11 @@ class SyncEngine {
     return { files, count: files.length, bytes, skipped };
   }
 
-  /** Hash every save file on this PC. Returns { files: {key: abs}, hashes: {key: sha1} }. */
+  /** Hash every save file on this PC. Returns { files: {key: abs}, hashes: {key: sha1}, sizes: {key: bytes} }. */
   async scanLocal(game, installDir) {
     const files = {};
     const hashes = {};
+    const sizes = {};
     for (const { rule, abs } of this.resolveRules(game, installDir)) {
       if (!abs || !(await fsu.isDir(abs))) continue;
       const why = limits.rejectPath(rule.path, rule.include, { cloudDir: this.cloudDir, abs, platform: this.platform });
@@ -133,16 +163,17 @@ class SyncEngine {
           `The save location ${rule.path} has grown too big to sync (over ${limits.describeSize({ files: limits.LIMITS.hardFiles, bytes: limits.LIMITS.hardBytes })}). ` +
           'Narrow it to the actual save files on the game page.', { rule: rule.id });
       }
-      for (const { rel } of m.files) {
+      for (const { rel, size } of m.files) {
         const key = `${rule.id}/${rel}`;
         const p = path.join(abs, ...rel.split('/'));
         try {
           hashes[key] = await fsu.hashFile(p);
           files[key] = p;
+          sizes[key] = size;
         } catch { /* file vanished mid-scan; ignore */ }
       }
     }
-    return { files, hashes };
+    return { files, hashes, sizes };
   }
 
   async readCloudState(id) {
@@ -172,9 +203,10 @@ class SyncEngine {
   /**
    * Bring this PC and the shared folder in line.
    * @param {'local'|'cloud'} [resolution] how to settle a conflict
+   * @param {function} [onProgress]       see Progress
    * @returns {Promise<{action:string, lastSync:object, cloud:object}>}
    */
-  async sync(game, installDir, lastSync, { resolution } = {}) {
+  async sync(game, installDir, lastSync, { resolution, onProgress } = {}) {
     await this.requireCloud();
     const local = await this.scanLocal(game, installDir);
     const cloud = await this.readCloudState(game.id);
@@ -192,11 +224,11 @@ class SyncEngine {
     }
 
     if (action === 'push') {
-      const state = await this.push(game, local);
+      const state = await this.push(game, local, { onProgress });
       return { action, cloud: state, lastSync: { generation: state.generation, hashes: state.hashes } };
     }
     if (action === 'pull') {
-      await this.pull(game, installDir, local, cloud);
+      await this.pull(game, installDir, local, cloud, { onProgress });
       return { action, cloud, lastSync: { generation: cloud.generation, hashes: cloud.hashes } };
     }
     if (action === 'adopt') {
@@ -207,7 +239,7 @@ class SyncEngine {
   }
 
   /** Copy this PC's saves into the shared folder as the new current version. */
-  async push(game, local) {
+  async push(game, local, { onProgress } = {}) {
     const gdir = this.gameDir(game.id);
     const stamp = fsu.timestamp();
     const tmp = path.join(gdir, `.incoming-${this.deviceId.slice(0, 8)}-${stamp}`);
@@ -216,12 +248,15 @@ class SyncEngine {
 
     // Hash the copies, not the originals: the game may be writing while we copy.
     const hashes = {};
+    const keys = Object.keys(local.files);
+    const progress = new Progress(onProgress, 'upload', keys.length, totalSize(local, keys));
     for (const [key, src] of Object.entries(local.files)) {
       const dest = path.join(tmp, ...key.split('/'));
       try {
         await fsu.copyFile(src, dest);
         hashes[key] = await fsu.hashFile(dest);
       } catch { /* vanished; skip */ }
+      progress.step(local.sizes && local.sizes[key]);
     }
 
     const current = path.join(gdir, 'current');
@@ -244,7 +279,7 @@ class SyncEngine {
   }
 
   /** Copy the shared folder's current saves onto this PC, backing up what's here first. */
-  async pull(game, installDir, local, cloud) {
+  async pull(game, installDir, local, cloud, { onProgress } = {}) {
     const current = path.join(this.gameDir(game.id), 'current');
     const bad = await this.verifySnapshot(current, cloud.hashes);
     if (bad.length) {
@@ -252,12 +287,14 @@ class SyncEngine {
         `The shared folder hasn't finished syncing yet (${bad.length} file(s) missing or different). Try again in a moment.`,
         { files: bad.slice(0, 20) });
     }
-    await this.backupLocal(game, local, 'before-pull');
-    await this.apply(game, installDir, current, cloud.hashes, local);
+    await this.backupLocal(game, local, 'before-pull', { onProgress });
+    await this.apply(game, installDir, current, cloud.hashes, local, { onProgress });
   }
 
   /** Make the save folders on this PC match a snapshot folder exactly. */
-  async apply(game, installDir, srcDir, hashes, local) {
+  async apply(game, installDir, srcDir, hashes, local, { onProgress } = {}) {
+    const changed = Object.entries(hashes).filter(([key, h]) => local.hashes[key] !== h).length;
+    const progress = new Progress(onProgress, 'download', changed);
     for (const { rule, abs, error } of this.resolveRules(game, installDir)) {
       if (!abs) throw new SyncError('bad-path', `Can't resolve save location ${rule.path}: ${error}`);
       const prefix = `${rule.id}/`;
@@ -269,19 +306,24 @@ class SyncEngine {
         if (!key.startsWith(prefix)) continue;
         if (local.hashes[key] === h) continue;
         const rel = key.slice(prefix.length).split('/');
-        await fsu.copyFile(path.join(srcDir, ...key.split('/')), path.join(abs, ...rel));
+        const dest = path.join(abs, ...rel);
+        await fsu.copyFile(path.join(srcDir, ...key.split('/')), dest);
+        progress.step(await fsp.stat(dest).then((st) => st.size, () => 0));
       }
     }
   }
 
   /** Copy this PC's current saves into history, so an overwrite can always be undone. */
-  async backupLocal(game, local, kind) {
+  async backupLocal(game, local, kind, { onProgress } = {}) {
     if (!Object.keys(local.files).length) return null;
+    const keys = Object.keys(local.files);
+    const progress = new Progress(onProgress, 'backup', keys.length, totalSize(local, keys));
     let name = `${fsu.timestamp()}-${fsu.safeName(this.deviceName)}-${kind}`;
     if (await fsu.exists(path.join(this.gameDir(game.id), 'history', name))) name += `-${crypto.randomBytes(2).toString('hex')}`;
     const dir = path.join(this.gameDir(game.id), 'history', name);
     for (const [key, src] of Object.entries(local.files)) {
       await fsu.copyFile(src, path.join(dir, 'files', ...key.split('/')));
+      progress.step(local.sizes && local.sizes[key]);
     }
     await fsu.writeJson(path.join(dir, 'meta.json'), {
       kind, deviceName: this.deviceName, at: new Date().toISOString(), hashes: local.hashes,
@@ -365,4 +407,4 @@ class SyncEngine {
   }
 }
 
-module.exports = { SyncEngine, SyncError, decide, sameHashes };
+module.exports = { SyncEngine, SyncError, Progress, decide, sameHashes, totalSize };

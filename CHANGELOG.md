@@ -4,6 +4,61 @@ All notable changes to VN Shelf. Download any version from the
 [Releases page](https://github.com/stagefuel/vn-shelf/releases). From 0.3.0 on, VN Shelf can
 update itself (Settings → Updates).
 
+## 0.5.0
+
+VN Shelf can now run in the tray and start with Windows. This version also brings a new Home page,
+a tabbed Settings window, search suggestions, sync progress bars and faster game pages.
+
+### New
+- **Start with Windows.** **Settings → General → Start VN Shelf when Windows starts.** VN Shelf
+  then starts quietly in the tray when you sign in and keeps your saves in sync: anything waiting
+  to upload goes up, and it checks again every few minutes. It's off by default and set separately
+  on each PC.
+- **Runs in the tray.** Closing the window now keeps VN Shelf running in the tray, so saves still
+  sync and games you started keep being tracked.
+  - Click the tray icon to open VN Shelf, or right-click it and choose **Quit**.
+  - To make the window's X quit instead, change **Settings → General → When you close the window**.
+  - The first time you close the window, a notification says where VN Shelf went.
+- **A progress bar while saves sync.** Big syncs show how far along they are, on the game's cover,
+  on Home and on the game page. For example: "Downloading saves… 3 / 12 files · 4.1 MB of 9.8 MB".
+  It covers uploads, the backup taken before a download, and downloads. Syncs that finish in under
+  a second don't show a bar, so it doesn't flicker.
+- **Search suggestions.** As you type in the search box, a list suggests:
+  - matching games (opens the game page)
+  - VNDB tags (lists every game with that tag)
+  - developers
+  - your categories
+
+  Use the mouse, or **↑** / **↓** and **Enter**.
+- **Patch notes and the GitHub page in Settings.** **Settings → Updates & about** shows this
+  version's patch notes (and every earlier version's, if you want them) and links to the project
+  on GitHub.
+
+### Changed
+- **New Home page.** The game you played last now gets a large section at the top. It shows its
+  cover, title, developer, release year, time played, when you last played and the start of its
+  description, with a big **Play** button. Your other recent games are in the row below.
+- **Settings has tabs:** General, Saves & sync, Games & tools, Look, and Updates & about. The
+  first-run setup still shows everything on one page.
+- **Game pages open instantly.** Opening a game used to show the previous game's page for a moment
+  while the new one loaded. The new page now appears at once with everything that's already known
+  (cover, description, notes, launch options). Save folders, history and companion tools fill in a
+  moment later, and they now load at the same time instead of one after another.
+- **Clicking "VN Shelf"** in the top-left corner goes to Home.
+- **Updates keep the version in the file name.** Updating used to keep the old name, so
+  `VN-Shelf-0.4.1-portable.exe` stayed named 0.4.1 after updating. The update is now saved as
+  `VN-Shelf-<new version>-portable.exe` and the old file is removed. If you renamed the exe
+  yourself (to a name without a version in it), it keeps your name. If you start VN Shelf with
+  Windows, that entry follows the new file.
+- **The update window** now just says "Current version …". Its patch notes are formatted properly:
+  headings, bold text and nested lists used to show as raw text with `**` and `-` marks.
+- **Google Drive setup:** "Saves will be kept in a "VN Shelf" folder in your Google Drive" now sits
+  right under the Google Drive option, and the "Nothing else to install" note is gone.
+
+### Fixed
+- The update was also more careful about when to replace the exe: it now waits for the portable
+  launcher as well as VN Shelf itself to close.
+
 ## 0.4.1
 
 Faster start-up in Google Drive mode, and a clearer Play button while saves are checked.
