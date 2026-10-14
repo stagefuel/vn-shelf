@@ -41,19 +41,26 @@ function winGameDir() {
   return dir;
 }
 
-test('Windows: tracks a game exe until it exits', { skip: process.platform !== 'win32' }, async () => {
+test('Windows: tracks a game exe until it exits', { skip: process.platform !== 'win32', timeout: 90000 }, async () => {
+  const { execFile } = require('child_process');
   const dir = winGameDir();
-  const t0 = Date.now();
   let sawPids = false;
+  let closedAt = 0;
+  // The stand-in game would run ~60 s; it is closed 2 s after the PowerShell watcher first sees it,
+  // so a slow (cold) machine only makes the test take longer instead of failing it.
   const info = await new Promise((resolve) => {
-    const ev = launch({ exePath: path.join(dir, 'game.exe'), installDir: dir, args: '-n 13 127.0.0.1', pollMs: 500, graceMs: 2500 });
-    ev.on('running', () => { sawPids = true; });
+    const ev = launch({ exePath: path.join(dir, 'game.exe'), installDir: dir, args: '-n 60 127.0.0.1', pollMs: 500, graceMs: 2500 });
+    ev.on('running', (pids) => {
+      if (sawPids) return;
+      sawPids = true;
+      setTimeout(() => { closedAt = Date.now(); for (const p of pids) execFile('taskkill', ['/PID', String(p), '/F'], () => {}); }, 2000);
+    });
     ev.on('exit', resolve);
   });
-  const secs = (Date.now() - t0) / 1000;
   assert.strictEqual(info.reason, 'closed');
   assert.ok(sawPids, 'PowerShell watcher reported the game process');
-  assert.ok(secs >= 11 && secs < 30, `ended after ${secs}s`);
+  const after = (Date.now() - closedAt) / 1000;
+  assert.ok(closedAt && after < 15, `noticed the game closing ${after}s after it closed`);
 });
 
 test('Windows: a .cmd launcher that starts the game and exits is followed to the real game', { skip: process.platform !== 'win32' }, async () => {
