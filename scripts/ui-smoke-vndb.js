@@ -106,9 +106,16 @@ async function until(what, fn, ms = 20000) {
     // ---- game page: status → Finished fills the date and goes to VNDB; rating too
     await page.click('.navitem:has-text("All games")');
     await page.click('#grid .card:has-text("Linked Game")');
+    // Statuses are labels: ticking Finished keeps Playing (on VNDB too); unticking Reading takes only that off.
     await page.waitForSelector('.statussel');
-    await page.selectOption('.statussel', 'finished');
+    await page.click('.statussel');
+    await page.click('.statusmenu label:has-text("Finished")');
     await until('finished date filled', () => readGame('linked-aaaaaa').finished === today);
+    await until('Finished added on VNDB, Playing kept', () => { const e = fake.entry('v11'); return e.labels.includes(1) && e.labels.includes(2); }, 30000);
+    result.bothStatuses = fake.entry('v11').labels;
+    await shot(page, '04a-status-menu');
+    await page.click('.statusmenu label:has-text("Reading")');
+    await page.keyboard.press('Escape');
     await page.waitForSelector('.listfields select');
     await page.selectOption('.listfields select', '90');
     await until('sent to VNDB', () => {
@@ -137,7 +144,7 @@ async function until(what, fn, ms = 20000) {
     await page.click('#dlg button:has-text("Cancel")');
     result.sidebarGone = (await page.locator('.navitem:has-text("Your VNDB list")').count()) === 0;
     console.log(JSON.stringify(result, null, 2));
-    const bad = ['badTokenRefused', 'tokenNotInConfig', 'tokenNotShared', 'tokenRemoved', 'sidebarGone'].filter((k) => !result[k]);
+    const bad = ['bothStatuses', 'badTokenRefused', 'tokenNotInConfig', 'tokenNotShared', 'tokenRemoved', 'sidebarGone'].filter((k) => !result[k]);
     if (bad.length) throw new Error(`failed: ${bad.join(', ')}`);
     console.log('VNDB SMOKE OK');
   } catch (e) {

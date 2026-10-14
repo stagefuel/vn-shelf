@@ -320,6 +320,7 @@ async function decorate(game, { offline = false } = {}) {
     ...playInfo(game, l),
     pending: !!l.pending,
     running: running.has(game.id) ? running.get(game.id).mode : null,
+    statuses: vndbList.statusesOf(game),
     descSegments: game.vndb && game.vndb.description ? vndb.parseDescription(game.vndb.description) : null,
   };
 }
@@ -556,13 +557,18 @@ async function takeWindowTitle(id, raw) {
   } catch { /* not important */ }
 }
 
-/** Playing a game for the first time marks it "Reading" (unless it already has a status other than "Plan to read"). */
+/**
+ * Playing a game for the first time adds "Reading" (when it has no status, or only "Plan to read").
+ * Like ticking a label on VNDB, it only adds: no other status is taken away.
+ */
 async function markReading(id) {
   try {
     const game = await library.get(id);
-    if (game && (!game.status || game.status === 'wishlist')) {
+    const have = game ? vndbList.statusesOf(game) : null;
+    if (have && have.every((s) => s === 'wishlist')) {
       const now = new Date().toISOString();
-      await library.update(id, { status: 'playing', statusAt: now, listEditedAt: now, ...(game.started ? {} : { started: vndbList.today() }) });
+      const statuses = vndbList.cleanStatuses([...have, 'playing']);
+      await library.update(id, { statuses, status: vndbList.primaryStatus(statuses), statusAt: now, listEditedAt: now, ...(game.started ? {} : { started: vndbList.today() }) });
       send('games-changed');
       vndbSyncSoon();
     }
@@ -960,21 +966,26 @@ const api = {
     const allowed = {};
     for (const k of ['title', 'titleAlt', 'developer', 'launch', 'notes', 'categories']) if (patch[k] !== undefined) allowed[k] = patch[k];
     if (allowed.title !== undefined) allowed.titleSource = 'user';
-    const before = patch.status !== undefined ? await peekGame(id) : null;
-    if (patch.status !== undefined) {
-      if (!STATUSES.includes(patch.status)) throw new Error('Unknown reading status.');
-      allowed.status = patch.status;
+    // Reading statuses work like VNDB's labels: a game can have several. `status` (one) is still accepted.
+    const wanted = patch.statuses !== undefined ? patch.statuses : patch.status !== undefined ? (patch.status ? [patch.status] : []) : undefined;
+    const before = wanted !== undefined ? await peekGame(id) : null;
+    if (wanted !== undefined) {
+      if (!Array.isArray(wanted) || wanted.some((x) => !STATUSES.includes(x) || !x)) throw new Error('Unknown reading status.');
+      const had = vndbList.statusesOf(before);
+      allowed.statuses = vndbList.cleanStatuses(wanted);
+      allowed.status = vndbList.primaryStatus(allowed.statuses);
       allowed.statusAt = new Date().toISOString();
       // Dates fill themselves in the first time: started when reading begins, finished when finished.
-      if (patch.status === 'playing' && !before.started && patch.started === undefined) allowed.started = vndbList.today();
-      if (patch.status === 'finished' && !before.finished && patch.finished === undefined) allowed.finished = vndbList.today();
+      const added = (x) => allowed.statuses.includes(x) && !had.includes(x);
+      if (added('playing') && !before.started && patch.started === undefined) allowed.started = vndbList.today();
+      if (added('finished') && !before.finished && patch.finished === undefined) allowed.finished = vndbList.today();
     }
     if (patch.vote !== undefined) allowed.vote = patch.vote === null ? null : vndbList.cleanVote(patch.vote);
     if (patch.started !== undefined) allowed.started = vndbList.cleanDate(patch.started);
     if (patch.finished !== undefined) allowed.finished = vndbList.cleanDate(patch.finished);
     if (allowed.notes !== undefined) allowed.notes = String(allowed.notes).slice(0, 100000);
     if (allowed.categories !== undefined) allowed.categories = [...new Set((allowed.categories || []).map((c) => String(c).trim()).filter(Boolean))];
-    const listChange = ['status', 'categories', 'vote', 'started', 'finished'].some((k) => allowed[k] !== undefined);
+    const listChange = ['statuses', 'categories', 'vote', 'started', 'finished'].some((k) => allowed[k] !== undefined);
     if (listChange) allowed.listEditedAt = new Date().toISOString();
     const g = await library.update(id, allowed);
     send('games-changed');

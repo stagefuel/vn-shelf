@@ -2,7 +2,8 @@
 // Two-way sync between the library and the owner's VNDB list (https://api.vndb.org/kana).
 //
 // What syncs, per game linked to a VNDB entry:
-//   status      <-> the list labels Playing/Finished/Stalled/Dropped/Wishlist (ids 1–5)
+//   statuses    <-> the list labels Playing/Finished/Stalled/Dropped/Wishlist (ids 1–5). Like on
+//                   VNDB, a game can have several; each one is added or removed on its own.
 //   categories  <-> the owner's own labels (id >= 10) with the same name, case ignored
 //   vote        <-> "Your rating" (10–100)
 //   started / finished dates
@@ -17,8 +18,7 @@ const DEFAULT_API = 'https://api.vndb.org/kana';
 
 // VNDB's predefined label ids for each reading status.
 const STATUS_LABELS = { playing: 1, finished: 2, stalled: 3, dropped: 4, wishlist: 5 };
-const LABEL_STATUS = Object.fromEntries(Object.entries(STATUS_LABELS).map(([k, v]) => [v, k]));
-// When an entry has more than one status label, the one shown here first wins.
+// A game's main status (game.status, shown first and kept for older versions) is its first one in this order.
 const STATUS_PRIORITY = ['finished', 'playing', 'stalled', 'dropped', 'wishlist'];
 const BLACKLIST = 6;
 const CUSTOM_MIN = 10; // ids below this are VNDB's own labels
@@ -133,10 +133,32 @@ function cleanDate(d) {
   return /^\d{4}-\d{2}-\d{2}$/.test(String(d || '')) ? String(d) : '';
 }
 
-/** The status an entry's labels show (see STATUS_PRIORITY), or ''. */
-function statusOf(labelIds) {
+/** The statuses an entry's labels give, in STATUS_PRIORITY order. */
+function statusesOfLabels(labelIds) {
   const set = new Set(labelIds);
-  return STATUS_PRIORITY.find((s) => set.has(STATUS_LABELS[s])) || '';
+  return STATUS_PRIORITY.filter((s) => set.has(STATUS_LABELS[s]));
+}
+
+/** The main status of a list of statuses (see STATUS_PRIORITY), or ''. */
+function primaryStatus(statuses) {
+  return STATUS_PRIORITY.find((s) => (statuses || []).includes(s)) || '';
+}
+
+function statusOf(labelIds) { return primaryStatus(statusesOfLabels(labelIds)); }
+
+/** Clean, ordered, without repeats. */
+function cleanStatuses(list) {
+  return STATUS_PRIORITY.filter((s) => (list || []).includes(s));
+}
+
+/**
+ * A game's statuses. game.statuses holds them all and game.status the main one; a version before
+ * 0.8.1 only writes game.status, so when the two disagree, game.status (the newer edit) wins.
+ */
+function statusesOf(game) {
+  const list = Array.isArray(game.statuses) ? cleanStatuses(game.statuses) : null;
+  if (list && primaryStatus(list) === (game.status || '')) return list;
+  return game.status ? [game.status] : [];
 }
 
 /** The owner's own labels, by lower-cased name: { name -> { id, label } }. */
@@ -154,7 +176,7 @@ function localView(game, custom) {
     if (l && !labels.includes(l.label)) labels.push(l.label);
   }
   return {
-    status: game.status || '',
+    statuses: statusesOf(game),
     labels: sortNames(labels),
     vote: cleanVote(game.vote),
     started: cleanDate(game.started),
@@ -164,11 +186,11 @@ function localView(game, custom) {
 
 /** What a VNDB list entry says (an empty view when the VN isn't on the list). */
 function remoteView(entry, custom) {
-  if (!entry) return { status: '', labels: [], vote: null, started: '', finished: '' };
+  if (!entry) return { statuses: [], labels: [], vote: null, started: '', finished: '' };
   const ids = (entry.labels || []).map((l) => (typeof l === 'object' ? l.id : l));
   const byId = new Map([...custom.values()].map((l) => [l.id, l.label]));
   return {
-    status: statusOf(ids),
+    statuses: statusesOfLabels(ids),
     labels: sortNames(ids.filter((id) => byId.has(id)).map((id) => byId.get(id))),
     vote: cleanVote(entry.vote),
     started: cleanDate(entry.started),
@@ -176,8 +198,8 @@ function remoteView(entry, custom) {
   };
 }
 
-const FIELDS = ['status', 'vote', 'started', 'finished'];
-const isEmpty = (v) => !v.status && !v.labels.length && !v.vote && !v.started && !v.finished;
+const FIELDS = ['vote', 'started', 'finished'];
+const isEmpty = (v) => !v.statuses.length && !v.labels.length && !v.vote && !v.started && !v.finished;
 
 /**
  * Merge one game. `localAt`/`remoteAt` are millisecond times of each side's latest change, used
@@ -196,37 +218,50 @@ function merge(L, R, B, { localAt = 0, remoteAt = 0 } = {}) {
       M[f] = !L[f] ? R[f] : !R[f] ? L[f] : L[f] === R[f] ? L[f] : localNewer ? L[f] : R[f];
     }
   }
-  // Labels merge one by one: added or removed on either side sticks. The first time, both sides' labels are kept.
-  const names = new Map();
-  for (const n of [...L.labels, ...R.labels, ...((B && B.labels) || [])]) if (!names.has(lc(n))) names.set(lc(n), n);
-  const has = (list, k) => list.some((n) => lc(n) === k);
-  M.labels = sortNames([...names].filter(([k]) => {
-    const inL = has(L.labels, k);
-    const inR = has(R.labels, k);
-    if (!B) return inL || inR;
-    const inB = has(B.labels, k);
-    return inL !== inB ? inL : inR;
-  }).map(([, n]) => n));
+  // Labels and statuses merge one by one, the way ticking one label on VNDB leaves the others alone:
+  // one added or removed on either side sticks.
+  M.labels = sortNames(mergeSet(L.labels, R.labels, B ? B.labels : null));
+  // The first time, labels from both sides are kept; statuses that differ are settled by the newer side
+  // (a game "Reading" here and "Finished" on VNDB shouldn't become both).
+  let st;
+  if (B) st = mergeSet(L.statuses, R.statuses, B.statuses || []);
+  else if (!L.statuses.length || !R.statuses.length || same(L.statuses, R.statuses)) st = [...L.statuses, ...R.statuses];
+  else st = localNewer ? L.statuses : R.statuses;
+  M.statuses = cleanStatuses(st);
   return M;
+}
+
+/** Three-way merge of a set of names (case ignored). Without a base, both sides' names are kept. */
+function mergeSet(L, R, B) {
+  const names = new Map();
+  for (const n of [...L, ...R, ...(B || [])]) if (!names.has(lc(n))) names.set(lc(n), n);
+  const has = (list, k) => list.some((n) => lc(n) === k);
+  return [...names].filter(([k]) => {
+    const inL = has(L, k);
+    const inR = has(R, k);
+    if (!B) return inL || inR;
+    const inB = has(B, k);
+    return inL !== inB ? inL : inR;
+  }).map(([, n]) => n);
 }
 
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
-/** The PATCH body that turns entry view R (with raw label ids `rawIds`) into M, or null if nothing changes. */
-function patchBody(M, R, rawIds, custom) {
+/** The PATCH body that turns entry view R into M, or null if nothing changes. */
+function patchBody(M, R, custom) {
   const body = {};
-  if (M.status !== R.status) {
-    const want = STATUS_LABELS[M.status];
-    if (want) body.labels_set = [want];
-    // VNDB doesn't take off the other status labels itself.
-    const off = rawIds.filter((id) => LABEL_STATUS[id] && id !== want);
-    if (off.length) body.labels_unset = off;
-  }
+  // Only the labels that changed are sent; every other label on the entry stays as it is.
   const idOf = (n) => (custom.get(lc(n)) || {}).id;
-  const add = M.labels.filter((n) => !R.labels.some((x) => lc(x) === lc(n))).map(idOf).filter(Boolean);
-  const del = R.labels.filter((n) => !M.labels.some((x) => lc(x) === lc(n))).map(idOf).filter(Boolean);
-  if (add.length) body.labels_set = [...(body.labels_set || []), ...add];
-  if (del.length) body.labels_unset = [...(body.labels_unset || []), ...del];
+  const add = [
+    ...M.statuses.filter((x) => !R.statuses.includes(x)).map((x) => STATUS_LABELS[x]),
+    ...M.labels.filter((n) => !R.labels.some((x) => lc(x) === lc(n))).map(idOf).filter(Boolean),
+  ];
+  const del = [
+    ...R.statuses.filter((x) => !M.statuses.includes(x)).map((x) => STATUS_LABELS[x]),
+    ...R.labels.filter((n) => !M.labels.some((x) => lc(x) === lc(n))).map(idOf).filter(Boolean),
+  ];
+  if (add.length) body.labels_set = add;
+  if (del.length) body.labels_unset = del;
   if (M.vote !== R.vote) body.vote = M.vote;
   // VNDB's API can set a date but not clear one (null and "" are refused), so a date cleared here stays on VNDB.
   if (M.started && M.started !== R.started) body.started = M.started;
@@ -237,7 +272,11 @@ function patchBody(M, R, rawIds, custom) {
 /** The game.json changes that turn the library's view L into M. */
 function localPatch(game, M, L, custom) {
   const p = {};
-  if (M.status !== L.status) { p.status = M.status; p.statusAt = new Date().toISOString(); }
+  if (!same(M.statuses, L.statuses)) {
+    p.statuses = M.statuses;
+    p.status = primaryStatus(M.statuses);
+    p.statusAt = new Date().toISOString();
+  }
   if (!same(M.labels, L.labels)) {
     // Keep categories that have no label; replace the ones that do with the merged set.
     const keep = (game.categories || []).filter((c) => !custom.has(lc(c)));
@@ -281,7 +320,8 @@ async function syncList({ client, user, canWrite, games, cache, full = false, up
     // A blacklisted VN is left alone.
     if (entry && (entry.labels || []).some((l) => (l.id || l) === BLACKLIST)) continue;
     const sync = (game.vndbSync && game.vndbSync[user]) || null;
-    const B = sync ? sync.base : null;
+    let B = sync ? sync.base : null;
+    if (B && !Array.isArray(B.statuses)) B = { ...B, statuses: B.status ? [B.status] : [] }; // saved by 0.8.0
     const L = localView(game, custom);
     const R = remoteView(entry, custom);
     if (!B && isEmpty(L) && isEmpty(R)) continue;
@@ -289,7 +329,7 @@ async function syncList({ client, user, canWrite, games, cache, full = false, up
     const remoteAt = entry ? (entry.lastmod || 0) * 1000 : 0;
     const M = merge(L, R, B, { localAt, remoteAt });
     const rawIds = entry ? (entry.labels || []).map((l) => l.id || l) : [];
-    const body = canWrite ? patchBody(M, R, rawIds, custom) : null;
+    const body = canWrite ? patchBody(M, R, custom) : null;
     const lp = localPatch(game, M, L, custom);
     // A date cleared here can't be cleared on VNDB: remember VNDB's date as agreed, so it isn't sent
     // again and doesn't come back here, until either side changes it.
@@ -346,6 +386,7 @@ function listOnly(cache, games) {
       image: e.vn && e.vn.image ? e.vn.image.url : null,
       imageSexual: e.vn && e.vn.image ? e.vn.image.sexual : 0,
       status: statusOf((e.labels || []).map((l) => l.id || l)),
+      statuses: statusesOfLabels((e.labels || []).map((l) => l.id || l)),
       labelIds: (e.labels || []).map((l) => l.id || l),
       vote: cleanVote(e.vote),
       lastmod: e.lastmod || 0,
@@ -361,5 +402,5 @@ function today(d = new Date()) {
 
 module.exports = {
   VndbListClient, VndbError, syncList, listOnly, merge, localView, remoteView, patchBody, localPatch,
-  customLabels, statusOf, cleanVote, cleanDate, today, STATUS_LABELS, LIST_FIELDS,
+  customLabels, statusOf, statusesOf, statusesOfLabels, primaryStatus, cleanStatuses, cleanVote, cleanDate, today, STATUS_LABELS, LIST_FIELDS,
 };

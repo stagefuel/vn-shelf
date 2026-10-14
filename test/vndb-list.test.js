@@ -66,6 +66,47 @@ test('vndb list: local status change replaces the old status label (VNDB doesn\'
   assert.deepStrictEqual(patch, { labels_set: [2], labels_unset: [1] });
 });
 
+test('vndb list: statuses work like VNDB labels: several at once, only the ticked/unticked one changes', async () => {
+  const s = setup({ games: [{ id: 'a', vndbId: 'v1', title: 'A' }] });
+  s.fake.setEntry('v1', { labels: [2, 5, 10] }); // Finished + Wishlist + Favourites
+  await s.run({ full: true });
+  assert.deepStrictEqual(s.lib.get('a').statuses, ['finished', 'wishlist']);
+  assert.strictEqual(s.lib.get('a').status, 'finished', 'main status for older versions');
+  // Tick Reading: only Playing is added on VNDB.
+  s.lib.set('a', { ...s.lib.get('a'), statuses: ['finished', 'playing', 'wishlist'], status: 'finished', listEditedAt: new Date().toISOString() });
+  let before = s.fake.requests.length;
+  await s.run();
+  assert.deepStrictEqual(s.fake.requests.slice(before).find((q) => q.method === 'PATCH').body, { labels_set: [1] });
+  assert.deepStrictEqual(s.fake.entry('v1').labels, [1, 2, 5, 10]);
+  // Untick Plan to read: only Wishlist goes.
+  s.lib.set('a', { ...s.lib.get('a'), statuses: ['finished', 'playing'], listEditedAt: new Date().toISOString() });
+  before = s.fake.requests.length;
+  await s.run();
+  assert.deepStrictEqual(s.fake.requests.slice(before).find((q) => q.method === 'PATCH').body, { labels_unset: [5] });
+  assert.deepStrictEqual(s.fake.entry('v1').labels, [1, 2, 10]);
+  // Stalled added on the website: added here, nothing else touched.
+  s.fake.setEntry('v1', { labels: [1, 2, 3, 10] });
+  await s.run();
+  assert.deepStrictEqual(s.lib.get('a').statuses, ['finished', 'playing', 'stalled']);
+  assert.deepStrictEqual(s.lib.get('a').categories, ['Favourites']);
+});
+
+test('vndb list: statuses from an older version (status only) and a 0.8.0 base are understood', () => {
+  assert.deepStrictEqual(vl.statusesOf({ status: 'playing' }), ['playing']);
+  assert.deepStrictEqual(vl.statusesOf({ status: 'finished', statuses: ['wishlist', 'finished'] }), ['finished', 'wishlist']);
+  // An older PC changed the status (it only writes `status`): that edit wins.
+  assert.deepStrictEqual(vl.statusesOf({ status: 'dropped', statuses: ['finished', 'wishlist'] }), ['dropped']);
+  assert.deepStrictEqual(vl.statusesOf({ status: '', statuses: ['finished'] }), []);
+});
+
+test('vndb list: a game synced by 0.8.0 (base with one status) keeps working', async () => {
+  const s = setup({ games: [{ id: 'a', vndbId: 'v1', title: 'A', status: 'playing', vndbSync: { u42: { base: { status: 'playing', labels: [], vote: null, started: '', finished: '' } } } }] });
+  s.fake.setEntry('v1', { labels: [1, 5] });
+  await s.run({ full: true });
+  assert.deepStrictEqual(s.lib.get('a').statuses, ['playing', 'wishlist']);
+  assert.deepStrictEqual(s.fake.entry('v1').labels, [1, 5], 'nothing removed');
+});
+
 test('vndb list: incremental run sees a change made on VNDB with one list request', async () => {
   const s = setup({ games: [{ id: 'a', vndbId: 'v1', title: 'A' }, { id: 'b', vndbId: 'v2', title: 'B' }] });
   s.fake.setEntry('v1', { labels: [5] });
@@ -82,24 +123,25 @@ test('vndb list: incremental run sees a change made on VNDB with one list reques
   assert.strictEqual(s.lib.get('a').status, 'wishlist', 'unchanged entry still known from the cache');
 });
 
-test('vndb list: both sides changed the same field: newer wins; different fields both kept', async () => {
+test('vndb list: both sides changed the rating: newer wins; statuses ticked on each side are all kept', async () => {
   const s = setup({ games: [{ id: 'a', vndbId: 'v1', title: 'A' }] });
   s.fake.setEntry('v1', { labels: [1], vote: 50 });
   await s.run({ full: true });
-  // Website: status → stalled (now). Library: status → finished an hour ago, vote → 90.
+  // Website (now): Playing → Stalled, vote → 30. Library (an hour ago): Playing → Finished, vote → 90.
   s.fake.clock = Math.floor(Date.now() / 1000);
-  s.fake.setEntry('v1', { labels: [3], vote: 50 });
-  s.lib.set('a', { ...s.lib.get('a'), status: 'finished', vote: 90, listEditedAt: new Date(Date.now() - 3600e3).toISOString() });
+  s.fake.setEntry('v1', { labels: [3], vote: 30 });
+  s.lib.set('a', { ...s.lib.get('a'), statuses: ['finished'], status: 'finished', vote: 90, started: '2026-05-05', listEditedAt: new Date(Date.now() - 3600e3).toISOString() });
   await s.run();
-  assert.strictEqual(s.lib.get('a').status, 'stalled', 'VNDB change was newer');
-  assert.strictEqual(s.fake.entry('v1').vote, 90, 'only the library changed the vote');
-  assert.deepStrictEqual(s.fake.entry('v1').labels, [3, 7]);
+  assert.strictEqual(s.lib.get('a').vote, 30, 'VNDB\'s vote was newer');
+  assert.deepStrictEqual(s.lib.get('a').statuses, ['finished', 'stalled'], 'Playing unticked on both, Finished and Stalled each ticked on one side');
+  assert.deepStrictEqual(s.fake.entry('v1').labels, [2, 3, 7]);
+  assert.strictEqual(s.fake.entry('v1').started, '2026-05-05', 'only the library set a start date');
   // And the other way round: the library is newer.
-  s.fake.setEntry('v1', { labels: [4], vote: 90 });
-  s.lib.set('a', { ...s.lib.get('a'), status: 'playing', listEditedAt: new Date(Date.now() + 3600e3).toISOString() });
+  s.fake.setEntry('v1', { labels: [2, 3], vote: 40, started: '2026-05-05' });
+  s.lib.set('a', { ...s.lib.get('a'), vote: 100, listEditedAt: new Date(Date.now() + 3600e3).toISOString() });
   await s.run();
-  assert.strictEqual(s.lib.get('a').status, 'playing');
-  assert.deepStrictEqual(s.fake.entry('v1').labels, [1, 7]);
+  assert.strictEqual(s.lib.get('a').vote, 100);
+  assert.strictEqual(s.fake.entry('v1').vote, 100);
 });
 
 test('vndb list: labels merge one by one; removing a category takes the label off', async () => {
@@ -205,11 +247,12 @@ test('vndb list: requests are spaced out', async () => {
 });
 
 test('vndb list: merge rules', () => {
-  const e = { status: '', labels: [], vote: null, started: '', finished: '' };
-  const B = { ...e, status: 'playing' };
-  assert.strictEqual(vl.merge({ ...B, status: 'finished' }, B, B).status, 'finished');
-  assert.strictEqual(vl.merge(B, { ...B, status: 'dropped' }, B).status, 'dropped');
-  assert.strictEqual(vl.merge({ ...B, status: 'finished' }, { ...B, status: 'dropped' }, B, { localAt: 2, remoteAt: 1 }).status, 'finished');
+  const e = { statuses: [], labels: [], vote: null, started: '', finished: '' };
+  const B = { ...e, statuses: ['playing'] };
+  assert.deepStrictEqual(vl.merge({ ...B, statuses: ['finished'] }, B, B).statuses, ['finished']);
+  assert.deepStrictEqual(vl.merge(B, { ...B, statuses: ['dropped'] }, B).statuses, ['dropped']);
+  // Each status merges on its own: Playing swapped for Finished here, Dropped added on VNDB → both changes kept.
+  assert.deepStrictEqual(vl.merge({ ...B, statuses: ['finished'] }, { ...B, statuses: ['playing', 'dropped'] }, B).statuses, ['finished', 'dropped']);
   assert.strictEqual(vl.merge({ ...e, vote: 80 }, { ...e, vote: 40 }, null, { localAt: 1, remoteAt: 2 }).vote, 40);
   assert.strictEqual(vl.merge({ ...e, vote: 80 }, e, null).vote, 80, 'first time, an empty side never wipes');
   assert.strictEqual(vl.cleanVote(5), null);

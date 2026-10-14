@@ -314,8 +314,10 @@ const zipOut = path.join(base, 'k3-saves.zip');
   // ---- reading status
   await page.click('#sidebar .navitem:has-text("All games")');
   await page.click('#grid .card:has-text("SWAN SONG")');
-  await page.waitForSelector('#detailView select.statussel');
-  await page.selectOption('#detailView select.statussel', 'finished');
+  await page.waitForSelector('#detailView .statussel');
+  await page.click('#detailView .statussel');
+  await page.click('.statusmenu label:has-text("Finished")');
+  await page.keyboard.press('Escape');
   await page.waitForSelector('#sidebar .navitem:has-text("Finished")');
   await page.click('#sidebar .navitem:has-text("Finished")');
   await page.waitForSelector('.libtoolbar h1:has-text("Finished")');

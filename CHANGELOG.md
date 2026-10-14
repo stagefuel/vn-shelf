@@ -4,6 +4,31 @@ All notable changes to VN Shelf. Download any version from the
 [Releases page](https://github.com/stagefuel/vn-shelf/releases). From 0.3.0 on, VN Shelf can
 update itself (Settings → Updates).
 
+## 0.8.1
+
+Reading statuses now work like labels on VNDB.
+
+### Changed
+- **A game can have more than one reading status**, the same way a VN on VNDB can be both Playing
+  and Finished (re-reading something, for example).
+  - The status button on a game's page opens a list of checkboxes: Reading, Plan to read, On hold,
+    Finished and Dropped. Each one is ticked or unticked on its own, and the others stay as they
+    are.
+  - When VN Shelf syncs with your VNDB list, only the label you ticked or unticked changes on VNDB.
+    Your other status labels are never removed. 0.8.0 removed the other status labels whenever the
+    status changed.
+  - Statuses merge one by one, like categories and labels. One ticked or unticked on either side
+    carries over, and changes made to different statuses on each side are all kept. On a game's
+    first sync, if VN Shelf and VNDB have different statuses, the newer side's statuses are used.
+  - A game is listed under each of its statuses in the sidebar. Its cover shows the main status
+    (in the order Finished, Reading, On hold, Dropped, Plan to read) and "+1" for each other one;
+    point at it to see them all.
+  - Playing a game for the first time adds **Reading** when it has no status or only **Plan to
+    read**. It no longer replaces Plan to read; untick that yourself if you want.
+  - Ticking **Reading** or **Finished** fills in the Started or Finished date, as before.
+- Older versions on your other PCs still show the main status. If you change a status there, that
+  change wins on this PC too.
+
 ## 0.8.0
 
 VN Shelf now syncs with your VNDB list. Your reading status, categories, rating and dates stay the

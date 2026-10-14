@@ -14,7 +14,7 @@ function h(tag, attrs, ...kids) {
     else if (v === true) el.setAttribute(k, '');
     else el.setAttribute(k, v);
   }
-  for (const kid of kids.flat()) {
+  for (const kid of kids.flat(Infinity)) {
     if (kid === null || kid === undefined || kid === false) continue;
     el.append(kid instanceof Node ? kid : document.createTextNode(String(kid)));
   }
@@ -67,7 +67,7 @@ function joinPath(a, b) {
 }
 
 /** replaceChildren that skips null/false entries instead of printing "null". */
-function replaceKids(el, ...kids) { el.replaceChildren(...kids.flat().filter((k) => k !== null && k !== undefined && k !== false)); }
+function replaceKids(el, ...kids) { el.replaceChildren(...kids.flat(Infinity).filter((k) => k !== null && k !== undefined && k !== false)); }
 
 function baseName(p) { return String(p || '').split(/[\\/]/).filter(Boolean).pop() || ''; }
 
@@ -271,11 +271,11 @@ function renderSidebar() {
     item(t('All games'), view === 'library' && !filter.category && !filter.tag && !filter.status, () => showLibrary({ category: null, tag: null }), h('span', { class: 'count' }, games.length)),
     setup.vndb && setup.vndb.connected ? item(t('Your VNDB list'), view === 'vndb', () => showVndbList()) : null,
     ...(() => {
-      const used = STATUS_ORDER.filter((st) => games.some((g) => g.status === st));
+      const used = STATUS_ORDER.filter((st) => games.some((g) => statusesOf(g).includes(st)));
       if (!used.length) return [];
       return [h('div', { class: 'navhead' }, t('Reading status')),
         ...used.map((st) => item(h('span', { class: 'catname' }, h('span', { class: `sdot ${st}` }), STATUS_TEXT()[st]), view === 'library' && filter.status === st,
-          () => showLibrary({ status: st, category: null, tag: null }), h('span', { class: 'count' }, games.filter((g) => g.status === st).length)))];
+          () => showLibrary({ status: st, category: null, tag: null }), h('span', { class: 'count' }, games.filter((g) => statusesOf(g).includes(st)).length)))];
     })(),
     h('div', { class: 'navhead' }, t('Categories'),
       h('button', { class: 'ghost tiny', title: t('New category'), onclick: newCategory }, '+')),
@@ -366,9 +366,15 @@ function cardFor(g) {
   // Reading status, then (if play statistics are shown) time played and when, else who made it.
   const showStats = setup.settings.showStats !== false;
   const parts = [];
-  if (g.status && STATUS_TEXT()[g.status]) parts.push(h('span', { class: `sdot ${g.status}` }), `${STATUS_TEXT()[g.status]}${showStats && g.lastPlayed ? ' · ' : ''}`);
+  // Several statuses (like VNDB labels): the main one, then "+n" (all of them in the tooltip).
+  const sts = statusesOf(g).filter((x) => STATUS_TEXT()[x]);
+  if (sts.length) {
+    parts.push(h('span', { class: `sdot ${sts[0]}` }), STATUS_TEXT()[sts[0]]);
+    if (sts.length > 1) parts.push(h('span', { class: 'more', title: sts.map((x) => STATUS_TEXT()[x]).join(', ') }, ` +${sts.length - 1}`));
+    if (showStats && g.lastPlayed) parts.push(' · ');
+  }
   if (showStats && g.lastPlayed) parts.push(g.playMinutes ? `${hours(g.playMinutes)} · ${ago(g.lastPlayed)}` : t('Played {when}', { when: ago(g.lastPlayed) }));
-  else if (!g.status) parts.push(g.titleAlt || g.developer || '');
+  else if (!sts.length) parts.push(g.titleAlt || g.developer || '');
   const sub = parts;
   return h('div', { class: `card${g.installed ? '' : ' uninstalled'}`, tabindex: '0', 'data-id': g.id,
     onclick: () => openDetail(g.id), onkeydown: (e) => { if (e.key === 'Enter') openDetail(g.id); } },
@@ -474,7 +480,7 @@ function renderGrid() {
   let list = games.filter((g) => matchesSearch(g, q));
   if (filter.category) list = list.filter((g) => (g.categories || []).includes(filter.category));
   if (filter.tag) list = list.filter((g) => g.vndb && (g.vndb.tags || []).some((x) => x.id === filter.tag.id));
-  if (filter.status) list = list.filter((g) => g.status === filter.status);
+  if (filter.status) list = list.filter((g) => statusesOf(g).includes(filter.status));
   list = sortGames(list, setup.settings.sort);
 
   const sortSel = h('select', { class: 'sortsel', title: t('Sort by') },
@@ -514,10 +520,10 @@ async function renderVndbList() {
   const r = await vns.call('vndbListOnly').catch(() => ({ entries: [] }));
   if (seq !== vndbListSeq || view !== 'vndb') return;
   const all = r.entries || [];
-  const list = vndbListFilter ? all.filter((e) => e.status === vndbListFilter) : all;
+  const list = vndbListFilter ? all.filter((e) => (e.statuses || []).includes(vndbListFilter)) : all;
   const statusSel = h('select', { class: 'sortsel', title: t('Reading status') },
     h('option', { value: '', selected: !vndbListFilter }, t('Every status')),
-    STATUS_ORDER.filter((st) => all.some((e) => e.status === st)).map((st) => h('option', { value: st, selected: vndbListFilter === st }, STATUS_TEXT()[st])));
+    STATUS_ORDER.filter((st) => all.some((e) => (e.statuses || []).includes(st))).map((st) => h('option', { value: st, selected: vndbListFilter === st }, STATUS_TEXT()[st])));
   statusSel.addEventListener('change', () => { vndbListFilter = statusSel.value; renderVndbList(); });
   const syncing = setup.vndb && setup.vndb.syncing;
   const card = (e) => {
@@ -546,8 +552,8 @@ async function renderVndbList() {
     return h('div', { class: 'card listcard', title: t('Open on VNDB'), onclick: () => vns.call('openExternal', `https://vndb.org/${e.vndbId}`) },
       art,
       h('div', { class: 'title' }, e.title),
-      h('div', { class: 'sub' }, e.status ? [h('span', { class: `sdot ${e.status}` }), STATUS_TEXT()[e.status]] : null,
-        e.vote ? `${e.status ? ' · ' : ''}★ ${e.vote / 10}` : null),
+      h('div', { class: 'sub' }, (e.statuses || []).map((x, i) => [i ? ', ' : null, h('span', { class: `sdot ${x}` }), STATUS_TEXT()[x]]),
+        e.vote ? `${(e.statuses || []).length ? ' · ' : ''}★ ${e.vote / 10}` : null),
       h('div', { class: 'listbtns' }, link, add));
   };
   replaceKids($('#vndbView'),
@@ -2018,20 +2024,66 @@ async function typePath(id) {
   refreshStatus(id);
 }
 
-/** The reading-status picker on a game's page. Changes sync to every PC with the game. */
+/**
+ * The reading-status picker on a game's page. Like VNDB's labels, a game can have several: each one
+ * is ticked or unticked on its own, and the others stay. Changes sync to every PC with the game.
+ */
 function statusSelect(g) {
-  const sel = h('select', { class: 'statussel', title: t('Reading status') },
-    h('option', { value: '', selected: !g.status }, t('No status')),
-    STATUS_ORDER.map((st) => h('option', { value: st, selected: g.status === st }, STATUS_TEXT()[st])));
-  sel.addEventListener('change', async () => {
-    try { await call('updateGame', g.id, { status: sel.value }); } catch { return; }
-    g.status = sel.value;
-    const i = games.findIndex((x) => x.id === g.id);
-    if (i >= 0) games[i] = { ...games[i], status: sel.value };
-    renderSidebar();
-    if (view === 'detail' && currentId === g.id) renderDetail(g.id, { noAuto: true }); // dates may have filled in
+  const btn = h('button', { type: 'button', class: 'statussel', title: t('Reading status'), 'aria-haspopup': 'true' });
+  const paint = () => {
+    const st = statusesOf(g);
+    replaceKids(btn, st.length ? st.map((x, i) => [i ? ', ' : null, h('span', { class: `sdot ${x}` }), STATUS_TEXT()[x]]) : t('No status'), h('span', { class: 'caret' }, '▾'));
+  };
+  paint();
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (document.querySelector('.statusmenu')) { closeStatusMenu(); return; }
+    let changed = false;
+    const menu = h('div', { class: 'statusmenu', role: 'menu' },
+      STATUS_ORDER.map((x) => {
+        const box = h('input', { type: 'checkbox', checked: statusesOf(g).includes(x) });
+        box.addEventListener('change', async () => {
+          const next = box.checked ? [...statusesOf(g), x] : statusesOf(g).filter((y) => y !== x);
+          let ng;
+          try { ng = await call('updateGame', g.id, { statuses: next }); } catch { box.checked = !box.checked; return; }
+          changed = true;
+          Object.assign(g, { statuses: ng.statuses, status: ng.status, started: ng.started, finished: ng.finished });
+          const i = games.findIndex((y) => y.id === g.id);
+          if (i >= 0) games[i] = { ...games[i], statuses: ng.statuses, status: ng.status };
+          paint();
+          renderSidebar();
+        });
+        return h('label', { class: 'check' }, box, h('span', { class: `sdot ${x}` }), STATUS_TEXT()[x]);
+      }));
+    const r = btn.getBoundingClientRect();
+    menu.style.left = `${Math.round(r.left)}px`;
+    menu.style.top = `${Math.round(r.bottom + 4)}px`;
+    document.body.append(menu);
+    menu.addEventListener('click', (ev) => ev.stopPropagation());
+    statusMenuClose = () => {
+      menu.remove();
+      statusMenuClose = null;
+      // Ticking Reading or Finished can fill in a date: show it.
+      if (changed && view === 'detail' && currentId === g.id) renderDetail(g.id, { noAuto: true });
+    };
   });
-  return sel;
+  return btn;
+}
+
+let statusMenuClose = null;
+function closeStatusMenu() { if (statusMenuClose) statusMenuClose(); }
+document.addEventListener('click', closeStatusMenu);
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape' || !statusMenuClose) return;
+  e.stopImmediatePropagation(); // Escape closes the menu only (it isn't also "Back")
+  closeStatusMenu();
+}, true);
+window.addEventListener('blur', closeStatusMenu);
+
+/** A game's statuses (several, like VNDB's labels), main one first. */
+function statusesOf(g) {
+  if (Array.isArray(g.statuses)) return g.statuses;
+  return g.status ? [g.status] : [];
 }
 
 /** Pick a save folder by hand and add it. Returns true if one was added. */

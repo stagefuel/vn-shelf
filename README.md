@@ -52,8 +52,9 @@ You pick one on first run, and the same one on every PC:
     platforms
   - tags, with spoiler tags hidden unless you choose to show them
 - **Notes:** a notes box on each game that saves as you type and syncs to your other PCs.
-- **Reading status:** Plan to read, Reading, On hold, Finished, Dropped, with a sidebar filter. It's
-  set to Reading automatically when you first play. The statuses match VNDB's list labels.
+- **Reading status:** Plan to read, Reading, On hold, Finished, Dropped, with a sidebar filter. Like
+  VNDB's list labels, a game can have several (Reading and Finished when re-reading, for example).
+  Reading is added automatically when you first play.
 - **Your rating and dates:** a 1–10 rating and Started / Finished dates on each game. The dates
   fill themselves in when you start and finish.
 - **Titles from the game's window** for games not linked to VNDB, tidied of version numbers and
@@ -63,7 +64,8 @@ You pick one on first run, and the same one on every PC:
 - **Connect your VNDB account** in Settings → VNDB with a token from vndb.org (My Profile →
   Applications). The token stays on that PC, encrypted.
 - **Two-way sync** for every game linked to VNDB:
-  - reading status ↔ Playing / Finished / Stalled / Dropped / Wishlist
+  - reading statuses ↔ Playing / Finished / Stalled / Dropped / Wishlist, each label on its own
+    (ticking one never removes another)
   - categories ↔ your own VNDB labels with the same name
   - your rating and Started / Finished dates
 
