@@ -4,7 +4,9 @@ All notable changes to VN Shelf. Download any version from the
 [Releases page](https://github.com/stagefuel/vn-shelf/releases). From 0.3.0 on, VN Shelf can
 update itself (Settings → Updates).
 
-## Unreleased
+## 0.13.0
+
+My List, Japanese titles with the Japanese interface, and game page fixes.
 
 ### Changed
 - "Your VNDB list" is now **My List**, with a count in the sidebar like the other entries.
