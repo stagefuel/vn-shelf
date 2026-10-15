@@ -4,7 +4,9 @@ All notable changes to VN Shelf. Download any version from the
 [Releases page](https://github.com/stagefuel/vn-shelf/releases). From 0.3.0 on, VN Shelf can
 update itself (Settings → Updates).
 
-## Unreleased
+## 0.14.0
+
+Archive downloads, list views, My order, a sort for each view, status ribbons and automatic updates.
 
 ### New
 - **List views for the library.** The switch at the top right of the library (next to Sort by) has
