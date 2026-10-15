@@ -946,6 +946,20 @@ async function archiveState() {
   };
 }
 
+/**
+ * The server refused the token (revoked, account gone, no access any more): this PC is signed out.
+ * Everything about the archive disappears from the window until you sign in again.
+ */
+async function archiveSignedOut() {
+  if (archiveQueue) for (const j of archiveQueue.jobs) if (j.abort) j.abort.abort();
+  archiveToken.clear();
+  archiveIndexCache = null;
+  await fs.promises.rm(archiveFile('archive-index.json'), { force: true }).catch(() => {});
+  await config.set({ archive: { ...(config.data.archive || {}), index: null, count: 0 } });
+  archiveQueue = null;
+  send('archive-state', { connected: false, count: 0 });
+}
+
 async function archiveIndex({ fresh = false } = {}) {
   const client = archiveClient();
   if (!client) return null;
@@ -958,9 +972,14 @@ async function archiveIndex({ fresh = false } = {}) {
     if (!where) throw Object.assign(new Error('find'), { code: 'find' });
     index = await client.fetchIndex(where);
   } catch (e) {
-    if (e.code === 'denied' && where) throw e;
-    where = await client.findIndex(); // moved, or not looked up yet
-    index = await client.fetchIndex(where);
+    if (e.code === 'denied') { await archiveSignedOut(); throw e; }
+    try {
+      where = await client.findIndex(); // moved, or not looked up yet
+      index = await client.fetchIndex(where);
+    } catch (e2) {
+      if (e2.code === 'denied') await archiveSignedOut();
+      throw e2;
+    }
     await config.set({ archive: { ...config.data.archive, index: where } });
   }
   index.source = where.source;
@@ -1020,6 +1039,7 @@ async function setUpArchiveQueue() {
     client, file: archiveFile('archive-downloads.json'),
     onChange: (list) => send('archive-downloads', list),
     onDone: (job) => { installDownloaded(job).catch(() => {}); return Promise.resolve(); },
+    onDenied: () => { archiveIndex({ fresh: true }).catch(() => {}); }, // signs out if the token is no good
   }).load();
 }
 
@@ -1875,8 +1895,16 @@ const api = {
     archiveToken.save({ token: c.token, tokenName: c.tokenName });
     await config.set({ archive: { ...(config.data.archive || {}), server: c.server, username: c.username, index: null, count: 0 } });
     archiveIndexCache = null;
+    try {
+      await archiveIndex({ fresh: true });
+    } catch (e) {
+      // Signed in, but nothing to show (no index, or no access to it): don't stay half connected.
+      await archive.revoke(c.server, c.token, c.tokenName).catch(() => false);
+      archiveToken.clear();
+      archiveIndexCache = null;
+      throw e;
+    }
     await setUpArchiveQueue();
-    await archiveIndex({ fresh: true });
     return archiveState();
   },
 
@@ -2186,6 +2214,7 @@ app.whenReady().then(async () => {
   if (config.data.startWithSystem) applyStartWithSystem(true).catch(() => {});
   await createWindow();
   setUpArchiveQueue().catch(() => {});
+  setTimeout(() => { if (archiveClient()) archiveIndex({ fresh: true }).catch(() => {}); }, 5000);
   setTimeout(() => autoUpload().catch(() => {}), 4000);
   setTimeout(() => publishSettings().catch(() => {}), 8000);
   setInterval(() => autoUpload().catch(() => {}), 5 * 60 * 1000);

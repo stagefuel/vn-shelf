@@ -972,7 +972,7 @@ async function loadArchive({ fresh = false } = {}) {
 
 /** VNDB ids in the archive → item, for the ↓ buttons on My List. */
 function archiveFor(vid) {
-  return archiveData && vid ? archiveData.items.find((i) => i.vids.includes(vid)) : null;
+  return setup.archive && setup.archive.connected && archiveData && vid ? archiveData.items.find((i) => i.vids.includes(vid)) : null;
 }
 
 const JOB_TEXT = () => ({
@@ -1116,6 +1116,19 @@ vns.on('archive-downloads', (list) => {
   renderSidebar();
 });
 
+// Signed out by the server (token revoked or refused): hide everything about the archive.
+vns.on('archive-state', (st) => {
+  setup.archive = st;
+  if (st.connected) return;
+  archiveData = null;
+  archiveJobs = [];
+  replaceKids($('#archiveView'));
+  if (view === 'archive') showHome();
+  else if (view === 'vndb') renderVndbList({ fresh: false });
+  else if (view === 'library') renderGrid();
+  renderSidebar();
+});
+
 /** Settings → Archive: connect with your login (only a token is kept), where downloads go, 7-Zip. */
 function archivePane() {
   const el = h('div', {});
@@ -1153,6 +1166,7 @@ function archivePane() {
           setup.archive = { connected: false };
           archiveData = null;
           archiveJobs = [];
+          replaceKids($('#archiveView'));
           if (view === 'archive') showHome();
           renderSidebar();
           draw();

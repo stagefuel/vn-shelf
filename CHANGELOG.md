@@ -32,7 +32,9 @@ update itself (Settings → Updates).
   that keeps a VN index (`vnshelf-index.json`), connect in **Settings → Archive** with your username
   and password. VN Shelf makes an API token for this PC and keeps only that (encrypted, never
   synced); the password isn't stored. Then:
-  - **Archive** in the sidebar lists the server's VNs with covers. Search them, or show only those
+  - **Archive** in the sidebar (shown only while you're signed in) lists the server's VNs with
+    covers. If the server stops accepting this PC's token, VN Shelf signs out and the Archive goes
+    away until you sign in again. Search them, or show only those
     not in your library or on My List.
   - **↓** downloads one at a time, with pause and resume. An interrupted download carries on where
     it stopped.

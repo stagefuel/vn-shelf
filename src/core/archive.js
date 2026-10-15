@@ -148,8 +148,9 @@ class ArchiveClient {
  * Job states: queued, downloading, paused, done, error.
  */
 class DownloadQueue {
-  constructor({ client, file, onChange = () => {}, onDone = async () => {} }) {
+  constructor({ client, file, onChange = () => {}, onDone = async () => {}, onDenied = () => {} }) {
     this.client = client;
+    this.onDenied = onDenied;
     this.file = file;
     this.onChange = onChange;
     this.onDone = onDone;
@@ -254,6 +255,7 @@ class DownloadQueue {
       delete j.abort;
       if (j.state === 'downloading') { j.state = 'error'; j.error = e.message; }
       this.changed();
+      if (e.code === 'denied') this.onDenied(e);
     } finally {
       this.active = null;
       this.pump();

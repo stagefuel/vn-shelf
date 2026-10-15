@@ -88,6 +88,10 @@ async function until(what, fn, ms = 30000) {
     await page.setViewportSize({ width: 1280, height: 820 });
     await page.waitForSelector('#sidebar .navitem');
 
+    // ---- before signing in, nothing about the archive shows
+    result.hiddenBeforeSignIn = !(await page.locator('#sidebar .navitem:has-text("Archive")').count())
+      && await page.evaluate(() => !document.querySelector('#archiveView .card, .downloads'));
+
     // ---- connect: a wrong password is refused; the right one makes a token and finds the index
     await page.click('#settingsBtn');
     await page.click('.tab[data-tab="archive"]');
@@ -162,8 +166,40 @@ async function until(what, fn, ms = 30000) {
     await page.click('.tab[data-tab="archive"]');
     await page.click('.tabpane[data-tab="archive"] button:has-text("Disconnect")');
     await until('archive gone', () => page.locator('#sidebar .navitem:has-text("Archive")').count().then((n) => n === 0));
+    await page.click('#dlg button:has-text("Cancel")');
     result.disconnected = !fs.existsSync(path.join(userData, 'archive-token.json'));
     result.tokenRevoked = fbq.tokens.size === 0;
+    result.noArchiveWhenSignedOut = await page.evaluate(() => !document.querySelector('#archiveView .card') && !/Archive/.test(document.querySelector('#sidebar').textContent));
+
+    // ---- a token the server stops accepting signs this PC out: the archive disappears
+    await page.click('#settingsBtn');
+    await page.click('.tab[data-tab="archive"]');
+    await page.fill('#archServer', fbqSrv.url);
+    await page.fill('#archUser', 'reader');
+    await page.fill('#archPass', 'secret pass');
+    await page.click('.tabpane[data-tab="archive"] button:has-text("Connect")');
+    await until('reconnected', () => page.locator('.tabpane[data-tab="archive"]').textContent().then((x) => x.includes('Disconnect')));
+    await page.click('#dlg button:has-text("Cancel")');
+    await page.click('#sidebar .navitem:has-text("Archive")');
+    await until('archive cards again', () => page.locator('#archiveView .card').count());
+    fbq.tokens.clear(); // e.g. the admin removed it
+    await page.click('#archiveView button[title="Refresh"]');
+    await until('signed out by the server', () => page.locator('#sidebar .navitem:has-text("Archive")').count().then((n) => n === 0));
+    result.revokedHidesArchive = await page.evaluate(() => !document.querySelector('#homeView').classList.contains('hidden'));
+
+    // ---- a server without a VN index: the sign-in is undone
+    fbq.files.delete('/vns/vnshelf-index.json');
+    await page.click('#settingsBtn');
+    await page.click('.tab[data-tab="archive"]');
+    await page.fill('#archServer', fbqSrv.url);
+    await page.fill('#archUser', 'reader');
+    await page.fill('#archPass', 'secret pass');
+    await page.click('.tabpane[data-tab="archive"] button:has-text("Connect")');
+    await until('no index toast', () => page.locator('#toasts').textContent().then((x) => /index/i.test(x)));
+    result.noIndexNotConnected = !(await page.locator('.tabpane[data-tab="archive"] button:has-text("Disconnect")').count())
+      && fbq.tokens.size === 0 && !fs.existsSync(path.join(userData, 'archive-token.json'));
+    await page.click('#dlg button:has-text("Cancel")');
+    result.stillHidden = !(await page.locator('#sidebar .navitem:has-text("Archive")').count());
     await page.keyboard.press('Escape');
 
     console.log(JSON.stringify(result, null, 1));
