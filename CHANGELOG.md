@@ -24,7 +24,6 @@ My List, Japanese titles with the Japanese interface, and game page fixes.
 ### Changed
 - "Your VNDB list" is now **My List**, with a count in the sidebar like the other entries.
 - Settings keeps the same size on every tab; longer tabs scroll under the tabs.
-- The hidden Umineko option moved to Settings → Games & tools.
 - With the Japanese interface, the library, Home, My List and related/staff lists show each game's
   Japanese title when one is known (and sort by it); the English title moves to the second line.
 - Game pages: Characters on the left and Related on the right, always.
