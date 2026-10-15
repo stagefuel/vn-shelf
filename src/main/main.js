@@ -1020,6 +1020,15 @@ async function installDownloaded(job) {
     const match = job.vids && job.vids[0] ? await vndb.bestMatch(job.vids[0]).catch(() => null) : null;
     const [r] = await api.importGames([{ exe: pick.exe, dir: pick.dir, title: job.title, match }]);
     if (!r || r.error) throw new Error((r && r.error) || 'Couldn\'t add the game.');
+    if (job.part) {
+      // Parts released separately stay separate games, named with their part (VNDB has one title
+      // for all of them). Set by hand-style, so a VNDB refresh leaves it.
+      const g = await library.get(r.id);
+      await library.update(r.id, {
+        title: `${g.title} ${job.part}`, titleAlt: g.titleAlt ? `${g.titleAlt} ${job.part}` : '', titleSource: 'user',
+      });
+      send('games-changed');
+    }
     job.state = 'installed';
     job.gameId = r.id;
     notify(job.title, mainText('archiveReadyBody'));

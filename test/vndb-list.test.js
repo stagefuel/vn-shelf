@@ -304,3 +304,53 @@ test('fetchCovers: the main cover, then each release\'s front and digital covers
   assert.deepStrictEqual(covers.map((c) => c.url.match(/(\d+)\.jpg/)[1]), ['1', '4', '5', '2']);
   assert.strictEqual(covers[1].lang, 'ja');
 });
+
+test('vndb list: separately released parts on one VNDB entry sync as one VN', async () => {
+  const at = (d) => `2026-10-${d}T00:00:00.000Z`;
+  const s = setup({ games: [
+    { id: 'p1', vndbId: 'v9', title: 'SM 紅血の紋章', statuses: ['finished'], status: 'finished', started: '2026-01-01', finished: '2026-02-01', vote: 80, listEditedAt: at('01') },
+    { id: 'p2', vndbId: 'v9', title: 'SM 殉教者たち', statuses: [], status: '', vote: 90, listEditedAt: at('05') },
+  ] });
+  // Part 1 finished, part 2 not started: the VN is being read; the newest rating counts.
+  await s.run({ full: true });
+  let e = s.fake.entry('v9');
+  assert.deepStrictEqual(e.labels, [1, 7], 'Playing (plus Voted), not Finished');
+  assert.strictEqual(e.vote, 90);
+  assert.strictEqual(e.started, '2026-01-01');
+  assert.strictEqual(e.finished, null);
+  assert.deepStrictEqual(s.lib.get('p1').statuses, ['finished'], 'each part keeps its own status');
+  assert.deepStrictEqual(s.lib.get('p2').statuses, []);
+  assert.strictEqual(s.lib.get('p1').vote, 80, 'and its own rating');
+  // Both finished: Finished, with the last finish date.
+  s.lib.set('p2', { ...s.lib.get('p2'), statuses: ['finished'], status: 'finished', started: '2026-03-01', finished: '2026-04-01', listEditedAt: at('06') });
+  await s.run();
+  e = s.fake.entry('v9');
+  assert.deepStrictEqual(e.labels, [2, 7]);
+  assert.strictEqual(e.finished, '2026-04-01');
+  assert.strictEqual(e.started, '2026-01-01');
+  // A change on VNDB applies to every part.
+  s.fake.setEntry('v9', { labels: [4, 7], vote: 60, started: '2026-01-01', finished: '2026-04-01' });
+  await s.run();
+  for (const id of ['p1', 'p2']) {
+    assert.deepStrictEqual(s.lib.get(id).statuses, ['dropped'], `${id} status from VNDB`);
+    assert.strictEqual(s.lib.get(id).vote, 60, `${id} rating from VNDB`);
+  }
+  // Nothing changed since: nothing is sent.
+  const before = s.fake.requests.filter((r) => r.method === 'PATCH').length;
+  await s.run();
+  assert.strictEqual(s.fake.requests.filter((r) => r.method === 'PATCH').length, before);
+});
+
+test('vndb list: combined view of parts', () => {
+  const v = (statuses, extra = {}) => ({ statuses, labels: [], vote: null, started: '', finished: '', ...extra });
+  assert.deepStrictEqual(vl.combinedView([v(['finished']), v([])], [0, 0]).statuses, ['playing']);
+  assert.deepStrictEqual(vl.combinedView([v(['finished']), v(['finished'])], [0, 0]).statuses, ['finished']);
+  assert.deepStrictEqual(vl.combinedView([v(['wishlist']), v([])], [0, 0]).statuses, ['wishlist']);
+  assert.deepStrictEqual(vl.combinedView([v(['playing']), v(['wishlist'])], [0, 0]).statuses, ['playing']);
+  assert.deepStrictEqual(vl.combinedView([v([]), v([])], [0, 0]).statuses, []);
+  const c = vl.combinedView([v(['finished'], { labels: ['A'], vote: 50, started: '2026-02-01', finished: '2026-03-01' }), v(['playing'], { labels: ['B'], vote: 70, started: '2026-01-15' })], [2, 1]);
+  assert.deepStrictEqual(c.labels, ['A', 'B']);
+  assert.strictEqual(c.vote, 50, 'the part edited last');
+  assert.strictEqual(c.started, '2026-01-15');
+  assert.strictEqual(c.finished, '', 'not every part finished');
+});

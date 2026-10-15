@@ -6,6 +6,16 @@ update itself (Settings → Updates).
 
 ## Unreleased
 
+### New
+- **Parts of one VN sync as one.** When several games in your library are on the same VNDB entry
+  (parts released separately, such as Schwarzesmarken 紅血の紋章 and 殉教者たち), they stay separate
+  games but sync to your VNDB list together:
+  - Reading status: Playing while you're partway through, Finished only once every part is.
+  - Rating: the part you rated last. Started: the earliest part's. Finished: the last part's.
+  - A change made on VNDB applies to every part.
+- Parts downloaded from an archive are named with their part, for example
+  "Schwarzesmarken 紅血の紋章".
+
 ### Changed
 - Archive: each version or part of a VN downloads into its own folder, named after it (for example
   "SWAN SONG (SWAN SONG HD)").

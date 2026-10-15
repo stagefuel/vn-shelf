@@ -67,6 +67,7 @@ async function until(what, fn, ms = 20000) {
   });
   const cv = (n, type) => ({ url: `https://t.vndb.org/cv/${n}.jpg`, thumbnail: px, type, sexual: 0 });
   fake.vns.set('v11', { title: 'Linked Game', image: cv(1) });
+  fake.vns.set('v77', { title: 'Another Work' }); // for the late-match check (not v11: two games on one entry sync as parts)
   fake.releases.set('v11', [{ engine: 'SiglusEngine', official: true, platforms: ['win'], languages: [{ lang: 'ja' }], images: [cv(2, 'pkgfront'), cv(3, 'pkgback')] }]);
   fake.characters.set('v11', [
     { id: 'c1', name: 'Heroine', original: 'ヒロイン', vns: [{ id: 'v11', role: 'primary', spoiler: 0 }], traits: [{ id: 'i1', name: 'Kind', group_name: 'Personality', spoiler: 0 }] },
@@ -227,7 +228,7 @@ async function until(what, fn, ms = 20000) {
     // ---- picking a match, then leaving for another game before it's applied, must not pull you back
     fake.slowInfoMs = 3000;
     await page.click('button:has-text("Find on VNDB")');
-    await page.fill('#dlg input[type=text]', 'v11');
+    await page.fill('#dlg input[type=text]', 'v77');
     await page.click('#dlg button:has-text("Search")');
     await page.click('#dlg .vnres >> nth=0');
     await page.evaluate(() => openDetail('wanted-bbbbbb'));

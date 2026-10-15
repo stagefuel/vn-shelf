@@ -247,6 +247,49 @@ function mergeSet(L, R, B) {
 
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
+/**
+ * Several library games on one VNDB entry (parts released separately, e.g. Schwarzesmarken 紅血の紋章
+ * and 殉教者たち) sync as one VN:
+ *   status   Playing while any part is being read or some but not all are finished; Finished only
+ *            when every part is; other statuses (Stalled, Dropped, Wishlist) from any part
+ *   labels   every part's
+ *   rating   the part edited most recently
+ *   dates    the earliest start; the last finish, once every part is finished
+ */
+function combinedView(views, editedAt) {
+  const all = (st) => views.every((v) => v.statuses.includes(st));
+  const anyStarted = views.some((v) => v.statuses.length || v.started);
+  const statuses = new Set(views.flatMap((v) => v.statuses));
+  if (!all('finished')) {
+    statuses.delete('finished');
+    if (views.some((v) => v.statuses.includes('finished') || v.statuses.includes('playing'))) { statuses.add('playing'); statuses.delete('wishlist'); }
+  }
+  const labels = new Map();
+  for (const v of views) for (const n of v.labels) if (!labels.has(lc(n))) labels.set(lc(n), n);
+  const byEdit = views.map((v, i) => [v, editedAt[i] || 0]).sort((a, b) => b[1] - a[1]);
+  const vote = (byEdit.find(([v]) => v.vote) || [{ vote: null }])[0].vote;
+  const starts = views.map((v) => v.started).filter(Boolean).sort();
+  const ends = views.map((v) => v.finished).filter(Boolean).sort();
+  return {
+    statuses: anyStarted || statuses.size ? cleanStatuses([...statuses]) : [],
+    labels: sortNames([...labels.values()]),
+    vote,
+    started: starts[0] || '',
+    finished: all('finished') && ends.length ? ends[ends.length - 1] : '',
+  };
+}
+
+/** One part's new view: what changed between the combined view and the merged one, applied to it. */
+function partTarget(own, combined, M) {
+  const t = { ...own, statuses: [...own.statuses], labels: [...own.labels] };
+  if (!same(M.statuses, combined.statuses)) t.statuses = [...M.statuses];
+  const added = M.labels.filter((n) => !combined.labels.some((x) => lc(x) === lc(n)));
+  const removed = combined.labels.filter((n) => !M.labels.some((x) => lc(x) === lc(n)));
+  t.labels = sortNames([...t.labels.filter((n) => !removed.some((x) => lc(x) === lc(n))), ...added.filter((n) => !t.labels.some((x) => lc(x) === lc(n)))]);
+  for (const f of FIELDS) if (M[f] !== combined[f]) t[f] = M[f];
+  return t;
+}
+
 /** The PATCH body that turns entry view R into M, or null if nothing changes. */
 function patchBody(M, R, custom) {
   const body = {};
@@ -313,24 +356,35 @@ async function syncList({ client, user, canWrite, games, cache, full = false, up
   let pulled = 0;
   let pushed = 0;
   const errors = [];
+  // Games on the same VNDB entry (separately released parts) sync together, as one VN.
+  const groups = new Map();
   for (const game of games) {
-    const vid = game.vndbId;
-    if (!vid) continue;
-    const entry = entries[vid] || null;
-    // A blacklisted VN is left alone.
-    if (entry && (entry.labels || []).some((l) => (l.id || l) === BLACKLIST)) continue;
+    if (!game.vndbId) continue;
+    if (!groups.has(game.vndbId)) groups.set(game.vndbId, []);
+    groups.get(game.vndbId).push(game);
+  }
+  const baseOf = (game) => {
     const sync = (game.vndbSync && game.vndbSync[user]) || null;
     let B = sync ? sync.base : null;
     if (B && !Array.isArray(B.statuses)) B = { ...B, statuses: B.status ? [B.status] : [] }; // saved by 0.8.0
-    const L = localView(game, custom);
+    return { B, at: sync ? Date.parse(sync.at) || 0 : 0 };
+  };
+  for (const [vid, parts] of groups) {
+    const entry = entries[vid] || null;
+    // A blacklisted VN is left alone.
+    if (entry && (entry.labels || []).some((l) => (l.id || l) === BLACKLIST)) continue;
+    const own = parts.map((g) => localView(g, custom));
+    const edited = parts.map((g) => Date.parse(g.listEditedAt || g.statusAt || 0) || 0);
+    const L = parts.length > 1 ? combinedView(own, edited) : own[0];
+    // The agreed state: the same on every part (the newest one, if they ever differ).
+    const B = parts.map(baseOf).sort((a, b) => b.at - a.at).map((x) => x.B).find(Boolean) || null;
     const R = remoteView(entry, custom);
     if (!B && isEmpty(L) && isEmpty(R)) continue;
-    const localAt = Date.parse(game.listEditedAt || game.statusAt || 0) || 0;
+    const localAt = Math.max(...edited);
     const remoteAt = entry ? (entry.lastmod || 0) * 1000 : 0;
     const M = merge(L, R, B, { localAt, remoteAt });
     const rawIds = entry ? (entry.labels || []).map((l) => l.id || l) : [];
     const body = canWrite ? patchBody(M, R, custom) : null;
-    const lp = localPatch(game, M, L, custom);
     // A date cleared here can't be cleared on VNDB: remember VNDB's date as agreed, so it isn't sent
     // again and doesn't come back here, until either side changes it.
     let base = { ...M };
@@ -351,20 +405,28 @@ async function syncList({ client, user, canWrite, games, cache, full = false, up
         };
       } catch (e) {
         if (e.code === 'bad-token' || e.code === 'offline') throw e;
-        errors.push({ id: game.id, title: game.title, message: e.message });
+        errors.push({ id: parts[0].id, title: parts[0].title, message: e.message });
         log(e);
         base = B; // try again next time
       }
     } else if (!canWrite) {
       base = M;
     }
-    const baseChanged = !same(base, B);
-    if (Object.keys(lp).length || baseChanged) {
-      const vndbSync = { ...(game.vndbSync || {}) };
-      if (base) vndbSync[user] = { base, at: new Date().toISOString() };
-      await update(game.id, { ...lp, vndbSync });
-      if (Object.keys(lp).length) pulled++;
+    let changedHere = false;
+    for (let i = 0; i < parts.length; i++) {
+      const game = parts[i];
+      // One game takes the merged view; a part takes only what changed for the VN as a whole.
+      const target = parts.length > 1 ? partTarget(own[i], L, M) : M;
+      const lp = localPatch(game, target, own[i], custom);
+      const B0 = baseOf(game).B;
+      if (Object.keys(lp).length || !same(base, B0)) {
+        const vndbSync = { ...(game.vndbSync || {}) };
+        if (base) vndbSync[user] = { base, at: new Date().toISOString() };
+        await update(game.id, { ...lp, vndbSync });
+        if (Object.keys(lp).length) changedHere = true;
+      }
     }
+    if (changedHere) pulled++;
   }
   cache.entries = entries;
   cache.lastmod = lastmod;
@@ -403,6 +465,7 @@ function today(d = new Date()) {
 }
 
 module.exports = {
+  combinedView, partTarget,
   VndbListClient, VndbError, syncList, listOnly, merge, localView, remoteView, patchBody, localPatch,
   customLabels, statusOf, statusesOf, statusesOfLabels, primaryStatus, cleanStatuses, cleanVote, cleanDate, today, STATUS_LABELS, LIST_FIELDS,
 };

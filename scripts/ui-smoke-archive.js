@@ -50,19 +50,24 @@ async function until(what, fn, ms = 30000) {
   execFileSync(sevenZip, ['a', zip, src], { stdio: 'ignore' });
   const zipBuf = fs.readFileSync(zip);
   const iso = crypto.randomBytes(30000);
-  const bigBuf = crypto.randomBytes(3 * 1024 * 1024);
+  // A big part (stored, not compressed, so it downloads slowly enough to pause): a zip with a game in it.
+  const bigExe = crypto.randomBytes(3 * 1024 * 1024);
+  write(path.join(base, 'src', 'ビッグゲーム', 'big.exe'), bigExe);
+  const bigZip = path.join(base, 'src', 'big.zip');
+  execFileSync(sevenZip, ['a', '-mx0', bigZip, path.join(base, 'src', 'ビッグゲーム')], { stdio: 'ignore' });
+  const bigBuf = fs.readFileSync(bigZip);
   const item = (p, kind, title, vids, files, extra = {}) => ({ path: p, kind, group: p.split('/')[0], title, vids, size: files.reduce((s, f) => s + f[1], 0),
     files: files.map(([fp, size]) => ({ path: fp, size })), ...extra });
   const index = { version: 1, generated: '2026-10-15T00:00:00Z', items: [
     item('Brand/ゲームA', 'folder', 'ゲームA', ['v501'], [['Brand/ゲームA/gamea.zip', zipBuf.length]]),
     item('Brand/Disc Game', 'folder', 'ディスクゲーム', ['v502'], [['Brand/Disc Game/DISC.ISO', iso.length]], { edition: '初回限定版' }),
-    item('Other/Big Game', 'folder', 'ビッグゲーム', ['v503'], [['Other/Big Game/big.bin', bigBuf.length]], { part: '前編' }),
+    item('Other/Big Game', 'folder', 'ビッグゲーム', ['v503'], [['Other/Big Game/big.zip', bigBuf.length]], { part: '前編' }),
   ] };
   const fbq = new FakeFbq({
     users: { reader: { password: 'secret pass', api: true } },
     files: {
       '/vns/vnshelf-index.json': JSON.stringify(index), '/vns/Brand/ゲームA/gamea.zip': zipBuf,
-      '/vns/Brand/Disc Game/DISC.ISO': iso, '/vns/Other/Big Game/big.bin': bigBuf,
+      '/vns/Brand/Disc Game/DISC.ISO': iso, '/vns/Other/Big Game/big.zip': bigBuf,
     },
   });
   const fbqSrv = await fbq.listen();
@@ -158,8 +163,11 @@ async function until(what, fn, ms = 30000) {
     fbq.slowMs = 0;
     await page.click('.dlrow.paused button[title="Resume"]');
     await until('big done', () => page.evaluate(() => vns.call('archiveDownloads')).then((l) => ['done', 'needs-install', 'installed'].includes((l.find((j) => j.title === 'ビッグゲーム') || {}).state)), 60000);
-    result.bigIntact = Buffer.compare(fs.readFileSync(path.join(downloads, 'ビッグゲーム 前編', 'big.bin')), bigBuf) === 0;
-    result.resumedWithRange = fbq.requests.some((r) => r.query.file === '/vns/Other/Big Game/big.bin' && r.range);
+    await until('big installed', () => page.evaluate(() => vns.call('archiveDownloads')).then((l) => (l.find((j) => j.title === 'ビッグゲーム') || {}).state === 'installed'), 60000);
+    result.bigIntact = Buffer.compare(fs.readFileSync(path.join(downloads, 'ビッグゲーム 前編', 'ビッグゲーム', 'big.exe')), bigExe) === 0;
+    result.partTitled = await page.evaluate(() => vns.call('listGames')).then((gs) => (gs.find((x) => x.vndbId === 'v503') || {}).title);
+    if (result.partTitled !== 'Big Game 前編') result.partTitled = false;
+    result.resumedWithRange = fbq.requests.some((r) => r.query.file === '/vns/Other/Big Game/big.zip' && r.range);
 
     // ---- disconnect: the entry goes
     await page.click('#settingsBtn');
