@@ -1964,7 +1964,8 @@ const api = {
     const index = await archiveIndex();
     const it = (index.items || []).find((x) => x.path === key);
     if (!it) throw new Error('That VN isn\'t in the archive any more.');
-    const name = safeName(`${it.title}${it.part ? ` ${it.part}` : ''}`);
+    // "SWAN SONG (SWAN SONG HD)", "Schwarzesmarken 紅血の紋章": versions and parts get their own folders.
+    const name = safeName(`${it.title}${it.part ? ` ${it.part}` : it.edition && it.edition !== it.title ? ` (${it.edition})` : ''}`);
     let dest = path.join(archiveDownloadDir(), name);
     for (let n = 2; fs.existsSync(dest) && !archiveQueue.jobs.some((j) => j.dest === dest); n++) dest = path.join(archiveDownloadDir(), `${name} (${n})`);
     archiveQueue.add(it, { source: index.source, dest });

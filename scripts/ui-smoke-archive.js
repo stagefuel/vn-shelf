@@ -144,7 +144,7 @@ async function until(what, fn, ms = 30000) {
     await shot(page, 'a04-info');
     await page.click('#dlg button:has-text("Download")');
     await until('needs install', () => page.locator('.dlrow.needs-install').count());
-    result.discKept = fs.existsSync(path.join(downloads, 'ディスクゲーム', 'DISC.ISO'));
+    result.discKept = fs.existsSync(path.join(downloads, 'ディスクゲーム (初回限定版)', 'DISC.ISO'));
 
     // ---- pause and resume (slow server), carrying on with a byte range
     fbq.slowMs = 40;
