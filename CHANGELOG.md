@@ -4,6 +4,13 @@ All notable changes to VN Shelf. Download any version from the
 [Releases page](https://github.com/stagefuel/vn-shelf/releases). From 0.3.0 on, VN Shelf can
 update itself (Settings → Updates).
 
+## Unreleased
+
+### Fixed
+- Picking a VNDB or IGDB match for a game and then going to another game before it finished
+  applying could pull you back to the first game. A late update now only redraws the game you're
+  looking at.
+
 ## 0.12.0
 
 ### New

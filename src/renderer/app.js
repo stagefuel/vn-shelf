@@ -2254,6 +2254,9 @@ let detailNotes = null; // { id, el }: kept across repaints so typing in it isn'
  * is ever left on screen.
  */
 async function renderDetail(id, opts = {}) {
+  // Only the game you're looking at: a late redraw for a game you've left (after a VNDB/IGDB
+  // match or a sync finishes) must not pull you back to it.
+  if (currentId !== id || view !== 'detail') return;
   const seq = ++detailSeq;
   const view$ = $('#detailView');
   if (view$.dataset.id !== id) {

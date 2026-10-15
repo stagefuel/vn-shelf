@@ -117,7 +117,10 @@ class FakeVndb {
       let data = '';
       req.on('data', (c) => { data += c; });
       req.on('end', async () => {
-        const r = this.handle(req.method, req.url, req.headers, data ? JSON.parse(data) : undefined);
+        const body = data ? JSON.parse(data) : undefined;
+        // Optionally slow down full-info lookups (applying a match), to test late answers.
+        if (this.slowInfoMs && body && /description/.test(body.fields || '')) await new Promise((r) => setTimeout(r, this.slowInfoMs));
+        const r = this.handle(req.method, req.url, req.headers, body);
         const text = await r.text();
         res.writeHead(r.status, { 'Content-Type': 'application/json' });
         res.end(text);

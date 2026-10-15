@@ -183,6 +183,18 @@ async function until(what, fn, ms = 20000) {
     result.igdb = await until('IGDB identity saved', () => { const g = readGame('remote-cccccc'); return g.igdb && g.igdb.id === 4242 ? { title: g.title, released: g.igdb.released } : null; });
     await page.waitForSelector('.hero h1:has-text("Remote Game From IGDB")');
     await shot(page, '03b-igdb-game');
+
+    // ---- picking a match, then leaving for another game before it's applied, must not pull you back
+    fake.slowInfoMs = 3000;
+    await page.click('button:has-text("Find on VNDB")');
+    await page.fill('#dlg input[type=text]', 'v11');
+    await page.click('#dlg button:has-text("Search")');
+    await page.click('#dlg .vnres >> nth=0');
+    await page.evaluate(() => openDetail('wanted-bbbbbb'));
+    await sleep(4500);
+    result.stayed = await page.locator('.hero h1').textContent();
+    fake.slowInfoMs = 0;
+    if (result.stayed !== 'Wanted Game') throw new Error(`a late match pulled the view back: showing ${result.stayed}`);
     await until('one card left', () => page.locator('#vndbView .listcard').count().then((n) => n === 1));
 
     // ---- game page: status → Finished fills the date and goes to VNDB; rating too
