@@ -38,6 +38,8 @@ const importer = require('../core/importer');
 const savesio = require('../core/savesio');
 const tools = require('../core/tools');
 const updater = require('../core/updater');
+const archive = require('../core/archive');
+const unpack = require('../core/unpack');
 
 let win = null;
 let config = null;
@@ -117,10 +119,12 @@ function mainText(key) {
   const lang = config.data.language === 'auto' ? (app.getLocale().startsWith('ja') ? 'ja' : 'en') : config.data.language;
   const ja = {
     open: 'VN Shelf を開く', quit: '終了',
+    archiveInstallBody: 'ダウンロード完了。ディスクイメージやインストーラーは、インストールしてから追加してください。', archiveReadyBody: 'ダウンロードしてライブラリに追加しました。',
     hiddenTitle: 'VN Shelf は実行中です', hiddenBody: 'トレイからセーブの同期を続けます。終了するにはトレイアイコンを右クリックしてください。',
   };
   const en = {
     open: 'Open VN Shelf', quit: 'Quit',
+    archiveInstallBody: 'Downloaded. It\'s a disc image or installer: install it, then add the game.', archiveReadyBody: 'Downloaded and added to your library.',
     hiddenTitle: 'VN Shelf is still running', hiddenBody: 'It keeps your saves in sync from the tray. Right-click the tray icon to quit.',
   };
   return (lang === 'ja' ? ja : en)[key];
@@ -903,6 +907,122 @@ async function vndbMarker() {
 
 // ---------------------------------------------------------------- API
 
+// ---- VN archive (a Filebrowser Quantum server with a VN index)
+// Settings are per PC (config.data.archive); the API token is in archive-token.json, encrypted.
+
+let archiveToken = null; // tokenStore('archive-token.json')
+let archiveQueue = null;
+let archiveIndexCache = null; // { at, index }
+const ARCHIVE_INDEX_MAX_AGE = 10 * 60 * 1000;
+
+function archiveFile(name) { return path.join(app.getPath('userData'), name); }
+
+function archiveClient() {
+  const a = config.data.archive;
+  const tok = archiveToken && archiveToken.load();
+  if (!a || !a.server || !tok) return null;
+  return new archive.ArchiveClient({ server: a.server, token: tok.token });
+}
+
+function archiveDownloadDir() {
+  const a = config.data.archive || {};
+  return a.downloadDir || path.join(app.getPath('documents'), 'VN Shelf downloads');
+}
+
+function safeName(s) {
+  return String(s || 'VN').replace(/[<>:"/\\|?*\x00-\x1f]+/g, ' ').replace(/[. ]+$/, '').replace(/\s+/g, ' ').trim().slice(0, 120) || 'VN';
+}
+
+async function archiveState() {
+  const a = config.data.archive;
+  const connected = !!archiveClient();
+  return {
+    connected,
+    server: a && a.server, username: a && a.username,
+    count: archiveIndexCache && archiveIndexCache.index ? (archiveIndexCache.index.items || []).length : (a && a.count) || 0,
+    downloadDir: archiveDownloadDir(),
+    sevenZip: await unpack.find7z(a && a.sevenZip).catch(() => null),
+    keepArchives: !!(a && a.keepArchives),
+  };
+}
+
+async function archiveIndex({ fresh = false } = {}) {
+  const client = archiveClient();
+  if (!client) return null;
+  if (!archiveIndexCache) archiveIndexCache = await fsu.readJson(archiveFile('archive-index.json'), null);
+  if (!fresh && archiveIndexCache && Date.now() - archiveIndexCache.at < ARCHIVE_INDEX_MAX_AGE) return archiveIndexCache.index;
+  const a = config.data.archive;
+  let where = a.index;
+  let index;
+  try {
+    if (!where) throw Object.assign(new Error('find'), { code: 'find' });
+    index = await client.fetchIndex(where);
+  } catch (e) {
+    if (e.code === 'denied' && where) throw e;
+    where = await client.findIndex(); // moved, or not looked up yet
+    index = await client.fetchIndex(where);
+    await config.set({ archive: { ...config.data.archive, index: where } });
+  }
+  index.source = where.source;
+  archiveIndexCache = { at: Date.now(), index };
+  fsu.writeJson(archiveFile('archive-index.json'), archiveIndexCache).catch(() => {});
+  if ((a.count || 0) !== (index.items || []).length) config.set({ archive: { ...config.data.archive, count: (index.items || []).length } }).catch(() => {});
+  return index;
+}
+
+function jobChanged(j) {
+  if (archiveQueue) archiveQueue.changed();
+  return j;
+}
+
+/** After a download: extract it, then add the game to the library with its VNDB entry. */
+async function installDownloaded(job) {
+  const dir = job.dest;
+  const p = unpack.plan(job.files.map((f) => f.rel));
+  try {
+    if (p.extract.length) {
+      const sz = await unpack.find7z((config.data.archive || {}).sevenZip);
+      if (!sz) { job.state = 'needs-7zip'; return jobChanged(job); }
+      job.state = 'unpacking';
+      jobChanged(job);
+      for (const f of p.extract) {
+        await unpack.extract(sz, path.join(dir, ...f.split('/')), dir, { onProgress: (pct) => { job.unpacked = pct; send('archive-downloads', archiveQueue.list()); } });
+      }
+      if (!(config.data.archive || {}).keepArchives) await unpack.removeArchives(dir, p.extract.map((f) => path.join(...f.split('/'))));
+    }
+    const found = await importer.scan(dir, { maxDepth: 4 });
+    if (!found.length || (p.discs.length && !p.extract.length)) {
+      job.state = 'needs-install';
+      notify(job.title, mainText('archiveInstallBody'));
+      return jobChanged(job);
+    }
+    found.sort((a, b) => b.score - a.score || a.dir.length - b.dir.length);
+    const pick = found[0];
+    const match = job.vids && job.vids[0] ? await vndb.bestMatch(job.vids[0]).catch(() => null) : null;
+    const [r] = await api.importGames([{ exe: pick.exe, dir: pick.dir, title: job.title, match }]);
+    if (!r || r.error) throw new Error((r && r.error) || 'Couldn\'t add the game.');
+    job.state = 'installed';
+    job.gameId = r.id;
+    notify(job.title, mainText('archiveReadyBody'));
+  } catch (e) {
+    job.state = 'install-error';
+    job.error = e.message;
+  }
+  return jobChanged(job);
+}
+
+async function setUpArchiveQueue() {
+  const client = archiveClient();
+  if (archiveQueue) { for (const j of archiveQueue.jobs) if (j.abort) j.abort.abort(); }
+  archiveQueue = null;
+  if (!client) return;
+  archiveQueue = await new archive.DownloadQueue({
+    client, file: archiveFile('archive-downloads.json'),
+    onChange: (list) => send('archive-downloads', list),
+    onDone: (job) => { installDownloaded(job).catch(() => {}); return Promise.resolve(); },
+  }).load();
+}
+
 const api = {
   async getSetup() {
     return {
@@ -911,6 +1031,7 @@ const api = {
       driveAvailable: !!googleAuth,
       googleSignedIn: !!(googleAuth && googleAuth.signedIn()),
       googleEmail: config.data.googleEmail || null,
+      archive: { connected: !!archiveClient(), count: (config.data.archive || {}).count || 0 },
       settings: {
         cloudDir: config.data.cloudDir,
         deviceName: config.data.deviceName || os.hostname(),
@@ -1743,6 +1864,100 @@ const api = {
     return { ...r, uploaded: !!s.ok };
   },
 
+  // ---- VN archive
+
+  async archiveState() { return archiveState(); },
+
+  /** Log in once to make this PC's API token; the password isn't kept. */
+  async archiveConnect({ server, username, password }) {
+    const name = `VN Shelf (${config.data.deviceName || os.hostname()})`;
+    const c = await archive.connect(server, String(username || '').trim(), String(password || ''), { tokenName: name });
+    archiveToken.save({ token: c.token, tokenName: c.tokenName });
+    await config.set({ archive: { ...(config.data.archive || {}), server: c.server, username: c.username, index: null, count: 0 } });
+    archiveIndexCache = null;
+    await setUpArchiveQueue();
+    await archiveIndex({ fresh: true });
+    return archiveState();
+  },
+
+  async archiveDisconnect() {
+    if (archiveQueue) for (const j of archiveQueue.jobs) if (j.abort) j.abort.abort();
+    const tok = archiveToken.load();
+    const a = config.data.archive || {};
+    if (tok && a.server) await archive.revoke(a.server, tok.token, tok.tokenName).catch(() => false);
+    archiveToken.clear();
+    archiveIndexCache = null;
+    await fs.promises.rm(archiveFile('archive-index.json'), { force: true }).catch(() => {});
+    await config.set({ archive: { ...(config.data.archive || {}), index: null, count: 0 } });
+    await setUpArchiveQueue();
+    return archiveState();
+  },
+
+  async archiveSettings(patch = {}) {
+    const a = { ...(config.data.archive || {}) };
+    if (patch.downloadDir !== undefined) a.downloadDir = String(patch.downloadDir || '');
+    if (patch.sevenZip !== undefined) a.sevenZip = String(patch.sevenZip || '');
+    if (patch.keepArchives !== undefined) a.keepArchives = !!patch.keepArchives;
+    await config.set({ archive: a });
+    return archiveState();
+  },
+
+  /** The archive's VNs, each with its cover, whether it's in your library and on your VNDB list. */
+  async archiveItems({ fresh = false } = {}) {
+    const index = await archiveIndex({ fresh });
+    if (!index) return null;
+    const items = index.items || [];
+    const vids = [...new Set(items.flatMap((i) => i.vids || []))];
+    const briefs = (await vndbCached(`archive-briefs-${vids.length}-${index.generated || ''}`, () => vndb.fetchBriefs(vids)).catch(() => null)) || [];
+    const byId = new Map(briefs.map((b) => [b.vndbId, b]));
+    const games = library ? await library.list({ maxAge: STATUS_MAX_AGE }) : [];
+    const inLib = new Map(games.filter((g) => g.vndbId).map((g) => [g.vndbId, g.id]));
+    const cache = config.data.vndb ? (await fsu.readJson(vndbCacheFile(), null)) || {} : {};
+    const onList = new Set(Object.keys(cache.entries || {}));
+    return {
+      generated: index.generated || null,
+      items: items.map((it) => {
+        const b = (it.vids || []).map((v) => byId.get(v)).find(Boolean);
+        const gid = (it.vids || []).map((v) => inLib.get(v)).find(Boolean);
+        return {
+          key: it.path, title: it.title, titleEn: it.titleEn || (b && b.title) || null, group: it.group, kind: it.kind,
+          vids: it.vids || [], igdb: it.igdb || null, edition: it.edition || null, part: it.part || null,
+          size: it.size || 0, fileCount: (it.files || []).length,
+          image: b ? b.image : null, released: b ? b.released : null, developer: b ? b.developer : null,
+          gameId: gid || null, onList: (it.vids || []).some((v) => onList.has(v)),
+        };
+      }),
+    };
+  },
+
+  async archiveDownload(key) {
+    if (!archiveQueue) await setUpArchiveQueue();
+    if (!archiveQueue) throw new Error('Connect to the archive first.');
+    const index = await archiveIndex();
+    const it = (index.items || []).find((x) => x.path === key);
+    if (!it) throw new Error('That VN isn\'t in the archive any more.');
+    const name = safeName(`${it.title}${it.part ? ` ${it.part}` : ''}`);
+    let dest = path.join(archiveDownloadDir(), name);
+    for (let n = 2; fs.existsSync(dest) && !archiveQueue.jobs.some((j) => j.dest === dest); n++) dest = path.join(archiveDownloadDir(), `${name} (${n})`);
+    archiveQueue.add(it, { source: index.source, dest });
+    return archiveQueue.list();
+  },
+
+  async archiveDownloads() { return archiveQueue ? archiveQueue.list() : []; },
+  async archivePause(key) { if (archiveQueue) archiveQueue.pause(key); return api.archiveDownloads(); },
+  async archiveResume(key) {
+    if (!archiveQueue) return [];
+    const j = archiveQueue.jobs.find((x) => x.key === key);
+    if (j && ['needs-7zip', 'install-error'].includes(j.state)) { installDownloaded(j).catch(() => {}); return archiveQueue.list(); }
+    archiveQueue.resume(key);
+    return archiveQueue.list();
+  },
+  async archiveCancel(key) { if (archiveQueue) await archiveQueue.cancel(key); return api.archiveDownloads(); },
+  async archiveClearFinished() {
+    if (archiveQueue) { archiveQueue.jobs = archiveQueue.jobs.filter((j) => !['done', 'installed'].includes(j.state)); archiveQueue.changed(); }
+    return api.archiveDownloads();
+  },
+
   // ---- updates
 
   async checkUpdate() {
@@ -1957,6 +2172,7 @@ app.whenReady().then(async () => {
     });
   }
   vndbToken = tokenStore('vndb-token.json');
+  archiveToken = tokenStore('archive-token.json');
   if (config.data.lastVersion && updater.compareVersions(app.getVersion(), config.data.lastVersion) > 0) justUpdated = app.getVersion();
   if (config.data.lastVersion !== app.getVersion()) config.set({ lastVersion: app.getVersion() }).catch(() => {});
   rebuild();
@@ -1969,6 +2185,7 @@ app.whenReady().then(async () => {
   createTray();
   if (config.data.startWithSystem) applyStartWithSystem(true).catch(() => {});
   await createWindow();
+  setUpArchiveQueue().catch(() => {});
   setTimeout(() => autoUpload().catch(() => {}), 4000);
   setTimeout(() => publishSettings().catch(() => {}), 8000);
   setInterval(() => autoUpload().catch(() => {}), 5 * 60 * 1000);

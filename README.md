@@ -47,6 +47,9 @@ You pick one on first run, and the same one on every PC:
   or finish date, length or time played, or **My order** (drag games where you want them). Each
   category and reading status keeps its own sort.
 - **Status ribbon** on each cover with the game's reading status.
+- **Archive downloads:** connect to a Filebrowser Quantum server that keeps a VN index, browse it
+  with covers, and download one VN at a time (pause/resume). Archives are unpacked with 7-Zip and
+  the game is added already linked to VNDB. Only an API token is kept, on that PC.
 - **Search:** matches titles, aliases, developers, categories and VNDB tags, and suggests matching
   games, tags, developers and categories as you type. Click a tag on any game to list every game
   with it.
@@ -211,6 +214,8 @@ VN Shelf talks to these services, and only for the reasons below:
   have), through VN Shelf's proxy.
 - **GitHub:** to check for and download updates. You can turn this off.
 - **Google:** only if you choose Google Drive mode.
+- **An archive server:** only the one you connect in Settings → Archive, to read its VN index and
+  download what you pick.
 
 Your saves go only to the storage you picked. See [PRIVACY.md](PRIVACY.md).
 
@@ -225,6 +230,7 @@ node scripts/ui-smoke.js shots/             # end-to-end: two PCs, folder mode (
 node scripts/ui-smoke-drive.js shots/       # end-to-end: two PCs, Google Drive mode against a fake Drive
 node scripts/ui-smoke-features.js shots/    # end-to-end: import, tags, categories, notes, tools, export, updates, Japanese
 node scripts/ui-smoke-vndb.js shots/        # end-to-end: VNDB list sync against a stand-in VNDB (no internet needed)
+node scripts/ui-smoke-archive.js shots/     # end-to-end: archive downloads against a stand-in server (needs 7z)
 ```
 
 Set `VNS_EXE` to a packaged `VN Shelf.exe` to run the end-to-end checks against a real build.

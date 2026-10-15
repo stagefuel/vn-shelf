@@ -25,6 +25,10 @@ system and no analytics. The developer never receives any of your data.
   press Check now, and to download an update you choose to install. You can turn the automatic
   check off in Settings → Updates. Only GitHub's public release list is requested; nothing about
   you or your games is sent.
+- **An archive server, only if you connect one** (Settings → Archive). Your username and password
+  are sent to that server once, to make an API token for this computer; VN Shelf then uses the token
+  to read the server's VN index and download the files you choose. The server's owner sees those
+  downloads under your account, as with any download from it.
 - **Programs you add as companion tools** are started on your computer only when you play a game
   you enabled them for.
 
@@ -36,6 +40,8 @@ system and no analytics. The developer never receives any of your data.
 - A VNDB token, if you connect one, is stored the same way on that computer only. It is never
   put in your sync location. Disconnecting in Settings deletes it, and you can also delete the token
   on vndb.org (My Profile → Applications).
+- An archive token, if you connect an archive server, is stored the same way on that computer only.
+  Your password is not stored. Disconnecting in Settings deletes the token on this computer and on the server.
 - Your save files are stored in your own Google Drive, or in whatever folder you chose for syncing.
 - Settings and the game library are stored in the app's folder on your computer and in your
   chosen sync location.

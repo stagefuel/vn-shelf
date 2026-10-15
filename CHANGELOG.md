@@ -28,6 +28,20 @@ update itself (Settings → Updates).
   it was in the tray, it comes back in the tray. On the next start it says which version it updated
   to. The default is still to ask first.
 
+- **Download VNs from an archive server.** If you have an account on a Filebrowser Quantum server
+  that keeps a VN index (`vnshelf-index.json`), connect in **Settings → Archive** with your username
+  and password. VN Shelf makes an API token for this PC and keeps only that (encrypted, never
+  synced); the password isn't stored. Then:
+  - **Archive** in the sidebar lists the server's VNs with covers. Search them, or show only those
+    not in your library or on My List.
+  - **↓** downloads one at a time, with pause and resume. An interrupted download carries on where
+    it stopped.
+  - Archives (.rar, multi-part .rar, .zip, .7z) are unpacked with 7-Zip. The game is then added to
+    your library already linked to its VNDB entry, with its save folder found as with Import
+    folder. Disc images and installers wait for you to install them.
+  - My List cards get a **↓** button for VNs the archive has.
+  - Downloads go to Documents\VN Shelf downloads unless you pick another folder.
+
 ### Fixed
 - Changing a display setting (the library view, dragging a category, Show Not in Library and the
   like) no longer restarts save sync and re-uploads your settings each time. Only storage settings

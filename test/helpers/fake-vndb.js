@@ -68,6 +68,12 @@ class FakeVndb {
       const n = this.names.get(body.filters[2]);
       return this.json(200, { results: n ? [{ id: body.filters[2], ...n }] : [], more: false });
     }
+    if (method === 'POST' && p === '/vn' && body.filters && body.filters[0] === 'or') { // several ids at once
+      const ids = body.filters.slice(1).filter((f) => f[0] === 'id').map((f) => f[2]);
+      const results = ids.map((id) => [id, this.vns.get(id) || (this.entries.get(id) || {}).vn]).filter(([, vn]) => vn)
+        .map(([id, vn]) => ({ id, alttitle: '', released: '2020-01-01', developers: [], image: null, ...vn }));
+      return this.json(200, { results, more: false });
+    }
     if (method === 'POST' && p === '/vn') { // VN lookups by id (no token needed), from the entries' VN info
       const id = body.filters && body.filters[0] === 'id' ? body.filters[2] : null;
       const vn = id && (this.vns.get(id) || (this.entries.get(id) || {}).vn);

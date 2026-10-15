@@ -90,6 +90,18 @@ async function bestMatch(query, { fetchImpl = fetch } = {}) {
   return v ? { ...brief(v), info: info(v) } : null;
 }
 
+/** Title and cover for many VN ids at once (100 per request). */
+async function fetchBriefs(ids, { fetchImpl = fetch } = {}) {
+  const want = [...new Set(ids.map(idFilter).filter(Boolean))];
+  const out = [];
+  for (let i = 0; i < want.length; i += 100) {
+    const chunk = want.slice(i, i + 100);
+    const data = await post({ filters: chunk.length === 1 ? ['id', '=', chunk[0]] : ['or', ...chunk.map((v) => ['id', '=', v])], fields: SEARCH_FIELDS, results: 100 }, fetchImpl);
+    out.push(...(data.results || []).map(brief));
+  }
+  return out;
+}
+
 /** Full info for one VN id. */
 async function fetchInfo(vndbId, { fetchImpl = fetch } = {}) {
   const id = idFilter(vndbId);
@@ -315,6 +327,6 @@ async function fetchCovers(vndbId, { fetchImpl = fetch } = {}) {
 }
 
 module.exports = {
-  search, bestMatch, fetchInfo, downloadImage, parseDescription, info, LENGTHS,
+  search, bestMatch, fetchInfo, fetchBriefs, downloadImage, parseDescription, info, LENGTHS,
   fetchExtras, fetchCharacters, fetchWorks, fetchName, fetchEngines, fetchCovers, pickScreenshots, RELATIONS,
 };

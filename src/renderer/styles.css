@@ -636,3 +636,22 @@ body.has-bg .homehero .bgfade { background: linear-gradient(180deg, color-mix(in
 #grid .card.dropafter .art { box-shadow: 4px 0 0 var(--accent); }
 #grid .lrow.dropbefore { box-shadow: inset 0 2px 0 var(--accent); }
 #grid .lrow.dropafter { box-shadow: inset 0 -2px 0 var(--accent); }
+
+/* Archive: downloads strip and item info */
+#archiveSearch { width: 220px; }
+#archiveView .grid { padding-top: 18px; }
+.downloads { margin: 16px 22px 0; padding: 10px 14px; background: var(--bg-raised); border: 1px solid var(--line); border-radius: var(--radius); display: grid; gap: 8px; }
+.dlhead { display: flex; align-items: center; gap: 10px; }
+.dlhead h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--text-faint); font-weight: 600; margin: 0; }
+.dlrow { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "t b" "s b" "p p"; column-gap: 12px; row-gap: 2px; padding: 6px 0; border-top: 1px solid var(--line); }
+.dltitle { grid-area: t; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dlstate { grid-area: s; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.dlrow .syncbar { grid-area: p; position: relative; left: 0; right: 0; bottom: 0; margin-top: 4px; background: var(--bg-hover); }
+.dlbtns { grid-area: b; display: flex; gap: 6px; align-items: center; }
+.dlrow.installed .dlstate { color: var(--play); }
+.dlrow.error .dlstate, .dlrow.install-error .dlstate, .dlrow.needs-7zip .dlstate { color: var(--warn); }
+.archinfo { display: flex; gap: 16px; align-items: flex-start; }
+.archcover { width: 120px; border-radius: 6px; flex: none; }
+.archinfo dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 12px; margin: 0; }
+.archinfo dt { color: var(--text-faint); }
+.archinfo dd { margin: 0; overflow-wrap: anywhere; }

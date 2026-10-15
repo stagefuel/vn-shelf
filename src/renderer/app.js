@@ -76,7 +76,8 @@ function plural(n, one, many) { return t(n === 1 ? one : many, { n }); }
 function sizeText(bytes) {
   if (bytes < 1024) return t('{n} B', { n: bytes });
   if (bytes < 1024 * 1024) return t('{n} KB', { n: Math.round(bytes / 1024) });
-  return t('{n} MB', { n: (bytes / 1048576).toFixed(1) });
+  if (bytes < 1024 ** 3) return t('{n} MB', { n: (bytes / 1048576).toFixed(1) });
+  return t('{n} GB', { n: (bytes / 1024 ** 3).toFixed(1) });
 }
 
 function openLink(url) { return (e) => { e.preventDefault(); vns.call('openExternal', url); }; }
@@ -371,6 +372,7 @@ function renderSidebar() {
     item(t('All games'), view === 'library' && !filter.category && !filter.tag && !filter.status, () => showLibrary({ category: null, tag: null }), h('span', { class: 'count' }, games.length)),
     setup.vndb && setup.vndb.connected ? item(t('My List'), view === 'vndb', () => showVndbList(),
       listOnlyView && !listOnlyView.loading ? h('span', { class: 'count' }, (listOnlyView.entries || []).length) : null) : null,
+    setup.archive && setup.archive.connected ? item(t('Archive'), view === 'archive', () => showArchive(), archiveNavCount()) : null,
     ...(() => {
       const used = STATUS_ORDER.filter((st) => games.some((g) => statusesOf(g).includes(st)));
       if (!used.length) return [];
@@ -394,6 +396,7 @@ function setView(v) {
   $('#detailView').classList.toggle('hidden', v !== 'detail');
   $('#vndbView').classList.toggle('hidden', v !== 'vndb');
   $('#worksView').classList.toggle('hidden', v !== 'works');
+  $('#archiveView').classList.toggle('hidden', v !== 'archive');
   closeLightbox();
   $('main').scrollTop = 0;
   renderSidebar();
@@ -406,7 +409,7 @@ const nav = { stack: [], index: -1, lastMove: 0 };
 function navState() {
   if (view === 'detail') return { view, id: currentId };
   if (view === 'library') return { view, filter: { ...filter } };
-  if (view === 'vndb') return { view };
+  if (view === 'vndb' || view === 'archive') return { view };
   if (view === 'works') return { view, who: $('#worksView').dataset.who };
   return { view: 'home' };
 }
@@ -435,6 +438,7 @@ async function restoreNav(st) {
   if (st.view === 'detail' && games.some((g) => g.id === st.id)) { currentId = st.id; setView('detail'); await renderDetail(st.id, { noAuto: true }); }
   else if (st.view === 'library') { Object.assign(filter, st.filter || {}); setView('library'); renderGrid(); }
   else if (st.view === 'vndb' && setup.vndb && setup.vndb.connected) { setView('vndb'); renderVndbList(); }
+  else if (st.view === 'archive' && setup.archive && setup.archive.connected) { setView('archive'); renderArchive(); }
   else if (st.view === 'works') { setView('works'); $('#worksView').dataset.who = st.who; renderWorks(st.who); }
   else { setView(games.length ? 'home' : 'library'); if (view === 'home') renderHome(); else renderGrid(); }
   updateBackBtn();
@@ -940,6 +944,239 @@ async function renderWorks(who, name) {
     h('div', { class: 'worksgrid' }, vnGrid(r.works, { sub: (w) => (w.roles || []).map((x) => STAFF_ROLE_TEXT()[x] || x).join(', '), onAdded: () => renderWorks(who, name) })));
 }
 
+// ------------------------------------------------------------------ archive (a VN server with an index)
+
+let archiveData = null; // { items, generated }
+let archiveJobs = [];
+let archiveFilter = { q: '', show: '' };
+let archiveSeq = 0;
+
+function archiveNavCount() {
+  const active = archiveJobs.find((j) => j.state === 'downloading');
+  if (active && active.total) return h('span', { class: 'count' }, `↓ ${Math.floor((active.received / active.total) * 100)}%`);
+  const n = archiveData ? archiveData.items.length : setup.archive && setup.archive.count;
+  return n ? h('span', { class: 'count' }, n) : null;
+}
+
+function showArchive() {
+  setView('archive');
+  renderArchive();
+  pushNav();
+}
+
+async function loadArchive({ fresh = false } = {}) {
+  const r = await call('archiveItems', { fresh }).catch(() => null);
+  if (r) archiveData = r;
+  return archiveData;
+}
+
+/** VNDB ids in the archive → item, for the ↓ buttons on My List. */
+function archiveFor(vid) {
+  return archiveData && vid ? archiveData.items.find((i) => i.vids.includes(vid)) : null;
+}
+
+const JOB_TEXT = () => ({
+  queued: t('Waiting'), downloading: t('Downloading'), paused: t('Paused'), error: t('Stopped'), done: t('Downloaded'),
+  unpacking: t('Unpacking'), installed: t('In library'), 'needs-install': t('Install it, then add it'),
+  'needs-7zip': t('Needs 7-Zip'), 'install-error': t('Couldn\'t unpack'),
+});
+
+function jobFor(key) { return archiveJobs.find((j) => j.key === key); }
+
+async function startArchiveDownload(it) {
+  try {
+    archiveJobs = await call('archiveDownload', it.key);
+    toast(t('Downloading {title}', { title: it.title }), 'good');
+    drawArchive();
+    renderSidebar();
+  } catch { /* toast shown */ }
+}
+
+function downloadsPanel() {
+  if (!archiveJobs.length) return null;
+  const act = (name, key) => async () => { archiveJobs = await call(name, key).catch(() => archiveJobs); drawArchive(); };
+  const finished = archiveJobs.some((j) => ['done', 'installed'].includes(j.state));
+  return h('div', { class: 'downloads' },
+    h('div', { class: 'dlhead' }, h('h2', {}, t('Downloads')), h('div', { class: 'spacer' }),
+      finished ? h('button', { class: 'small ghost', onclick: act('archiveClearFinished') }, t('Clear finished')) : null),
+    archiveJobs.map((j) => {
+      const pct = j.state === 'unpacking' ? (j.unpacked || 0) : j.total ? Math.floor((j.received / j.total) * 100) : 0;
+      const busy = ['queued', 'downloading'].includes(j.state);
+      return h('div', { class: `dlrow ${j.state}` },
+        h('div', { class: 'dltitle' }, j.title, j.part ? h('span', { class: 'dim' }, ` ${j.part}`) : null),
+        h('div', { class: 'dlstate small' }, JOB_TEXT()[j.state] || j.state,
+          ['downloading', 'paused', 'queued'].includes(j.state) && j.total ? ` · ${sizeText(j.received)} / ${sizeText(j.total)}` : '',
+          j.error ? h('span', { class: 'warn' }, ` · ${translateMessage(j.error)}`) : null),
+        ['downloading', 'paused', 'unpacking', 'error'].includes(j.state) ? h('div', { class: 'syncbar' }, h('div', { style: `width:${pct}%` })) : null,
+        h('div', { class: 'dlbtns' },
+          busy ? h('button', { class: 'small', title: t('Pause'), onclick: act('archivePause', j.key) }, '❚❚') : null,
+          ['paused', 'error', 'needs-7zip', 'install-error'].includes(j.state) ? h('button', { class: 'small', title: t('Resume'), onclick: act('archiveResume', j.key) }, '▶') : null,
+          j.state === 'installed' && j.gameId ? h('button', { class: 'small primary', onclick: () => openDetail(j.gameId) }, t('Open')) : null,
+          ['needs-install', 'done', 'install-error', 'needs-7zip'].includes(j.state) ? h('button', { class: 'small', onclick: () => vns.call('openPath', j.dest) }, t('Show folder')) : null,
+          !['installed', 'done', 'needs-install'].includes(j.state) ? h('button', { class: 'small ghost', title: t('Cancel'), onclick: act('archiveCancel', j.key) }, '✕') : null));
+    }));
+}
+
+function archiveCard(it) {
+  const shown = { title: it.titleEn || it.title, titleAlt: it.title };
+  const art = h('div', { class: 'art' },
+    it.image ? h('img', { src: it.image, alt: '', loading: 'lazy', draggable: 'false' }) : h('div', { class: 'placeholder' }, shownTitle(shown)));
+  const job = jobFor(it.key);
+  if (it.gameId) art.append(h('span', { class: 'badge synced' }, t('In library')));
+  else if (job) art.append(h('span', { class: 'badge pending' }, JOB_TEXT()[job.state] || job.state));
+  else if (it.onList) art.append(h('span', { class: 'badge' }, t('On My List')));
+  const dl = !it.gameId && (!job || ['installed', 'error'].includes(job.state)) ? h('button', { class: 'small primary', title: t('Download'), onclick: (ev) => { ev.stopPropagation(); startArchiveDownload(it); } }, `↓ ${sizeText(it.size)}`) : null;
+  return h('div', { class: 'card listcard', onclick: () => (it.gameId ? openDetail(it.gameId) : archiveItemDialog(it)) },
+    art,
+    h('div', { class: 'title' }, shownTitle(shown)),
+    h('div', { class: 'sub' }, [it.group, it.part, it.edition].filter(Boolean).join(' · ')),
+    h('div', { class: 'listbtns' }, dl));
+}
+
+async function archiveItemDialog(it) {
+  const links = [
+    ...it.vids.map((v) => h('a', { href: '#', onclick: openLink(`https://vndb.org/${v}`) }, v)),
+    it.igdb ? h('a', { href: '#', onclick: openLink(`https://www.igdb.com/games/${it.igdb}`) }, `IGDB ${it.igdb}`) : null,
+  ].filter(Boolean);
+  const v = await dialog({
+    title: shownTitle({ title: it.titleEn || it.title, titleAlt: it.title }),
+    text: otherTitle({ title: it.titleEn || it.title, titleAlt: it.title }) || '',
+    body: h('div', { class: 'archinfo' },
+      it.image ? h('img', { src: it.image, alt: '', class: 'archcover' }) : null,
+      h('dl', {},
+        h('dt', {}, t('Size')), h('dd', {}, `${sizeText(it.size)} · ${plural(it.fileCount, '{n} file', '{n} files')}`),
+        it.edition ? [h('dt', {}, t('Edition')), h('dd', {}, it.edition)] : null,
+        it.part ? [h('dt', {}, t('Part')), h('dd', {}, it.part)] : null,
+        h('dt', {}, t('Folder')), h('dd', { class: 'wrap' }, it.key),
+        links.length ? [h('dt', {}, t('Links')), h('dd', {}, links.flatMap((a, i) => (i ? [' · ', a] : [a])))] : null)),
+    buttons: [{ label: t('Close'), value: null, cls: 'ghost' }, { label: `↓ ${t('Download')}`, value: 'go', cls: 'primary' }],
+  });
+  if (v === 'go') startArchiveDownload(it);
+}
+
+async function renderArchive({ fresh = false } = {}) {
+  const seq = ++archiveSeq;
+  archiveJobs = await call('archiveDownloads').catch(() => archiveJobs);
+  if (!archiveData || fresh) {
+    if (!archiveData) replaceKids($('#archiveView'), h('div', { class: 'empty' }, h('p', {}, t('Loading the archive…'))));
+    await loadArchive({ fresh });
+  }
+  if (seq !== archiveSeq || view !== 'archive') return;
+  drawArchive();
+  renderSidebar();
+}
+
+function drawArchive() {
+  if (view !== 'archive') return;
+  const all = archiveData ? archiveData.items : [];
+  const q = archiveFilter.q.trim().toLowerCase();
+  const list = all.filter((it) => (!archiveFilter.show || (archiveFilter.show === 'list' ? it.onList : !it.gameId))
+    && (!q || q.split(/\s+/).every((w) => [it.title, it.titleEn, it.group, it.developer, it.edition, ...it.vids].join(' ').toLowerCase().includes(w))));
+  const search = h('input', { type: 'search', id: 'archiveSearch', placeholder: t('Search the archive'), value: archiveFilter.q });
+  search.addEventListener('input', () => { archiveFilter.q = search.value; drawArchiveGrid(); });
+  const show = h('select', { class: 'sortsel', id: 'archiveShow' },
+    h('option', { value: '', selected: !archiveFilter.show }, t('All')),
+    h('option', { value: 'missing', selected: archiveFilter.show === 'missing' }, t('Not in library')),
+    setup.vndb && setup.vndb.connected ? h('option', { value: 'list', selected: archiveFilter.show === 'list' }, t('On My List')) : null);
+  show.addEventListener('change', () => { archiveFilter.show = show.value; drawArchive(); });
+  const had = document.activeElement && document.activeElement.id === 'archiveSearch';
+  replaceKids($('#archiveView'),
+    h('div', { class: 'libtoolbar' },
+      h('h1', {}, t('Archive')), h('span', { class: 'dim', id: 'archiveCount' }, String(list.length)),
+      h('div', { class: 'spacer' }), search, show,
+      h('button', { class: 'small ghost', title: t('Refresh'), onclick: () => renderArchive({ fresh: true }) }, '⟳')),
+    downloadsPanel(),
+    h('div', { id: 'archiveGrid' }));
+  if (had) { search.focus(); search.setSelectionRange(search.value.length, search.value.length); }
+  drawArchiveGrid(list);
+}
+
+function drawArchiveGrid(pre) {
+  const all = archiveData ? archiveData.items : [];
+  const q = archiveFilter.q.trim().toLowerCase();
+  const list = pre || all.filter((it) => (!archiveFilter.show || (archiveFilter.show === 'list' ? it.onList : !it.gameId))
+    && (!q || q.split(/\s+/).every((w) => [it.title, it.titleEn, it.group, it.developer, it.edition, ...it.vids].join(' ').toLowerCase().includes(w))));
+  if ($('#archiveCount')) $('#archiveCount').textContent = String(list.length);
+  replaceKids($('#archiveGrid'), !archiveData ? h('div', { class: 'empty' }, h('p', {}, t('Couldn\'t load the archive.')))
+    : list.length ? h('div', { class: 'grid' }, list.map(archiveCard)) : h('div', { class: 'empty' }, h('p', {}, t('Nothing matches.'))));
+}
+
+vns.on('archive-downloads', (list) => {
+  const was = archiveJobs;
+  archiveJobs = list;
+  for (const j of list) {
+    const before = was.find((x) => x.key === j.key);
+    if (before && before.state !== j.state && j.state === 'installed') { toast(t('{title} is ready to play.', { title: j.title }), 'good'); loadGames().then(() => { if (view === 'archive') loadArchive().then(drawArchive); }); }
+  }
+  if (view === 'archive') {
+    const panel = downloadsPanel();
+    const old = $('#archiveView .downloads');
+    if (old && panel) old.replaceWith(panel); else drawArchive();
+  }
+  renderSidebar();
+});
+
+/** Settings → Archive: connect with your login (only a token is kept), where downloads go, 7-Zip. */
+function archivePane() {
+  const el = h('div', {});
+  const field = (label, ...kids) => h('div', { class: 'field' }, label ? h('div', { class: 'lbl' }, label) : null, ...kids);
+  const draw = async () => {
+    const st = await vns.call('archiveState').catch(() => ({ connected: false }));
+    if (!st.connected) {
+      const server = h('input', { type: 'text', id: 'archServer', placeholder: 'https://', value: st.server || '', spellcheck: 'false' });
+      const user = h('input', { type: 'text', id: 'archUser', value: st.username || '', autocomplete: 'off', spellcheck: 'false' });
+      const pass = h('input', { type: 'password', id: 'archPass', autocomplete: 'off' });
+      const go = h('button', { type: 'button', class: 'small primary', onclick: async () => {
+        go.disabled = true;
+        try {
+          await call('archiveConnect', { server: server.value, username: user.value, password: pass.value });
+          setup.archive = { connected: true };
+          archiveData = null;
+          await loadArchive();
+          renderSidebar();
+          draw();
+        } catch { go.disabled = false; }
+      } }, t('Connect'));
+      pass.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); go.click(); } });
+      replaceKids(el,
+        field(t('Server'), server),
+        field(t('Username'), user),
+        field(t('Password'), h('div', { class: 'val' }, pass, go)),
+        h('div', { class: 'faint small' }, t('Only a token is kept, on this PC.')));
+      return;
+    }
+    const dir = h('div', { class: 'grow wrap' }, st.downloadDir);
+    replaceKids(el,
+      field(t('Account'), h('div', { class: 'val wrap' }, h('div', { class: 'grow' }, h('strong', {}, st.username), h('span', { class: 'dim' }, ` · ${st.server}`)),
+        h('button', { type: 'button', class: 'small ghost', onclick: async () => {
+          await call('archiveDisconnect');
+          setup.archive = { connected: false };
+          archiveData = null;
+          archiveJobs = [];
+          if (view === 'archive') showHome();
+          renderSidebar();
+          draw();
+        } }, t('Disconnect')))),
+      field(t('Download to'), h('div', { class: 'val wrap' }, dir,
+        h('button', { type: 'button', class: 'small', onclick: async () => {
+          const d = await vns.call('pickFolder');
+          if (d) { await call('archiveSettings', { downloadDir: d }); draw(); }
+        } }, t('Change…')))),
+      field('7-Zip', h('div', { class: 'val wrap' },
+        h('div', { class: `grow${st.sevenZip ? '' : ' warn'}` }, st.sevenZip || t('Not found')),
+        h('button', { type: 'button', class: 'small', onclick: async () => {
+          const f = await vns.call('pickFile', t('Find 7z.exe'), [{ name: '7-Zip', extensions: ['exe', '*'] }]);
+          if (f) { await call('archiveSettings', { sevenZip: f }); draw(); }
+        } }, t('Choose…')),
+        st.sevenZip ? null : h('button', { type: 'button', class: 'small ghost', onclick: () => vns.call('openExternal', 'https://www.7-zip.org/') }, '7-zip.org'))),
+      field(null, h('label', { class: 'check' },
+        h('input', { type: 'checkbox', id: 'archKeep', checked: st.keepArchives, onchange: async (e) => { await call('archiveSettings', { keepArchives: e.target.checked }); } }),
+        t('Keep archives after unpacking'))));
+  };
+  draw();
+  return el;
+}
+
 // ------------------------------------------------------------------ your VNDB list
 
 let vndbListFilter = '';
@@ -999,12 +1236,14 @@ function listCard(e, after) {
       after();
     } catch { /* toast shown */ }
   } }, t('Link to “{game}”', { game: e.linkTo.title })) : null;
+  const inArchive = archiveFor(e.vndbId);
+  const fetchBtn = inArchive && !jobFor(inArchive.key) ? h('button', { class: 'small', title: t('Download from the archive'), onclick: (ev) => { ev.stopPropagation(); startArchiveDownload(inArchive); } }, `↓ ${sizeText(inArchive.size)}`) : null;
   return h('div', { class: 'card listcard', title: t('Open on VNDB'), onclick: () => vns.call('openExternal', `https://vndb.org/${e.vndbId}`) },
     art,
     h('div', { class: 'title' }, shownTitle(e)),
     h('div', { class: 'sub' }, (e.statuses || []).map((x, i) => [i ? ', ' : null, h('span', { class: `sdot ${x}` }), STATUS_TEXT()[x]]),
       e.vote ? `${(e.statuses || []).length ? ' · ' : ''}★ ${e.vote / 10}` : null),
-    h('div', { class: 'listbtns' }, link, add));
+    h('div', { class: 'listbtns' }, link, fetchBtn, add));
 }
 
 async function renderVndbList({ fresh = true } = {}) {
@@ -1824,6 +2063,7 @@ async function settingsDialog(first = false) {
       field(null, h('label', { class: 'check' }, statsBox, t('Show play time and when you last played on covers'))),
     ]],
     ['vndb', 'VNDB', [vndbPane()]],
+    ['archive', t('Archive'), [archivePane()]],
     ['about', t('Updates & about'), [
       field(null, h('div', { class: 'aboutline' }, h('strong', {}, 'VN Shelf'), ` ${t('Version {version}', { version: setup.version })}`)),
       field(null, h('div', { class: 'val wrap' }, notes.btn,
@@ -3051,4 +3291,8 @@ window.addEventListener('drop', (e) => {
     renderSidebar();
   } else showHome();
   for (const g of games) refreshStatus(g.id);
+  if (setup.archive && setup.archive.connected) {
+    archiveJobs = await vns.call('archiveDownloads').catch(() => []);
+    loadArchive().then(() => { renderSidebar(); if (view === 'vndb') renderVndbList({ fresh: false }); else if (view === 'library') renderGrid(); });
+  }
 })();
