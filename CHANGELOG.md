@@ -4,6 +4,12 @@ All notable changes to VN Shelf. Download any version from the
 [Releases page](https://github.com/stagefuel/vn-shelf/releases). From 0.3.0 on, VN Shelf can
 update itself (Settings → Updates).
 
+## Unreleased
+
+### Changed
+- Archive: each version or part of a VN downloads into its own folder, named after it (for example
+  "SWAN SONG (SWAN SONG HD)").
+
 ## 0.14.0
 
 Archive downloads, list views, My order, a sort for each view, status ribbons and automatic updates.
