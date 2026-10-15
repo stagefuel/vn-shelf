@@ -13,6 +13,7 @@ class FakeFbq {
     this.sessions = new Map(); // session -> user
     this.tokens = new Map(); // token -> { user, name }
     this.requests = [];
+    this.searchLags = false; // search doesn't know new files yet (like a real server between scans)
     this.slowMs = 0; // delay between chunks, to test pausing
     this.dropAfter = null; // cut a download off after this many bytes (once)
   }
@@ -54,7 +55,22 @@ class FakeFbq {
       this.tokens.set(t, { user: w.user, name: q.name, days: Number(q.days) });
       return send(200, { message: 'here is your token!', token: t });
     }
+    if (u.pathname === '/api/users' && req.method === 'GET') { // a member only sees itself
+      return send(200, [{ username: w.user, scopes: [{ name: this.source, scope: '/VinnieArchive' }] }]);
+    }
+    if (u.pathname === '/api/resources' && req.method === 'GET') { // metadata: exists or not
+      if (q.source !== this.source) return send(403, { status: 403, message: 'no source' });
+      const f = this.files.get(q.path);
+      return f ? send(200, { name: q.path.split('/').pop(), size: f.length, type: 'blob' }) : send(404, { status: 404, message: 'the resource does not exist' });
+    }
+    if (u.pathname === '/api/resources/items') {
+      const dir = q.path.replace(/\/+$/, '');
+      const kids = new Set([...this.files.keys()].filter((k) => k.startsWith(`${dir}/`)).map((k) => k.slice(dir.length + 1).split('/')).filter((x) => x.length > 1).map((x) => x[0]));
+      return send(200, { folders: [...kids] });
+    }
     if (u.pathname === '/api/tools/search') {
+      if (!q.sources) return send(400, { status: 400, message: "'sources' or repeated scope=sourceName:path query parameters are required" });
+      if (!q.sources.split(',').includes(this.source) || this.searchLags) return send(200, []);
       const hits = [...this.files.keys()].filter((p) => p.split('/').pop().includes(q.query))
         .map((p) => ({ path: p.replace(/^\//, ''), type: 'application/json', size: this.files.get(p).length, source: this.source }));
       return send(200, hits);

@@ -54,8 +54,16 @@ test('archive: finds the index and turns its paths into server paths', async () 
   try {
     const { token } = await archive.connect(srv.url, 'reader', 'p@ss wörd');
     const client = new archive.ArchiveClient({ server: srv.url, token });
+    fake.searchLags = true; // found by looking in the top-level folders, without search
     const where = await client.findIndex();
     assert.deepStrictEqual(where, { source: 'Home', path: '/vns/vnshelf-index.json' });
+    assert.ok(!fake.requests.some((r) => r.path === '/api/tools/search'));
+    // Deeper down, only search finds it.
+    fake.searchLags = false;
+    fake.files.set('/a/b/vnshelf-index.json', fake.files.get('/vns/vnshelf-index.json'));
+    fake.files.delete('/vns/vnshelf-index.json');
+    assert.deepStrictEqual(await client.findIndex(), { source: 'Home', path: '/a/b/vnshelf-index.json' });
+    fake.files.set('/vns/vnshelf-index.json', fake.files.get('/a/b/vnshelf-index.json'));
     const index = await client.fetchIndex(where);
     assert.strictEqual(index.items[0].files[0].remote, '/vns/Brand/Game One/data/a.bin');
     await assert.rejects(new archive.ArchiveClient({ server: srv.url, token: 'nope' }).findIndex(), { code: 'denied' });

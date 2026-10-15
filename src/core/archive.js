@@ -80,14 +80,35 @@ class ArchiveClient {
     return res;
   }
 
-  /** Where the index is: searched for in every source this account can see. */
+  /**
+   * Where the index is: at the top of a source or in one of its top-level folders, else wherever
+   * the server's search finds it (search can lag behind new files, so it's the fallback).
+   */
   async findIndex() {
-    const res = await this.get('/api/tools/search', { query: INDEX_NAME });
+    const me = await (await this.get('/api/users', {})).json();
+    const users = Array.isArray(me) ? me : [me];
+    const sources = [...new Set(users.flatMap((u) => (u.scopes || []).map((sc) => sc.name)).filter(Boolean))];
+    if (!sources.length) throw Object.assign(new Error('This account can\'t see any files.'), { code: 'denied' });
+    const exists = async (source, p) => {
+      const res = await this.fetch(`${this.base}/api/resources?${new URLSearchParams({ source, path: p })}`, { headers: this.headers() });
+      if (res.status === 401) throw await failure(res, 'The archive');
+      return res.ok;
+    };
+    for (const source of sources) {
+      if (await exists(source, `/${INDEX_NAME}`)) return { source, path: `/${INDEX_NAME}` };
+      let folders = [];
+      try { folders = ((await (await this.get('/api/resources/items', { source, path: '/', only: 'folders' })).json()).folders || []); } catch { /* can't list: rely on search */ }
+      for (const f of folders.slice(0, 50)) {
+        const p = `/${f}/${INDEX_NAME}`;
+        if (await exists(source, p)) return { source, path: p };
+      }
+    }
+    const res = await this.get('/api/tools/search', { query: INDEX_NAME, sources: sources.join(',') });
     const hits = (await res.json()) || [];
     const hit = hits.filter((h) => path.posix.basename(h.path) === INDEX_NAME)
       .sort((a, b) => a.path.split('/').length - b.path.split('/').length)[0];
     if (!hit) throw Object.assign(new Error('No VN index on this server.'), { code: 'no-index' });
-    return { source: hit.source, path: `/${hit.path.replace(/^\/+/, '')}` };
+    return { source: hit.source || sources[0], path: `/${hit.path.replace(/^\/+/, '')}` };
   }
 
   /** The index, with each item's files turned into server paths. */
