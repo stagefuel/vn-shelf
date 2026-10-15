@@ -16,6 +16,11 @@ system and no analytics. The developer never receives any of your data.
 - **Your VNDB list, only if you connect your VNDB account** (Settings → VNDB). VN Shelf then reads
   your list and its labels and sends VNDB changes to the reading status, labels, rating and
   started/finished dates of the VNs in your library. It never reads or sends your list notes.
+- **IGDB, only when you press Search IGDB instead** in a game's Find dialog. The search text goes
+  to VN Shelf's IGDB proxy (igdb.yumiharigakuen.com), which forwards it to IGDB (igdb.com) and
+  keeps the answer for a day so the same search isn't repeated. The proxy keeps no request logs;
+  your IP address is only held in memory to limit how many searches one person can make per day.
+  Covers come from IGDB's image server. Nothing goes to IGDB automatically.
 - **GitHub (github.com)**, to check for a newer version of VN Shelf when the app starts and when you
   press Check now, and to download an update you choose to install. You can turn the automatic
   check off in Settings → Updates. Only GitHub's public release list is requested; nothing about

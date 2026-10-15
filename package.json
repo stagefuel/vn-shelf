@@ -1,7 +1,7 @@
 {
   "name": "vn-shelf",
   "productName": "VN Shelf",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "description": "A local visual novel library that keeps save files in sync between computers through any synced folder.",
   "main": "src/main/main.js",
   "license": "MIT",

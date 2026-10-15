@@ -17,6 +17,7 @@ const launcher = require('../core/launcher');
 const luna = require('../core/luna');
 const lnk = require('../core/lnk');
 const vndb = require('../core/vndb');
+const igdb = require('../core/igdb');
 const limits = require('../core/limits');
 const { ManifestSyncEngine } = require('../core/manifest-sync');
 const { exclusive, busyGames, isRegistryRule } = require('../core/sync');
@@ -1152,13 +1153,32 @@ const api = {
 
   async searchVndb(q) { return vndb.search(q); },
 
+  /** IGDB, for games VNDB doesn't have. Only from Find… (setting a game's identity by hand). */
+  async searchIgdb(q) { return igdb.search(q); },
+
+  async applyIgdb(id, v) {
+    refuseBlocked(v.title, v.titleAlt);
+    const info = { id: Number(v.igdbId), url: String(v.url || ''), summary: String(v.summary || '').slice(0, 20000), released: String(v.released || ''),
+      platforms: (v.platforms || []).map(String).slice(0, 20), fetchedAt: new Date().toISOString() };
+    // An IGDB game isn't a VNDB entry: drop any VNDB link (and so its list sync) for this game.
+    const g = await library.update(id, { title: v.title, titleAlt: v.titleAlt || '', developer: v.developer || '', vndbId: null, vndb: null, igdb: info, titleSource: 'igdb' });
+    if (v.image && String(v.image).startsWith(igdb.COVER_HOST)) {
+      try {
+        const { buf, ext } = await vndb.downloadImage(v.image);
+        await library.setCoverBuffer(id, buf, ext);
+      } catch { /* keep the details even if the cover fails */ }
+    }
+    send('games-changed');
+    return decorate(await library.get(id) || g);
+  },
+
   async applyVndb(id, v) {
     refuseBlocked(v.title, v.titleAlt);
     let full = v.info ? v : null;
     if (!full) full = await vndb.fetchInfo(v.vndbId).catch(() => null);
     const info = full ? full.info : null;
     refuseBlocked(info && info.aliases);
-    const g = await library.update(id, { title: v.title, titleAlt: v.titleAlt, developer: v.developer, vndbId: v.vndbId, titleSource: 'vndb', ...(info ? { vndb: info } : {}) });
+    const g = await library.update(id, { title: v.title, titleAlt: v.titleAlt, developer: v.developer, vndbId: v.vndbId, igdb: null, titleSource: 'vndb', ...(info ? { vndb: info } : {}) });
     if (v.image) {
       try {
         const { buf, ext } = await vndb.downloadImage(v.image);

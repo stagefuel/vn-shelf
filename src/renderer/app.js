@@ -1271,8 +1271,21 @@ async function vndbDialog(g, isNew) {
       results.replaceChildren(h('div', { class: 'faint' }, t('VNDB search failed: {error}. You can skip this and add a cover yourself.', { error: cleanError(e) })));
       return;
     }
-    if (!list.length) { results.replaceChildren(h('div', { class: 'faint' }, t('No matches. Try the Japanese title or a shorter name.'))); return; }
-    results.replaceChildren(...list.map((v) => vndbResult(v, () => { chosen = v; closeDialog('pick'); })));
+    if (!list.length) { results.replaceChildren(h('div', { class: 'faint' }, t('No matches. Try the Japanese title or a shorter name.')), igdbBtn()); return; }
+    results.replaceChildren(...list.map((v) => vndbResult(v, () => { chosen = v; closeDialog('pick'); })), igdbBtn());
+  };
+  // Not on VNDB: IGDB, only on request.
+  const igdbBtn = () => h('div', { class: 'boxactions' }, h('button', { type: 'button', class: 'small ghost', onclick: runIgdb }, t('Search IGDB instead')));
+  const runIgdb = async () => {
+    results.replaceChildren(h('div', { class: 'faint' }, t('Searching…')));
+    let list = [];
+    try { list = await vns.call('searchIgdb', input.value); } catch (e) {
+      results.replaceChildren(h('div', { class: 'faint' }, t('IGDB search failed: {error}', { error: cleanError(e) })));
+      return;
+    }
+    if (!list.length) { results.replaceChildren(h('div', { class: 'faint' }, t('No matches on IGDB either.'))); return; }
+    results.replaceChildren(h('div', { class: 'faint small' }, 'IGDB'),
+      ...list.map((v) => vndbResult(v, () => { chosen = { ...v, source: 'igdb' }; closeDialog('pick'); })));
   };
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); run(); } });
   const p = dialog({
@@ -1285,7 +1298,7 @@ async function vndbDialog(g, isNew) {
   run();
   const v = await p;
   if (v === 'pick' && chosen) {
-    try { await call('applyVndb', g.id, chosen); } catch (e) {
+    try { await call(chosen.source === 'igdb' ? 'applyIgdb' : 'applyVndb', g.id, chosen); } catch (e) {
       if (/Umineko/.test(String(e && e.message))) return 'blocked';
     }
   }
@@ -2094,6 +2107,18 @@ function descriptionEl(segments) {
 function aboutBox(g, parts) {
   const v = g.vndb;
   const box = h('div', { class: 'box' });
+  if (!g.vndbId && g.igdb) {
+    box.append(
+      g.igdb.summary ? h('div', { class: 'desc' }, g.igdb.summary) : null,
+      h('div', { class: 'facts' }, [
+        g.igdb.released ? [t('Released'), g.igdb.released] : null,
+        (g.igdb.platforms || []).length ? [t('Platforms'), g.igdb.platforms.join(', ')] : null,
+      ].filter(Boolean).map(([k, val]) => h('div', { class: 'fact' }, h('span', { class: 'k' }, k), h('span', {}, val)))),
+      h('div', { class: 'boxactions' },
+        g.igdb.url ? h('button', { class: 'small', onclick: () => vns.call('openExternal', g.igdb.url) }, t('IGDB page')) : null,
+        h('button', { class: 'small ghost', onclick: async () => { await vndbDialog(g, false); renderDetail(g.id, { noAuto: true }); } }, t('Find on VNDB…'))));
+    return box;
+  }
   if (!g.vndbId) {
     box.append(h('div', { class: 'note' }, t('Link this game to VNDB to see its description, length, rating and tags.')),
       h('div', { class: 'boxactions' }, h('button', { onclick: async () => { await vndbDialog(g, false); renderDetail(g.id, { noAuto: true }); } }, t('Find on VNDB…'))));

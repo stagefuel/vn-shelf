@@ -75,6 +75,16 @@ async function until(what, fn, ms = 20000) {
   fake.works.set('s1', [{ id: 'v11', title: 'Linked Game', released: '2020-01-01', staff: [{ id: 's1', role: 'scenario' }] }, { id: 'v77', title: 'Another Work', released: '2019-01-01', staff: [{ id: 's1', role: 'scenario' }] }]);
   fake.names.set('s1', { name: 'Writer Person', original: '書き手' });
   const srv = await fake.listen();
+  // A stand-in for the IGDB proxy.
+  const igdbSeen = [];
+  const igdbSrv = require('http').createServer((req, res) => {
+    let b = ''; req.on('data', (c) => { b += c; }); req.on('end', () => {
+      igdbSeen.push(b);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify([{ id: 4242, name: 'Remote Game From IGDB', slug: 'remote-igdb', summary: 'From IGDB.', first_release_date: 1609459200, platforms: [{ abbreviation: 'PC' }] }]));
+    });
+  });
+  await new Promise((r) => igdbSrv.listen(0, '127.0.0.1', r));
   const result = {};
   let app;
   try {
@@ -82,7 +92,7 @@ async function until(what, fn, ms = 20000) {
       executablePath: process.env.VNS_EXE || require('electron'),
       args: process.env.VNS_EXE ? [] : [path.join(__dirname, '..'), '--no-sandbox'],
       env: (() => {
-        const e = { ...process.env, VNS_USER_DATA: userData, VNS_VNDB_API: srv.url, VNS_NO_UPDATE_CHECK: '1' };
+        const e = { ...process.env, VNS_USER_DATA: userData, VNS_VNDB_API: srv.url, VNS_IGDB_API: `http://127.0.0.1:${igdbSrv.address().port}/igdb/v4`, VNS_NO_UPDATE_CHECK: '1' };
         delete e.ELECTRON_RUN_AS_NODE;
         return e;
       })(),
@@ -163,6 +173,16 @@ async function until(what, fn, ms = 20000) {
     await page.evaluate((f) => window.vns.call('setUpHere', 'remote-cccccc', f), remoteExe);
     result.setUpHere = JSON.parse(fs.readFileSync(path.join(userData, 'config.json'), 'utf8')).games['remote-cccccc'].exePath === remoteExe;
     if (!result.setUpHere) throw new Error('setUpHere did not set the program');
+
+    // ---- IGDB only from Find…: nothing sent to it until asked, then its match sets the game's identity
+    if (igdbSeen.length) throw new Error('IGDB was queried without being asked');
+    await page.evaluate(() => window.vns.call('listGames').then(() => openDetail('remote-cccccc')));
+    await page.click('button:has-text("Find on VNDB")');
+    await page.click('#dlg button:has-text("Search IGDB instead")');
+    await page.click('#dlg .vnres:has-text("Remote Game From IGDB")');
+    result.igdb = await until('IGDB identity saved', () => { const g = readGame('remote-cccccc'); return g.igdb && g.igdb.id === 4242 ? { title: g.title, released: g.igdb.released } : null; });
+    await page.waitForSelector('.hero h1:has-text("Remote Game From IGDB")');
+    await shot(page, '03b-igdb-game');
     await until('one card left', () => page.locator('#vndbView .listcard').count().then((n) => n === 1));
 
     // ---- game page: status → Finished fills the date and goes to VNDB; rating too
@@ -298,5 +318,6 @@ async function until(what, fn, ms = 20000) {
   } finally {
     if (app) await app.close().catch(() => {});
     await srv.close();
+    igdbSrv.closeAllConnections(); igdbSrv.close();
   }
 })();

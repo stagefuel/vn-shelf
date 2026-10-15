@@ -64,6 +64,8 @@ You pick one on first run, and the same one on every PC:
   Reading is added automatically when you first play.
 - **Your rating and dates:** a 1–10 rating and Started / Finished dates on each game. The dates
   fill themselves in when you start and finish.
+- **Not on VNDB?** In **Find…**, **Search IGDB instead** sets the game's title, cover, release date and
+  description from IGDB.
 - **Titles from the game's window** for games not linked to VNDB, tidied of version numbers and
   engine names.
 
@@ -195,10 +197,12 @@ The exe isn't code-signed, so Windows SmartScreen may say "Windows protected you
 
 ## Privacy
 
-VN Shelf talks to three services, and only for the reasons below:
+VN Shelf talks to these services, and only for the reasons below:
 - **VNDB:** to search for games and fetch their info, covers, screenshots, characters and staff.
   If you connect your VNDB account, also to read and update your list (status, labels, rating,
   dates; never notes).
+- **IGDB:** only when you choose **Search IGDB instead** while finding a game (for games VNDB doesn't
+  have), through VN Shelf's proxy.
 - **GitHub:** to check for and download updates. You can turn this off.
 - **Google:** only if you choose Google Drive mode.
 

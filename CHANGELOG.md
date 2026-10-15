@@ -4,6 +4,20 @@ All notable changes to VN Shelf. Download any version from the
 [Releases page](https://github.com/stagefuel/vn-shelf/releases). From 0.3.0 on, VN Shelf can
 update itself (Settings → Updates).
 
+## 0.12.0
+
+### New
+- **IGDB for games VNDB doesn't have.** In a game's **Find on VNDB…** dialog, **Search IGDB instead**
+  looks the game up on IGDB. Picking a result sets the title, Japanese title, developer and cover, and
+  the game page shows IGDB's description, release date and platforms, with a link to its IGDB page.
+  - IGDB is only asked when you press that button. Adding, importing and automatic matching still
+    use VNDB only.
+  - Searches go through VN Shelf's proxy (igdb.yumiharigakuen.com), because IGDB requires a secret
+    key that can't be built into the app. It keeps no request logs, and repeated searches are
+    answered from its cache.
+  - Choosing an IGDB match unlinks the game from VNDB, and choosing a VNDB match later replaces the
+    IGDB details.
+
 ## 0.11.0
 
 ### New
