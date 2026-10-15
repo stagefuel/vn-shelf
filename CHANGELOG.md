@@ -4,6 +4,19 @@ All notable changes to VN Shelf. Download any version from the
 [Releases page](https://github.com/stagefuel/vn-shelf/releases). From 0.3.0 on, VN Shelf can
 update itself (Settings → Updates).
 
+## Unreleased
+
+### New
+- **List views for the library.** The switch at the top right of the library (next to Sort by) has
+  three views:
+  - **Covers**: the cover grid, as before.
+  - **List with covers**: one line per game with a small cover.
+  - **Compact list**: one text line per game.
+
+  Both lists show the title, reading status, your rating, Started, Finished and time played. Click
+  a column header to sort by it (your rating, Started and Finished are also new choices under Sort
+  by). The view is remembered and is copied by "Copy settings from another PC".
+
 ## 0.13.0
 
 My List, Japanese titles with the Japanese interface, and game page fixes.

@@ -41,8 +41,10 @@ You pick one on first run, and the same one on every PC:
   row of your other recent games.
 - **Categories:** your own groups (Reading, Finished, Favourites…), shown in the sidebar like
   folders. They're saved with each game, so every PC sees them.
-- **Sorting:** by title, last played, recently added, release date, VNDB rating, length or time
-  played.
+- **Views:** covers, a list with small covers, or a compact list with reading status, your rating,
+  start and finish dates and time played as columns (click a header to sort).
+- **Sorting:** by title, last played, recently added, release date, VNDB rating, your rating, start
+  or finish date, length or time played.
 - **Search:** matches titles, aliases, developers, categories and VNDB tags, and suggests matching
   games, tags, developers and categories as you type. Click a tag on any game to list every game
   with it.

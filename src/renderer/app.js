@@ -212,6 +212,7 @@ const STATUS_ORDER = ['playing', 'finished', 'wishlist', 'stalled', 'dropped'];
 const SORTS = () => [
   ['title', t('Title')], ['played', t('Last played')], ['added', t('Recently added')], ['released', t('Release date')],
   ['rating', t('VNDB rating')], ['length', t('Length')], ['playtime', t('Time played')], ['status', t('Reading status')],
+  ['vote', t('Your rating')], ['started', t('Started')], ['finished', t('Finished')],
 ];
 
 const LENGTH_TEXT = () => ({
@@ -434,6 +435,7 @@ function updateCards(id) {
   const g = games.find((x) => x.id === id);
   if (!g) return;
   for (const old of document.querySelectorAll(`.card[data-id="${CSS.escape(id)}"]`)) old.replaceWith(cardFor(g));
+  for (const old of document.querySelectorAll(`.lrow[data-id="${CSS.escape(id)}"]`)) old.replaceWith(rowFor(g, old.dataset.mode));
   updateLive(id);
 }
 
@@ -518,8 +520,64 @@ function sortGames(list, key) {
     length: (a, b) => ((b.vndb || {}).lengthMinutes || 0) - ((a.vndb || {}).lengthMinutes || 0),
     playtime: (a, b) => (b.playMinutes || 0) - (a.playMinutes || 0),
     status: (a, b) => (STATUS_ORDER.indexOf(a.status) + 1 || 99) - (STATUS_ORDER.indexOf(b.status) + 1 || 99),
+    vote: (a, b) => (b.vote || 0) - (a.vote || 0),
+    started: (a, b) => String(b.started || '').localeCompare(String(a.started || '')),
+    finished: (a, b) => String(b.finished || '').localeCompare(String(a.finished || '')),
   }[key] || ((a, b) => a.title.localeCompare(b.title, 'ja'));
   return [...list].sort((a, b) => by(a, b) || shownTitle(a).localeCompare(shownTitle(b), 'ja'));
+}
+
+// ---- library views: covers (the grid), a compact list, and a list with small covers
+
+const VIEW_ICONS = {
+  covers: '<svg viewBox="0 0 16 16" width="16" height="16"><rect x="1.5" y="1.5" width="5.5" height="5.5" rx="1"/><rect x="9" y="1.5" width="5.5" height="5.5" rx="1"/><rect x="1.5" y="9" width="5.5" height="5.5" rx="1"/><rect x="9" y="9" width="5.5" height="5.5" rx="1"/></svg>',
+  rows: '<svg viewBox="0 0 16 16" width="16" height="16"><rect x="1.5" y="2" width="3.5" height="4.5" rx=".6"/><rect x="1.5" y="9.5" width="3.5" height="4.5" rx=".6"/><rect x="7" y="3.4" width="7.5" height="1.6" rx=".8"/><rect x="7" y="10.9" width="7.5" height="1.6" rx=".8"/></svg>',
+  list: '<svg viewBox="0 0 16 16" width="16" height="16"><rect x="1.5" y="2.5" width="13" height="1.6" rx=".8"/><rect x="1.5" y="7.2" width="13" height="1.6" rx=".8"/><rect x="1.5" y="11.9" width="13" height="1.6" rx=".8"/></svg>',
+};
+const libraryView = () => (['covers', 'rows', 'list'].includes(setup.settings.libraryView) ? setup.settings.libraryView : 'covers');
+
+function viewSwitch() {
+  const names = { covers: t('Covers'), rows: t('List with covers'), list: t('Compact list') };
+  return h('div', { class: 'viewsw', role: 'group', title: t('View') }, ['covers', 'rows', 'list'].map((v) => {
+    const b = h('button', { type: 'button', class: `iconbtn${libraryView() === v ? ' on' : ''}`, title: names[v], 'aria-label': names[v], onclick: async () => {
+      setup = await call('saveSettings', { libraryView: v });
+      renderGrid();
+    } });
+    b.innerHTML = VIEW_ICONS[v]; // fixed icons from above, no outside text
+    return b;
+  }));
+}
+
+const LIST_COLUMNS = () => [
+  ['title', t('Title')], ['status', t('Reading status')], ['vote', t('Your rating')],
+  ['started', t('Started')], ['finished', t('Finished')], ['playtime', t('Time played')],
+];
+
+function listHeader(mode) {
+  return h('div', { class: `lhead ${mode}` }, mode === 'rows' ? h('span') : null, LIST_COLUMNS().map(([k, label]) => {
+    const on = setup.settings.sort === k;
+    return h('button', { type: 'button', class: `lcol c-${k}${on ? ' on' : ''}`, onclick: async () => {
+      setup = await call('saveSettings', { sort: k });
+      renderGrid();
+    } }, label, on ? ' ▾' : '');
+  }));
+}
+
+/** One game as a line: title, statuses, your rating, dates, time played (with a small cover in "rows"). */
+function rowFor(g, mode) {
+  const sts = statusesOf(g).filter((x) => STATUS_TEXT()[x]);
+  const b = badgeFor(g);
+  return h('div', { class: `lrow ${mode}${g.installed ? '' : ' uninstalled'}`, tabindex: '0', 'data-id': g.id, 'data-mode': mode,
+    onclick: () => openDetail(g.id), onkeydown: (e) => { if (e.key === 'Enter') openDetail(g.id); } },
+  mode === 'rows' ? h('div', { class: 'lthumb' }, g.coverUrl ? h('img', { src: g.coverUrl, alt: '', loading: 'lazy', draggable: 'false' }) : null) : null,
+  h('div', { class: 'c-title' },
+    h('div', { class: 'lt' }, shownTitle(g), b && !['synced', 'not-installed'].includes(b) ? h('span', { class: `lbadge ${b}` }, BADGE_TEXT()[b] || b) : null),
+    mode === 'rows' && (otherTitle(g) || g.developer) ? h('div', { class: 'ls' }, [otherTitle(g), g.developer].filter(Boolean).join(' · ')) : null),
+  h('div', { class: 'c-status' }, sts.map((x, i) => [i ? ', ' : null, h('span', { class: `sdot ${x}` }), STATUS_TEXT()[x]])),
+  h('div', { class: 'c-vote' }, g.vote ? `★ ${g.vote % 10 ? (g.vote / 10).toFixed(1) : g.vote / 10}` : ''),
+  h('div', { class: 'c-started' }, g.started || ''),
+  h('div', { class: 'c-finished' }, g.finished || ''),
+  h('div', { class: 'c-playtime' }, g.playMinutes ? hours(g.playMinutes) : ''));
 }
 
 function renderGrid() {
@@ -549,8 +607,11 @@ function renderGrid() {
     } }), t('Show Not in Library')) : null;
   replaceKids($('#libToolbar'),
     h('h1', {}, heading), h('span', { class: 'dim' }, String(list.length)), extra, ...chips,
-    h('div', { class: 'spacer' }), listToggle, h('span', { class: 'dim small' }, t('Sort by')), sortSel);
-  $('#grid').replaceChildren(...list.map(cardFor));
+    h('div', { class: 'spacer' }), listToggle, h('span', { class: 'dim small' }, t('Sort by')), sortSel, viewSwitch());
+  const mode = libraryView();
+  $('#grid').className = mode === 'covers' ? 'grid' : `gamelist ${mode}`;
+  if (mode === 'covers') $('#grid').replaceChildren(...list.map(cardFor));
+  else $('#grid').replaceChildren(...(list.length ? [listHeader(mode)] : []), ...list.map((g) => rowFor(g, mode)));
   const below = listOnlyBelow(q);
   if (!$('#listOnly')) $('#noMatch').after(h('div', { id: 'listOnly' }));
   replaceKids($('#listOnly'), below);

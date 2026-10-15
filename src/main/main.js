@@ -728,7 +728,7 @@ function fontsInfo() {
 
 // ---------------------------------------------------------------- sharing this PC's look with the other PC
 
-const SHARED_KEYS = ['language', 'sort', 'showStats', 'closeToTray', 'historyDepth', 'liveMode', 'autoUpdate', 'theme', 'categoryOrder', 'showListOnly'];
+const SHARED_KEYS = ['language', 'sort', 'showStats', 'closeToTray', 'historyDepth', 'liveMode', 'autoUpdate', 'theme', 'categoryOrder', 'showListOnly', 'libraryView'];
 let publishTimer = null;
 
 function publishSettingsSoon() {
@@ -919,6 +919,7 @@ const api = {
         lunaPath: config.data.lunaPath || '',
         language: config.data.language,
         sort: config.data.sort,
+        libraryView: config.data.libraryView || 'covers',
         autoUpdate: config.data.autoUpdate,
         tools: config.data.tools,
         categories: config.data.categories,
@@ -985,6 +986,7 @@ const api = {
     if (s.lunaPath !== undefined) patch.lunaPath = String(s.lunaPath || '');
     if (s.language !== undefined) patch.language = ['auto', 'en', 'ja'].includes(s.language) ? s.language : 'auto';
     if (s.sort !== undefined) patch.sort = String(s.sort);
+    if (s.libraryView !== undefined) patch.libraryView = ['covers', 'rows', 'list'].includes(s.libraryView) ? s.libraryView : 'covers';
     if (s.autoUpdate !== undefined) patch.autoUpdate = !!s.autoUpdate;
     if (s.startWithSystem !== undefined) patch.startWithSystem = !!s.startWithSystem;
     if (s.closeToTray !== undefined) patch.closeToTray = !!s.closeToTray;

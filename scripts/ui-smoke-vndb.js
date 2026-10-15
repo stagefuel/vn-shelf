@@ -159,6 +159,28 @@ async function until(what, fn, ms = 20000) {
     if (!result.jaTitles.includes('リンクゲーム') || !result.jaTitles.includes('Wanted Game')) throw new Error(`Japanese titles: ${result.jaTitles}`);
     await page.evaluate(async () => { setup = await window.vns.call('saveSettings', { language: 'en' }); setLanguage('en'); renderSidebar(); });
 
+    // ---- library views: compact list and list with covers, sortable by the column headers
+    await page.evaluate(() => showLibrary({ category: null, status: null, tag: null }));
+    await page.click('.viewsw button[title="Compact list"]');
+    await page.waitForSelector('#grid.gamelist.list .lrow');
+    result.listView = {
+      rows: await page.locator('#grid .lrow').count(),
+      head: await page.$$eval('#grid .lhead .lcol', (x) => x.map((y) => y.textContent.replace(' ▾', ''))),
+    };
+    await page.click('#grid .lhead .lcol.c-vote');
+    await page.waitForSelector('#grid .lhead .lcol.c-vote.on');
+    result.listView.firstByVote = await page.locator('#grid .lrow >> nth=0').locator('.lt').textContent();
+    await shot(page, '02c-list-view');
+    await page.click('.viewsw button[title="List with covers"]');
+    await page.waitForSelector('#grid.gamelist.rows .lrow .lthumb');
+    await shot(page, '02d-rows-view');
+    const saved = JSON.parse(fs.readFileSync(path.join(userData, 'config.json'), 'utf8')).libraryView;
+    await page.click('.viewsw button[title="Covers"]');
+    await page.waitForSelector('#grid.grid .card');
+    await page.evaluate(async () => { setup = await window.vns.call('saveSettings', { sort: 'title' }); });
+    if (result.listView.rows !== 3 || result.listView.head.length !== 6 || saved !== 'rows') throw new Error(`list views: ${JSON.stringify(result.listView)} saved=${saved}`);
+    if (result.listView.firstByVote !== 'Linked Game') throw new Error(`sorting by your rating: ${result.listView.firstByVote}`);
+
     // ---- My List: VNs not in the library; one can be linked to "Wanted Game"
     await page.click('.navitem:has-text("My List")');
     await until('list cards', () => page.locator('#vndbView .listcard').count().then((n) => n === 3));

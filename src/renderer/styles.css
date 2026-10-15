@@ -593,3 +593,31 @@ body.has-bg .homehero .bgfade { background: linear-gradient(180deg, color-mix(in
 #dlg.settingsdlg form { height: 100%; }
 #dlg.settingsdlg .dbody { flex: 1; align-content: start; padding-top: 0; }
 #dlg.settingsdlg .tabs { position: sticky; top: 0; z-index: 2; background: var(--bg-raised); padding-top: 12px; }
+
+/* Library views: switch, compact list and list with covers */
+.viewsw { display: inline-flex; gap: 2px; padding: 2px; border: 1px solid var(--line); border-radius: 8px; }
+.viewsw .iconbtn { background: none; border: 0; padding: 4px 7px; border-radius: 6px; color: var(--text-faint); cursor: pointer; display: inline-flex; }
+.viewsw .iconbtn svg { fill: currentColor; }
+.viewsw .iconbtn:hover { color: var(--text); }
+.viewsw .iconbtn.on { background: var(--bg-raised); color: var(--accent); }
+.gamelist { padding: 14px 22px 60px; }
+.lhead, .lrow { display: grid; grid-template-columns: minmax(0, 1fr) 170px 115px 100px 100px 105px; gap: 14px; align-items: center; padding: 0 10px; }
+.lhead.rows, .lrow.rows { grid-template-columns: 40px minmax(0, 1fr) 170px 115px 100px 100px 105px; }
+.lhead { position: sticky; top: 0; z-index: 2; background: var(--bg); border-bottom: 1px solid var(--line); padding-top: 6px; padding-bottom: 6px; }
+.lcol { background: none; border: 0; padding: 0; text-align: left; font: inherit; font-size: 11.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-faint); cursor: pointer; white-space: nowrap; }
+.lcol:hover, .lcol.on { color: var(--text); }
+.lrow { min-height: 36px; border-bottom: 1px solid color-mix(in srgb, var(--line) 60%, transparent); cursor: pointer; font-size: 13.5px; outline: none; }
+.lrow.rows { min-height: 64px; padding-top: 5px; padding-bottom: 5px; }
+.lrow:hover, .lrow:focus-visible { background: var(--bg-raised); }
+.lrow.uninstalled .c-title { opacity: .55; }
+.lrow .lt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lrow .ls { font-size: 12px; color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 2px; }
+.lrow .c-status, .lrow .c-vote, .lrow .c-started, .lrow .c-finished, .lrow .c-playtime { font-size: 12.5px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lthumb { width: 40px; aspect-ratio: 5 / 7; border-radius: 4px; overflow: hidden; background: var(--bg-raised); border: 1px solid var(--line); }
+.lthumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.lbadge { margin-left: 8px; font-size: 10.5px; padding: 1px 6px; border-radius: 6px; border: 1px solid var(--line); color: var(--text-faint); vertical-align: 1px; }
+@media (max-width: 1100px) {
+  .lhead, .lrow { grid-template-columns: minmax(0, 1fr) 150px 115px 105px; }
+  .lhead.rows, .lrow.rows { grid-template-columns: 40px minmax(0, 1fr) 150px 115px 105px; }
+  .c-started, .c-finished { display: none; }
+}
