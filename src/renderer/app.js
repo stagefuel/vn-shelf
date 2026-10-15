@@ -529,6 +529,7 @@ function extrasSection(g) {
   const draw = (extras, chars) => {
     if (!host.isConnected && host.dataset.drawn) return;
     host.dataset.drawn = '1';
+    fillVndbEngine(document.querySelector('.hero .vndbengine'), extras);
     replaceKids(host,
       extras && extras.screenshots.length ? [h('h2', {}, t('Screenshots')), galleryEl(extras.screenshots)] : null,
       extras && extras.relations.length ? [h('h2', {}, t('Related')), vnGrid(extras.relations, { sub: (r) => `${RELATION_TEXT()[r.relation] || r.relation}${r.official ? '' : ` (${t('unofficial')})`}`, onAdded: () => redraw() })] : null,
@@ -546,6 +547,15 @@ function extrasSection(g) {
     if (host.isConnected) draw(extras, chars);
   })();
   return host;
+}
+
+/** VNDB's engine in the game page header, shown when VN Shelf couldn't tell it from the game's files. */
+function fillVndbEngine(el, extras) {
+  if (!el || !extras || !(extras.engines || []).length) return el;
+  el.textContent = t('Engine (VNDB): {engine}', { engine: extras.engines[0] });
+  if (extras.engines.length > 1) el.title = extras.engines.join('\n');
+  el.hidden = false;
+  return el;
 }
 
 function galleryEl(shots) {
@@ -2014,7 +2024,7 @@ function paintDetail(g, data, opts = {}) {
         g.titleAlt ? h('div', { class: 'alt' }, g.titleAlt) : null,
         h('div', { class: 'meta' },
           g.developer ? h('span', {}, g.developer) : null,
-          g.engine ? h('span', {}, g.engine) : null,
+          g.engine ? h('span', {}, g.engine) : g.vndbId ? fillVndbEngine(h('span', { class: 'vndbengine', hidden: true }), (extrasCache.get(g.vndbId) || {}).extras) : null,
           g.playMinutes ? h('span', { title: (g.playByDevice || []).map((d) => `${d.name}: ${hours(d.seconds / 60)}`).join('\n') },
             (g.playByDevice || []).length > 1
               ? t('{h} played ({parts})', { h: hours(g.playMinutes), parts: g.playByDevice.map((d) => `${d.name} ${hours(d.seconds / 60)}`).join(' · ') })
@@ -2172,7 +2182,7 @@ async function runSuggest(id, box) {
   const g = games.find((x) => x.id === id) || {};
   const already = new Set((g.saves || []).map((s) => `${s.path}|${(s.include || []).join(',')}`));
   const list = r.candidates.filter((c) => !already.has(`${c.path}|${(c.include || []).join(',')}`));
-  const head = h('div', { class: 'note' }, r.engine ? `${t('Looks like a {engine} game.', { engine: r.engine })} ` : '',
+  const head = h('div', { class: 'note' }, r.engine ? `${r.engineFromVndb ? t('VNDB says this is a {engine} game.', { engine: r.engine }) : t('Looks like a {engine} game.', { engine: r.engine })} ` : '',
     list.length ? t('Suggestions (folders with files in them are most likely):') : t('No suggestions yet. Press Play and VN Shelf will find it while you play, or choose the folder yourself.'));
   box.replaceChildren(head, ...list.slice(0, 8).map((c) => h('div', { class: 'row' },
     h('div', { class: 'grow' },

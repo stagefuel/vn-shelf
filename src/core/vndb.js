@@ -259,7 +259,32 @@ async function fetchName(personOrBrand, { fetchImpl = fetch } = {}) {
   return r ? { name: r.name, original: r.original || '' } : null;
 }
 
+/**
+ * The engines VNDB lists for a VN's releases, most likely first: official Windows releases in
+ * Japanese, then other official Windows releases, then any Windows release (fan ports last).
+ */
+async function fetchEngines(vndbId, { fetchImpl = fetch } = {}) {
+  const id = idFilter(vndbId);
+  if (!id) throw new Error(`Not a VNDB id: ${vndbId}`);
+  const data = await post({ filters: ['vn', '=', ['id', '=', id]], fields: 'engine,official,platforms,languages.lang', results: 100 }, fetchImpl, 'release');
+  const rank = (r) => {
+    if (!(r.platforms || []).includes('win')) return 9;
+    if (!r.official) return 3;
+    return (r.languages || []).some((l) => l.lang === 'ja') ? 0 : 1;
+  };
+  const counts = new Map();
+  for (const r of data.results || []) {
+    const name = String(r.engine || '').trim();
+    if (!name || rank(r) === 9) continue;
+    const k = counts.get(name) || { name, rank: 9, n: 0 };
+    k.rank = Math.min(k.rank, rank(r));
+    k.n++;
+    counts.set(name, k);
+  }
+  return [...counts.values()].sort((a, b) => a.rank - b.rank || b.n - a.n).map((k) => k.name);
+}
+
 module.exports = {
   search, bestMatch, fetchInfo, downloadImage, parseDescription, info, LENGTHS,
-  fetchExtras, fetchCharacters, fetchWorks, fetchName, pickScreenshots, RELATIONS,
+  fetchExtras, fetchCharacters, fetchWorks, fetchName, fetchEngines, pickScreenshots, RELATIONS,
 };

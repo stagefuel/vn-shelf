@@ -93,7 +93,8 @@ You pick one on first run, and the same one on every PC:
 ### Finding save folders
 - **Auto-detect** recognises common engines: KiriKiri, Ren'Py, RPG Maker (2000–MZ), Siglus,
   BGI/Ethornell, CatSystem2, AliceSoft System 4, Artemis, YU-RIS, NScripter, Unity and age's
-  rUGP. It also finds folders named after the game in AppData, Documents and Saved Games,
+  rUGP. When the files don't show the engine, the engine VNDB lists for the game's official release
+  is used as a hint (never over what the files show). It also finds folders named after the game in AppData, Documents and Saved Games,
   including inside the developer's folder.
 - **Or just play:** for a game with no save folder yet, press Play. When you close the game, VN Shelf
   shows where it saved (from what changed while it ran) and asks you to confirm.

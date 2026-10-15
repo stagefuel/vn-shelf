@@ -261,3 +261,21 @@ test('vndb list: merge rules', () => {
   assert.strictEqual(vl.today(new Date(2026, 0, 5)), '2026-01-05');
   assert.strictEqual(vl.statusOf([1, 2]), 'finished');
 });
+
+test('fetchEngines prefers official Japanese Windows releases and skips other platforms', async () => {
+  const vndb = require('../src/core/vndb');
+  const fake = new FakeVndb();
+  fake.releases.set('v11', [
+    { engine: "Ren'Py", official: false, platforms: ['win', 'lin'], languages: [{ lang: 'en' }] },
+    { engine: "Ren'Py", official: false, platforms: ['win'], languages: [{ lang: 'ru' }] },
+    { engine: 'HuneX', official: true, platforms: ['ps2'], languages: [{ lang: 'ja' }] },
+    { engine: 'AGES Mk2', official: true, platforms: ['win'], languages: [{ lang: 'en' }] },
+    { engine: 'KiriKiri', official: true, platforms: ['win'], languages: [{ lang: 'ja' }] },
+    { engine: null, official: true, platforms: ['win'], languages: [{ lang: 'ja' }] },
+  ]);
+  assert.deepStrictEqual(await vndb.fetchEngines('v11', { fetchImpl: fake.fetch }), ['KiriKiri', 'AGES Mk2', "Ren'Py"]);
+  const req = fake.requests.at(-1);
+  assert.match(req.url, /\/release$/);
+  assert.deepStrictEqual(req.body.filters, ['vn', '=', ['id', '=', 'v11']]);
+  assert.deepStrictEqual(await vndb.fetchEngines('v99', { fetchImpl: fake.fetch }), []);
+});

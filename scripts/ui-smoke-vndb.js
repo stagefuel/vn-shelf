@@ -56,6 +56,7 @@ async function until(what, fn, ms = 20000) {
     staff: [{ id: 's1', name: 'Writer Person', original: '書き手', role: 'scenario', note: null }],
     developers: [{ id: 'p1', name: 'Brand Co', original: 'ブランド' }],
   });
+  fake.releases.set('v11', [{ engine: 'SiglusEngine', official: true, platforms: ['win'], languages: [{ lang: 'ja' }] }]);
   fake.characters.set('v11', [
     { id: 'c1', name: 'Heroine', original: 'ヒロイン', vns: [{ id: 'v11', role: 'primary', spoiler: 0 }], traits: [{ id: 'i1', name: 'Kind', group_name: 'Personality', spoiler: 0 }] },
     { id: 'c2', name: 'Twist', vns: [{ id: 'v11', role: 'main', spoiler: 2 }], traits: [] },
@@ -150,6 +151,9 @@ async function until(what, fn, ms = 20000) {
       related: await page.$$eval('.vnextras .card.mini', (x) => x.map((y) => y.textContent)),
       characters: await page.locator('.vnextras .charcard').count(),
     };
+    // No engine known from the files, so the hero shows VNDB's.
+    result.extras.engine = await page.locator('.hero .vndbengine').textContent();
+    if (result.extras.engine !== 'Engine (VNDB): SiglusEngine') throw new Error(`VNDB engine not shown: ${result.extras.engine}`);
     if (result.extras.screenshots !== 2) throw new Error(`expected the 2 Japanese screenshots, got ${result.extras.screenshots}`);
     if (result.extras.characters !== 1) throw new Error('spoiler character should be hidden');
     if (!result.extras.related.some((x) => x.includes('Wanted Game') && x.includes('In your library'))) throw new Error('related game not marked as in the library');

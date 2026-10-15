@@ -182,3 +182,64 @@ test('never suggests the game\'s own folder when it is installed under Documents
   assert.ok(!r.candidates.some((c) => !c.path.startsWith('<game>') && c.path.includes('神咒神威神楽')), JSON.stringify(r.candidates.map((c) => c.path)));
   assert.strictEqual(r.candidates[0].path, '<game>/savedata');
 });
+
+test('VNDB engine names map to the engines VN Shelf knows', () => {
+  const { engineFromVndb } = require('../src/core/detect');
+  const id = (n) => (engineFromVndb(n) || {}).id || null;
+  assert.strictEqual(id('KiriKiri'), 'kirikiri');
+  assert.strictEqual(id('KiriKiri Z'), 'kirikiri');
+  assert.strictEqual(id("Ren'Py"), 'renpy');
+  assert.strictEqual(id('SiglusEngine'), 'siglus');
+  assert.strictEqual(id('AliceSoft System4.X'), 'system4');
+  assert.strictEqual(id('RPG Maker VX Ace'), 'rgss');
+  assert.strictEqual(id('RPG Maker MV'), 'rpgmv');
+  assert.strictEqual(id('YU-RIS'), 'yuris');
+  assert.strictEqual(id('MAGES. Engine'), null);
+  assert.strictEqual(id(''), null);
+});
+
+test('with no engine in the files, the engine VNDB lists is used as a hint', async () => {
+  const home = tmp();
+  const dir = path.join(home, 'game');
+  touch(path.join(dir, 'game.exe'));
+  let asked = 0;
+  const r = await suggest({ title: 'Some Game', exe: 'game.exe' }, dir, { roots: rootsFor(home), platform: process.platform,
+    vndbEngines: async () => { asked++; return ['SiglusEngine', 'MAGES. Engine']; } });
+  assert.strictEqual(asked, 1);
+  assert.strictEqual(r.engine, 'SiglusEngine');
+  assert.strictEqual(r.engineFromVndb, true);
+  assert.strictEqual(r.candidates[0].path, '<game>/savedata');
+  assert.match(r.candidates[0].reason, /^VNDB says/);
+  // An engine VN Shelf doesn't know first means no hint, even if a port's engine is known.
+  const r2 = await suggest({ title: 'Some Game', exe: 'game.exe' }, dir, { roots: rootsFor(home), platform: process.platform,
+    vndbEngines: async () => ['MAGES. Engine', 'NScripter'] });
+  assert.strictEqual(r2.engine, null);
+  assert.ok(!r2.candidates.some((c) => /VNDB/.test(c.reason)));
+});
+
+test('the VNDB engine never overrides an engine found in the files, and VNDB is not asked', async () => {
+  const home = tmp();
+  const dir = path.join(home, 'game');
+  touch(path.join(dir, 'data.xp3'));
+  let asked = 0;
+  const r = await suggest({ title: 'Some Game', exe: 'game.exe' }, dir, { roots: rootsFor(home), platform: process.platform,
+    vndbEngines: async () => { asked++; return ['SiglusEngine']; } });
+  assert.strictEqual(asked, 0);
+  assert.strictEqual(r.engine, 'KiriKiri');
+  assert.strictEqual(r.engineFromVndb, false);
+  assert.ok(!r.candidates.some((c) => /VNDB/.test(c.reason)));
+});
+
+test('a found save folder still outranks the VNDB hint, and a failing lookup is ignored', async () => {
+  const home = tmp();
+  const dir = path.join(home, 'game');
+  touch(path.join(dir, 'game.exe'));
+  touch(path.join(dir, 'Saves', 'slot1.dat'));
+  const r = await suggest({ title: 'Some Game', exe: 'game.exe' }, dir, { roots: rootsFor(home), platform: process.platform,
+    vndbEngines: async () => ['SiglusEngine'] });
+  assert.strictEqual(r.candidates[0].path, '<game>/Saves');
+  const r2 = await suggest({ title: 'Some Game', exe: 'game.exe' }, dir, { roots: rootsFor(home), platform: process.platform,
+    vndbEngines: async () => { throw new Error('offline'); } });
+  assert.strictEqual(r2.engine, null);
+  assert.strictEqual(r2.candidates[0].path, '<game>/Saves');
+});

@@ -4,6 +4,34 @@ All notable changes to VN Shelf. Download any version from the
 [Releases page](https://github.com/stagefuel/vn-shelf/releases). From 0.3.0 on, VN Shelf can
 update itself (Settings → Updates).
 
+## 0.9.1
+
+Auto-detect can now use VNDB to find the save folder of a game whose engine it can't recognise from
+the files.
+
+### New
+- **Engine hint from VNDB.** When VN Shelf can't tell a game's engine from its files and the game is
+  linked to VNDB, it asks VNDB which engine the game's release uses. It then suggests that engine's
+  usual save folder, marked "VNDB says this game uses …, which usually saves here".
+  - The official Japanese Windows release counts first, then other official Windows releases. Fan
+    ports and console versions are skipped.
+  - Only the most likely engine is used. If VN Shelf doesn't know that engine, there's no hint, so
+    a fan port's engine is never suggested instead.
+  - The known engines are KiriKiri, Ren'Py, RPG Maker (2000 to MZ), SiglusEngine, BGI/Ethornell,
+    CatSystem2, AliceSoft System 4, Artemis, YU-RIS, NScripter, Unity and rUGP. VNDB's spellings
+    ("KiriKiri Z", "AliceSoft System4.X"…) are matched.
+- **Engine (VNDB)** in the game page header, for games whose engine VN Shelf couldn't tell from the
+  files. Point at it to see every engine VNDB lists for the game.
+- Bulk import uses the hint too, when it sets save folders automatically.
+
+### How it behaves
+- It's only a hint. An engine recognised from the game's files always wins, and VNDB isn't asked
+  at all in that case. A save folder that already has files in it still ranks above the hint.
+  Folders you set yourself are never changed.
+- It takes one request to VNDB per game, kept on that PC for a week (the last copy is used when
+  VNDB can't be reached). If VNDB can't be reached and nothing is cached, auto-detect works as
+  before. No VNDB account is needed.
+
 ## 0.9.0
 
 Game pages now show more from VNDB: screenshots, related VNs, characters and staff. You can also

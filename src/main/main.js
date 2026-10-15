@@ -822,6 +822,12 @@ async function vndbCached(key, fetcher) {
   }
 }
 
+/** The engines VNDB lists for a game's releases (cached on this PC), or null. */
+function vndbEnginesFor(game) {
+  if (!game || !game.vndbId) return null;
+  return () => vndbCached(`engines-${game.vndbId}`, () => vndb.fetchEngines(game.vndbId));
+}
+
 /** A function telling, for a VN id, which library game has it and its statuses on the owner's VNDB list. */
 async function vndbMarker() {
   const games = library ? await library.list({ maxAge: STATUS_MAX_AGE }).catch(() => []) : [];
@@ -1128,7 +1134,7 @@ const api = {
 
   async suggestSaves(id) {
     const game = await getGame(id);
-    const r = await detect.suggest(game, installDir(id), { roots });
+    const r = await detect.suggest(game, installDir(id), { roots, vndbEngines: vndbEnginesFor(game) });
     r.candidates = r.candidates.filter((c) => !limits.rejectPath(c.path, c.include, { cloudDir: config.data.cloudDir, abs: c.abs }));
     return r;
   },
@@ -1422,7 +1428,9 @@ const api = {
     const x = await vndbCached(`vn-${game.vndbId}`, () => vndb.fetchExtras(game.vndbId));
     if (!x) return null;
     const mark = await vndbMarker();
-    return { ...x, relations: x.relations.map((r) => ({ ...r, ...mark(r.vndbId) })) };
+    // VNDB's engine only matters when VN Shelf couldn't tell from the files.
+    const engines = game.engine ? [] : (await vndbEnginesFor(game)()) || [];
+    return { ...x, engines, relations: x.relations.map((r) => ({ ...r, ...mark(r.vndbId) })) };
   },
 
   async vndbCharacters(id) {
@@ -1477,7 +1485,7 @@ const api = {
           game = await library.get(game.id);
         }
         let savePath = null;
-        const sug = await detect.suggest(game, it.dir, { roots }).catch(() => ({ candidates: [] }));
+        const sug = await detect.suggest(game, it.dir, { roots, vndbEngines: vndbEnginesFor(game) }).catch(() => ({ candidates: [] }));
         const best = sug.candidates.find((c) => c.exists && c.fileCount > 0
           && !limits.rejectPath(c.path, c.include, { cloudDir: config.data.cloudDir, abs: c.abs }));
         if (best) {

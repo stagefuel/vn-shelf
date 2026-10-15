@@ -4,6 +4,8 @@
 //   2. look for folders called save/savedata/UserData inside the game folder
 //   3. look in AppData / Documents / Saved Games for folders named after the game,
 //      its .exe or its developer
+// When the files don't show the engine, the engine VNDB lists for the game's release is used as a
+// hint instead; it never replaces an engine recognised from the files.
 // Every suggestion is only a suggestion; the user confirms or sets folders by hand.
 
 const fsp = require('fs').promises;
@@ -122,6 +124,32 @@ const ENGINES = [
   },
 ];
 
+// VNDB's engine names (from release entries) for the engines above.
+const ENGINE_ALIASES = [
+  ['kirikiri', /^(kirikiri|krkr|kag|吉里吉里)/],
+  ['renpy', /^renpy/],
+  ['rpgmz', /^rpgmakermz/],
+  ['rpgmv', /^rpgmakermv/],
+  ['rgss', /^rpgmaker(xp|vx|vxace)$/],
+  ['rpg2k', /^rpgmaker(2000|2003|2k)/],
+  ['siglus', /^siglus/],
+  ['bgi', /^(bgi|ethornell|burikogeneralinterpreter)/],
+  ['catsystem2', /^catsystem/],
+  ['system4', /^(alicesoft)?system4/],
+  ['artemis', /^artemis/],
+  ['yuris', /^yuris/],
+  ['nscripter', /^o?nscripter/],
+  ['unity', /^unity/],
+  ['rugp', /^rugp/],
+];
+
+/** The ENGINES entry for a VNDB engine name ("KiriKiri Z", "AliceSoft System4.X"), or null. */
+function engineFromVndb(name) {
+  const n = normName(name);
+  const hit = n && ENGINE_ALIASES.find(([, re]) => re.test(n));
+  return hit ? ENGINES.find((e) => e.id === hit[0]) : null;
+}
+
 // Folder names that hold saves: save, Saves, savedata, faterealtanua_savedata, UserData, Vmreg (age), ...
 const SAVE_DIR_RE = /^(?:.*[_\-\s])?(?:save|saves|savedata|save_data|savedat|sav|userdata|vmreg)$/i;
 // Loose save files in the game folder.
@@ -180,7 +208,7 @@ async function detectEngine(dir, roots) {
 /**
  * @returns {Promise<{engine: string|null, candidates: Array<{path, include, reason, abs, exists, fileCount, score}>}>}
  */
-async function suggest(game, installDir, { roots, platform = process.platform }) {
+async function suggest(game, installDir, { roots, platform = process.platform, vndbEngines = null }) {
   const out = [];
   const push = (cand) => {
     const key = `${cand.path}|${(cand.include || []).join(',')}`;
@@ -191,12 +219,27 @@ async function suggest(game, installDir, { roots, platform = process.platform })
 
   // 1. Engine
   let engineName = null;
+  let engineHint = false;
   if (installDir && (await fsu.isDir(installDir))) {
     const found = await detectEngine(installDir, roots);
     if (found) {
       engineName = found.engine.name;
       for (const s of await found.engine.saves(found.ctx)) {
         push({ ...s, reason: `${found.engine.name} games usually save here`, score: 6 });
+      }
+    } else if (vndbEngines) {
+      // No engine in the files: try the one VNDB lists (a function, so VNDB is only asked when needed).
+      const names = (await Promise.resolve(typeof vndbEngines === 'function' ? vndbEngines() : vndbEngines).catch(() => null)) || [];
+      // Only the most likely engine: a lower one is often a port (Ever17's official release is
+      // "MAGES. Engine", its NScripter release a fan port), which would point at the wrong folder.
+      const hinted = names.length ? engineFromVndb(names[0]) : null;
+      if (hinted) {
+        engineName = hinted.name;
+        engineHint = true;
+        const ctx = await context(installDir, roots);
+        for (const s of await hinted.saves(ctx)) {
+          push({ ...s, reason: `VNDB says this game uses ${hinted.name}, which usually saves here`, score: 5 });
+        }
       }
     }
 
@@ -276,7 +319,7 @@ async function suggest(game, installDir, { roots, platform = process.platform })
     }
   }
   out.sort((a, b) => b.score - a.score);
-  return { engine: engineName, candidates: out };
+  return { engine: engineName, engineFromVndb: engineHint, candidates: out };
 }
 
-module.exports = { suggest, detectEngine, ENGINES, normName, namesMatch };
+module.exports = { suggest, detectEngine, engineFromVndb, ENGINES, normName, namesMatch };

@@ -23,6 +23,7 @@ class FakeVndb {
     this.characters = new Map(); // vid -> [character]
     this.works = new Map(); // s…/p… -> [vn]
     this.names = new Map(); // s…/p… -> { name, original }
+    this.releases = new Map(); // vid -> [{ engine, official, platforms, languages }]
     this.rateLimitNext = 0;
     this.clock = 1700000000;
   }
@@ -61,6 +62,7 @@ class FakeVndb {
       const x = this.extras.get(body.filters[2]);
       return this.json(200, { results: x ? [{ id: body.filters[2], screenshots: [], relations: [], staff: [], developers: [], ...x }] : [], more: false });
     }
+    if (method === 'POST' && p === '/release') return this.json(200, { results: this.releases.get(body.filters[2][2]) || [], more: false });
     if (method === 'POST' && p === '/character') return this.json(200, { results: this.characters.get(body.filters[2][2]) || [], more: false });
     if (method === 'POST' && (p === '/staff' || p === '/producer')) {
       const n = this.names.get(body.filters[2]);
