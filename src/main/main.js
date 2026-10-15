@@ -1,6 +1,7 @@
 'use strict';
 const { app, BrowserWindow, ipcMain, dialog, shell, Notification, safeStorage, Tray, Menu, nativeImage } = require('electron');
 const path = require('path');
+const { spawn } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const { pathToFileURL } = require('url');
@@ -13,6 +14,8 @@ const detect = require('../core/detect');
 const snapshot = require('../core/snapshot');
 const providers = require('../core/providers');
 const launcher = require('../core/launcher');
+const luna = require('../core/luna');
+const lnk = require('../core/lnk');
 const vndb = require('../core/vndb');
 const limits = require('../core/limits');
 const { ManifestSyncEngine } = require('../core/manifest-sync');
@@ -605,6 +608,49 @@ async function detectSaves(game, l, since) {
 }
 
 /**
+ * Starting through Luna (game option "Start through LunaTranslator"): the way to start it, or null.
+ * LunaTranslator starts a game it knows hooked from the start (--Exec). If it's already open, or it
+ * doesn't know the game, or it's a standalone LunaHook, it's opened (if needed) and the game started
+ * as usual; Luna attaches as it normally does.
+ */
+async function prepareLuna(game) {
+  const exe = config.data.lunaPath;
+  if (!(game.launch && game.launch.useLuna) || !exe || !(await fsu.exists(exe))) return null;
+  const open = process.platform === 'win32' && (await launcher.isRunningFrom(path.dirname(exe)).catch(() => false));
+  const plan = open ? { mode: 'alongside' } : await luna.plan(exe, local(game.id).exePath);
+  if (plan.mode === 'alongside' && !open) {
+    try { spawn(exe, [], { cwd: path.dirname(exe), detached: true, stdio: 'ignore' }).unref(); } catch (e) { logError('luna', e); }
+    await new Promise((r) => setTimeout(r, 1500)); // let it open before the game does
+  }
+  return plan;
+}
+
+/** A picked program, following shortcuts: { exePath, args, lunaPath } (lunaPath for Luna's own game shortcuts). */
+async function resolveProgram(file) {
+  if (!/\.lnk$/i.test(file)) return { exePath: file };
+  const info = await lnk.read(file);
+  if (!info || !info.target) throw new Error('Couldn\'t read where that shortcut points.');
+  const m = /--Exec\s+"?([^"\s]+)"?/i.exec(info.args || '');
+  if (luna.isTranslator(info.target) && m) {
+    const gamePath = await luna.gameFor(info.target, m[1]);
+    if (!gamePath) throw new Error('That LunaTranslator shortcut\'s game isn\'t in LunaTranslator\'s game list.');
+    return { exePath: gamePath, lunaPath: info.target };
+  }
+  return { exePath: info.target, args: info.args || '' };
+}
+
+/** Store a resolved program for a game on this PC (and its shortcut's options in the game). */
+async function useProgram(id, prog) {
+  await config.setGame(id, { exePath: prog.exePath, installDir: path.dirname(prog.exePath) });
+  if (prog.lunaPath && !config.data.lunaPath) await config.set({ lunaPath: prog.lunaPath });
+  const g = await library.get(id);
+  const launchPatch = { ...(g.launch || {}) };
+  if (prog.lunaPath) launchPatch.useLuna = true;
+  if (prog.args && !launchPatch.args) launchPatch.args = prog.args;
+  if (prog.lunaPath || prog.args) await library.update(id, { launch: launchPatch });
+}
+
+/**
  * Add a session to this PC's play time in the game's shared record (so the other PC shows the total),
  * moving over the minutes counted the old way (on this PC only) the first time.
  */
@@ -622,7 +668,7 @@ async function recordPlay(id, seconds) {
   }
 }
 
-function startGame(game, mode, onExit) {
+function startGame(game, mode, onExit, { lunaPlan = null } = {}) {
   const l = local(game.id);
   const ev = launcher.launch({
     exePath: l.exePath,
@@ -630,6 +676,7 @@ function startGame(game, mode, onExit) {
     args: (game.launch && game.launch.args) || '',
     useLocaleEmulator: !!(game.launch && game.launch.useLocaleEmulator),
     localeEmulatorPath: config.data.localeEmulatorPath,
+    luna: lunaPlan && lunaPlan.mode === 'exec' ? lunaPlan : null,
   });
   const entry = { ev, watchers: [], liveTimer: null, mode, startedAt: Date.now(), tools: [] };
   running.set(game.id, entry);
@@ -680,7 +727,7 @@ function fontsInfo() {
 
 // ---------------------------------------------------------------- sharing this PC's look with the other PC
 
-const SHARED_KEYS = ['language', 'sort', 'showStats', 'closeToTray', 'historyDepth', 'liveMode', 'autoUpdate', 'theme'];
+const SHARED_KEYS = ['language', 'sort', 'showStats', 'closeToTray', 'historyDepth', 'liveMode', 'autoUpdate', 'theme', 'categoryOrder', 'showListOnly'];
 let publishTimer = null;
 
 function publishSettingsSoon() {
@@ -868,11 +915,13 @@ const api = {
         historyDepth: config.data.historyDepth,
         liveMode: config.data.liveMode,
         localeEmulatorPath: config.data.localeEmulatorPath,
+        lunaPath: config.data.lunaPath || '',
         language: config.data.language,
         sort: config.data.sort,
         autoUpdate: config.data.autoUpdate,
         tools: config.data.tools,
         categories: config.data.categories,
+        categoryOrder: config.data.categoryOrder || [],
         background: backgroundInfo(),
         startWithSystem: config.data.startWithSystem,
         closeToTray: config.data.closeToTray,
@@ -932,6 +981,7 @@ const api = {
     if (s.historyDepth !== undefined) patch.historyDepth = Math.max(1, Math.min(100, Number(s.historyDepth) || 10));
     if (s.liveMode !== undefined) patch.liveMode = !!s.liveMode;
     if (s.localeEmulatorPath !== undefined) patch.localeEmulatorPath = s.localeEmulatorPath;
+    if (s.lunaPath !== undefined) patch.lunaPath = String(s.lunaPath || '');
     if (s.language !== undefined) patch.language = ['auto', 'en', 'ja'].includes(s.language) ? s.language : 'auto';
     if (s.sort !== undefined) patch.sort = String(s.sort);
     if (s.autoUpdate !== undefined) patch.autoUpdate = !!s.autoUpdate;
@@ -942,6 +992,7 @@ const api = {
     if (s.showListOnly !== undefined) patch.showListOnly = !!s.showListOnly;
     if (s.theme !== undefined) patch.theme = cleanTheme(s.theme);
     if (s.fonts !== undefined) patch.fonts = { ...config.data.fonts, en: String(s.fonts.en || '').slice(0, 100), ja: String(s.fonts.ja || '').slice(0, 100) };
+    if (s.categoryOrder !== undefined) patch.categoryOrder = [...new Set((s.categoryOrder || []).map((c) => String(c).trim()).filter(Boolean))].slice(0, 500);
     if (s.categories !== undefined) patch.categories = [...new Set(s.categories.map((c) => String(c).trim()).filter(Boolean))];
     if (s.tools !== undefined) {
       patch.tools = s.tools.filter((t) => t && t.path).map((t) => ({
@@ -1003,16 +1054,38 @@ const api = {
     return { badge, cloud, lock: lock && !lock.mine && !lock.stale ? lock : null };
   },
 
-  async addGame(exePath) {
+  /**
+   * Add a game from its program (or a shortcut to it). If the other PC already added it (same .exe
+   * name or title, not set up here yet), returns { existing } so it can be set up instead of added twice.
+   */
+  async addGame(file, { asNew = false } = {}) {
     requireLibrary();
+    const prog = await resolveProgram(file);
+    const exePath = prog.exePath;
     const dir = path.dirname(exePath);
+    if (!asNew) {
+      const exeName = path.basename(exePath).toLowerCase();
+      const folderTitle = detect.normName(path.basename(dir));
+      const games = await library.list({ maxAge: STATUS_MAX_AGE });
+      const other = games.find((g) => !local(g.id).exePath && ((g.exe && g.exe.toLowerCase() === exeName && !/^(game|start|launcher)\.exe$/i.test(exeName))
+        || (folderTitle.length >= 3 && [g.title, g.titleAlt].some((x) => detect.normName(x) === folderTitle))));
+      if (other) return { existing: { id: other.id, title: other.title }, file };
+    }
     const title = path.basename(dir).replace(/[\[(【].*?[\])】]/g, ' ').replace(/[_]+/g, ' ').replace(/\s+/g, ' ').trim() || path.basename(dir);
     refuseBlocked(title, path.basename(dir));
     const found = await detect.detectEngine(dir).catch(() => null);
     const game = await library.create({ title, exe: path.basename(exePath), engine: found ? found.engine.name : null, titleSource: 'folder' });
-    await config.setGame(game.id, { exePath, installDir: dir });
+    await useProgram(game.id, prog);
     send('games-changed');
-    return decorate(game);
+    return decorate(await library.get(game.id) || game);
+  },
+
+  /** Set up a game the other PC added, with its program on this PC. */
+  async setUpHere(id, file) {
+    const prog = await resolveProgram(file);
+    await useProgram(id, prog);
+    send('games-changed');
+    return decorate(await library.get(id));
   },
 
   async updateGame(id, patch) {
@@ -1061,9 +1134,9 @@ const api = {
     const exe = await api.pickFile(`Find ${game.exe || 'the game .exe'} for ${game.title} on this PC`,
       [{ name: 'Programs', extensions: ['exe', 'bat', 'lnk', 'sh', 'AppImage', '*'] }]);
     if (!exe) return null;
-    await config.setGame(id, { exePath: exe, installDir: path.dirname(exe) });
+    await useProgram(id, await resolveProgram(exe));
     send('games-changed');
-    return decorate(game);
+    return decorate(await library.get(id) || game);
   },
 
   async setGameFolder(id) {
@@ -1094,6 +1167,42 @@ const api = {
     }
     send('games-changed');
     return decorate(await library.get(id) || g);
+  },
+
+  /** Covers on VNDB to choose from (cached on this PC for a week). */
+  async vndbCovers(id) {
+    const game = await peekGame(id);
+    if (!game.vndbId) return [];
+    return (await vndbCached(`covers-${game.vndbId}`, () => vndb.fetchCovers(game.vndbId))) || [];
+  },
+
+  async setCoverFromUrl(id, url) {
+    if (!/^https:\/\/t\.vndb\.org\//.test(String(url))) throw new Error('Not a VNDB image.');
+    const { buf, ext } = await vndb.downloadImage(url);
+    const g = await library.setCoverBuffer(id, buf, ext);
+    send('games-changed');
+    return decorate(g);
+  },
+
+  /** Pick an image file to crop into a cover: its contents as a data: URL, or null. */
+  async pickCoverImage() {
+    const f = await api.pickFile('Choose a cover image', [{ name: 'Images', extensions: ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp'] }]);
+    if (!f) return null;
+    const buf = await fs.promises.readFile(f);
+    if (buf.length > 40 * 1024 * 1024) throw new Error('That image is too big (over 40 MB).');
+    const ext = path.extname(f).slice(1).toLowerCase().replace('jpg', 'jpeg');
+    return `data:image/${ext || 'jpeg'};base64,${buf.toString('base64')}`;
+  },
+
+  /** Save a cropped cover made in the window (a JPEG data: URL). */
+  async setCoverData(id, dataUrl) {
+    const m = /^data:image\/jpeg;base64,([A-Za-z0-9+/=]+)$/.exec(String(dataUrl));
+    if (!m) throw new Error('Not a cover image.');
+    const buf = Buffer.from(m[1], 'base64');
+    if (buf.length > 15 * 1024 * 1024) throw new Error('That cover is too big.');
+    const g = await library.setCoverBuffer(id, buf, '.jpg');
+    send('games-changed');
+    return decorate(g);
   },
 
   async setCustomCover(id) {
@@ -1250,6 +1359,7 @@ const api = {
       await engine.takeLock(id).catch(() => {});
     }
 
+    const lunaPlan = await prepareLuna(game);
     startGame(game, 'play', async (info) => {
       if (info.reason === 'failed' || info.reason === 'declined') {
         await engine.releaseLock(id).catch(() => {});
@@ -1272,7 +1382,7 @@ const api = {
       const r = await runSync(fresh).catch((e) => ({ error: e.message }));
       await engine.releaseLock(id).catch(() => {});
       reportSync(id, fresh.title, r);
-    });
+    }, { lunaPlan });
     setState(id, 'running', { message: 'Playing' });
     startLive(game);
     return { started: true };
@@ -1315,6 +1425,28 @@ const api = {
   async stopTracking(id) {
     const entry = running.get(id);
     if (entry) entry.ev.stop();
+    return true;
+  },
+
+  /**
+   * Stop: ask the game to close like its X button (it may ask "Quit?"). Resolves { closed } once it
+   * has, or { stillOpen } after 6 s (then forceClose or keep it). Waiting for a game started
+   * elsewhere just stops waiting.
+   */
+  async closeGame(id) {
+    const entry = running.get(id);
+    if (!entry) return { closed: true };
+    if (entry.mode === 'watch') { entry.ev.stop(); return { closed: true }; }
+    const asked = await entry.ev.close().catch(() => false);
+    if (!asked) { entry.ev.stop(); return { closed: true, untracked: true } ; }
+    const until = Date.now() + 6000;
+    while (Date.now() < until && running.get(id) === entry) await new Promise((r) => setTimeout(r, 250));
+    return running.get(id) === entry ? { stillOpen: true } : { closed: true };
+  },
+
+  async forceCloseGame(id) {
+    const entry = running.get(id);
+    if (entry) await entry.ev.kill().catch(() => {});
     return true;
   },
 
@@ -1413,7 +1545,9 @@ const api = {
     const unlinked = games.filter((g) => !g.vndbId);
     const entries = vndbList.listOnly(cache, games).map((e) => {
       const names = [e.title, e.titleAlt].map(detect.normName).filter((n) => n.length >= 3);
-      const match = unlinked.find((g) => [g.title, g.titleAlt].map(detect.normName).some((n) => n.length >= 3 && names.some((m) => detect.namesMatch(n, m))));
+      // Only near-identical names ("Muv-Luv" is not "Muv-Luv Tactics").
+      const close = (n, m) => detect.namesMatch(n, m) && Math.min(n.length, m.length) / Math.max(n.length, m.length) >= 0.8;
+      const match = unlinked.find((g) => [g.title, g.titleAlt].map(detect.normName).some((n) => n.length >= 3 && names.some((m) => close(n, m))));
       return { ...e, linkTo: match ? { id: match.id, title: match.title } : null };
     });
     const view = { entries, loading: !cache.fullAt };
@@ -1429,7 +1563,12 @@ const api = {
     requireLibrary();
     const full = await vndb.fetchInfo(vid);
     refuseBlocked(full.title, full.titleAlt, full.info && full.info.aliases);
-    const game = await library.create({ title: full.title, titleAlt: full.titleAlt, developer: full.developer, vndbId: full.vndbId, titleSource: 'vndb' });
+    // Where the game is on this PC first; cancelling adds nothing.
+    const file = await api.pickFile(`Find ${full.title} on this PC`, [{ name: 'Programs', extensions: ['exe', 'bat', 'lnk', 'sh', 'AppImage', '*'] }]);
+    if (!file) return null;
+    const prog = await resolveProgram(file);
+    const game = await library.create({ title: full.title, titleAlt: full.titleAlt, developer: full.developer, vndbId: full.vndbId, titleSource: 'vndb', exe: path.basename(prog.exePath) });
+    await useProgram(game.id, prog);
     const g = await api.applyVndb(game.id, full);
     vndbSync().catch(() => {}); // brings in its status, labels and rating
     return g;

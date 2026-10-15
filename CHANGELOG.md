@@ -4,6 +4,37 @@ All notable changes to VN Shelf. Download any version from the
 [Releases page](https://github.com/stagefuel/vn-shelf/releases). From 0.3.0 on, VN Shelf can
 update itself (Settings → Updates).
 
+## 0.11.0
+
+### New
+- **Start through LunaTranslator.** Set LunaTranslator's location in Settings → Games & tools, then
+  tick **Start through LunaTranslator** on a game. If Luna's game list has the game, VN Shelf starts
+  it the way Luna's own shortcuts do (`--Exec`), so the hook is attached from the start. Otherwise,
+  or if Luna is already open, Luna is opened and the game started as usual. Luna's game IDs are
+  looked up on each PC and never shared.
+- **Stop closes the game.** While a game runs, **■ Stop** asks it to close like its X button (it may
+  ask "Quit?"). If it's still open after 6 seconds you can **Force close** it or keep it open. Saves
+  sync as usual afterwards.
+- **Games your other PC added:** adding a game that's already in the library but not set up on this
+  PC (same .exe name or title) offers **Set up on this PC** instead of a duplicate.
+- **Shortcuts (.lnk)** can be added, dropped or picked as a game's program. LunaTranslator's own
+  game shortcuts lead to the real game and tick Start through LunaTranslator.
+- **Change cover:** pick any of VNDB's covers for the game (the VN's and every release's front and
+  digital covers, Japanese first), or upload your own image and crop it to the cover shape (drag to
+  move, scroll or the slider to zoom).
+- **Drag categories** in the sidebar to put them in your own order.
+
+### Changed
+- A closed game is noticed in about 2 seconds once it has been running a while (was about 6). Just
+  after starting, a launcher handing over to the game still gets a few seconds.
+- **+ Add** on VNDB pages (your list, Not in Library, related VNs, staff and brand pages) first asks
+  where the game is on this PC; cancelling adds nothing.
+- Reading statuses are ordered Reading, Finished, Plan to read, On hold, Dropped.
+- **+ Add** is always the same colour; **Link to** is the secondary button.
+- **Link to** only suggests games with near-identical names ("Muv-Luv" no longer matches "Muv-Luv
+  Tactics").
+- Dragging a category no longer shows the "drop to add" overlay.
+
 ## 0.10.1
 
 ### Fixed

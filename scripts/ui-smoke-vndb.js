@@ -26,6 +26,13 @@ const game = (id, fields) => write(path.join(cloudDir, 'games', id, 'game.json')
 }));
 game('linked-aaaaaa', { title: 'Linked Game', vndbId: 'v11', vndb: { id: 'v11', description: 'A story.', released: '2020-01-01', length: 'long', languages: ['ja'], platforms: ['win'], tags: [{ id: 'g1', name: 'Romance', rating: 2.5, spoiler: 0 }], fetchedAt: '2026-01-01T00:00:00Z' } });
 game('wanted-bbbbbb', { title: 'Wanted Game' });
+game('remote-cccccc', { title: 'Remote Game', exe: 'remote.exe' }); // added on the other PC, not set up here
+const onlyExe = path.join(base, 'Games', 'OnlyGame', 'only.exe');
+write(onlyExe);
+const remoteExe = path.join(base, 'Games', 'Remote', 'remote.exe');
+write(remoteExe);
+const coverPng = path.join(base, 'cover.png');
+fs.writeFileSync(coverPng, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAoAAAAOCAIAAACZwRr8AAAAE0lEQVR4nGM4YROFBzGMSg82aQCGgL9p8HvqBQAAAABJRU5ErkJggg==', 'base64'));
 write(path.join(userData, 'config.json'), JSON.stringify({ cloudDir, backend: 'folder', deviceName: 'PC1', autoUpdate: false }));
 const readGame = (id) => JSON.parse(fs.readFileSync(path.join(cloudDir, 'games', id, 'game.json'), 'utf8'));
 
@@ -58,7 +65,9 @@ async function until(what, fn, ms = 20000) {
     staff: [{ id: 's1', name: 'Writer Person', original: '書き手', role: 'scenario', note: null }],
     developers: [{ id: 'p1', name: 'Brand Co', original: 'ブランド' }],
   });
-  fake.releases.set('v11', [{ engine: 'SiglusEngine', official: true, platforms: ['win'], languages: [{ lang: 'ja' }] }]);
+  const cv = (n, type) => ({ url: `https://t.vndb.org/cv/${n}.jpg`, thumbnail: px, type, sexual: 0 });
+  fake.vns.set('v11', { title: 'Linked Game', image: cv(1) });
+  fake.releases.set('v11', [{ engine: 'SiglusEngine', official: true, platforms: ['win'], languages: [{ lang: 'ja' }], images: [cv(2, 'pkgfront'), cv(3, 'pkgback')] }]);
   fake.characters.set('v11', [
     { id: 'c1', name: 'Heroine', original: 'ヒロイン', vns: [{ id: 'v11', role: 'primary', spoiler: 0 }], traits: [{ id: 'i1', name: 'Kind', group_name: 'Personality', spoiler: 0 }] },
     { id: 'c2', name: 'Twist', vns: [{ id: 'v11', role: 'main', spoiler: 2 }], traits: [] },
@@ -133,13 +142,27 @@ async function until(what, fn, ms = 20000) {
     await until('linked game pulled', () => readGame('wanted-bbbbbb').status === 'finished');
     result.linked = { vndbId: readGame('wanted-bbbbbb').vndbId, status: readGame('wanted-bbbbbb').status, vote: readGame('wanted-bbbbbb').vote };
     await until('two cards left', () => page.locator('#vndbView .listcard').count().then((n) => n === 2));
+    // + Add asks where the game is first: cancelling adds nothing, picking the .exe adds it set up here.
+    await app.evaluate(({ dialog }) => { dialog.showOpenDialog = async () => ({ canceled: true, filePaths: [] }); });
+    await page.click('#vndbView .listcard:has-text("Only On The List") button:has-text("+ Add")');
+    await sleep(1500);
+    if (fs.readdirSync(path.join(cloudDir, 'games')).map(readGame).some((x) => x.vndbId === 'v12')) throw new Error('cancelled Add still added the game');
+    await app.evaluate(({ dialog }, f) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [f] }); }, onlyExe);
     await page.click('#vndbView .listcard:has-text("Only On The List") button:has-text("+ Add")');
     const added = await until('added from list', () => {
       const ids = fs.readdirSync(path.join(cloudDir, 'games')).filter((n) => !n.startsWith('.'));
       const g = ids.map(readGame).find((x) => x.vndbId === 'v12');
       return g && g.status === 'wishlist' ? g : null;
     });
-    result.added = { title: added.title, status: added.status };
+    result.added = { title: added.title, status: added.status, exePath: JSON.parse(fs.readFileSync(path.join(userData, 'config.json'), 'utf8')).games[added.id].exePath };
+    if (result.added.exePath !== onlyExe) throw new Error(`added game not set up on this PC: ${result.added.exePath}`);
+
+    // ---- adding a game the other PC already added offers to set it up here
+    const ex = await page.evaluate((f) => window.vns.call('addGame', f), remoteExe);
+    if (!ex.existing || ex.existing.id !== 'remote-cccccc') throw new Error(`no "already in your library": ${JSON.stringify(ex)}`);
+    await page.evaluate((f) => window.vns.call('setUpHere', 'remote-cccccc', f), remoteExe);
+    result.setUpHere = JSON.parse(fs.readFileSync(path.join(userData, 'config.json'), 'utf8')).games['remote-cccccc'].exePath === remoteExe;
+    if (!result.setUpHere) throw new Error('setUpHere did not set the program');
     await until('one card left', () => page.locator('#vndbView .listcard').count().then((n) => n === 1));
 
     // ---- game page: status → Finished fills the date and goes to VNDB; rating too
@@ -208,6 +231,17 @@ async function until(what, fn, ms = 20000) {
     await shot(page, '05c-layout-middle');
     await page.locator('.xcols').scrollIntoViewIfNeeded();
     await shot(page, '05b-layout-bottom');
+    // ---- Change cover: VNDB's covers to pick from, or your own image cropped to fit
+    await app.evaluate(({ dialog }, f) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [f] }); }, coverPng);
+    await page.click('button:has-text("Change cover")');
+    await until('covers listed', () => page.locator('.coverpick .coveropt').count().then((n) => n === 2));
+    await shot(page, '05d-cover-picker');
+    await page.click('#dlg button:has-text("Upload image")');
+    await page.waitForSelector('.cropframe');
+    await page.locator('.cropzoom input').fill('2');
+    await shot(page, '05e-crop');
+    await page.click('#dlg button:has-text("Use this")');
+    result.cover = await until('cropped cover saved', () => { const g = readGame('linked-aaaaaa'); return g.cover === 'cover.jpg' ? g.cover : null; });
     // No engine known from the files, so the hero shows VNDB's.
     result.extras.engine = await page.locator('.hero .vndbengine').textContent();
     if (result.extras.engine !== 'Engine (VNDB): SiglusEngine') throw new Error(`VNDB engine not shown: ${result.extras.engine}`);

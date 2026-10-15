@@ -5,7 +5,8 @@
 // Emulator does the same. So instead of waiting on the process we started, we watch for ANY
 // running program whose .exe lives inside the game folder (plus, on Windows, programs the game
 // itself started that we aren't allowed to look into, such as one running as administrator), and
-// call the game closed once none have been seen for a few seconds.
+// call the game closed once none have been seen for a few seconds: about 2 s once it has been
+// running a while, longer just after starting (a launcher handing over to the game).
 //
 // Play time counts only the time something of the game's was seen running: the gap between a
 // launcher closing and the game appearing doesn't count, the grace period after it closes doesn't
@@ -98,6 +99,30 @@ function startElevated(cmd, argv, cwd) {
   });
 }
 
+/** Ask programs to close, like clicking their X (the game may ask "Quit?"). */
+async function closeWindows(pids, platform = process.platform) {
+  if (platform !== 'win32') {
+    for (const pid of pids) { try { process.kill(pid, 'SIGTERM'); } catch { /* gone */ } }
+    return true;
+  }
+  const script = "$n=0; foreach ($i in ($env:VNS_PIDS -split ',')) { try { $p=Get-Process -Id ([int]$i) -ErrorAction Stop; " +
+    'if ($p.MainWindowHandle -ne 0) { if ($p.CloseMainWindow()) { $n++ } } } catch {} }; [Console]::Out.Write($n)';
+  const out = await execFileP('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], {
+    env: { ...process.env, VNS_PIDS: pids.join(',') }, timeout: 20000,
+  });
+  return Number(String(out || '0').trim()) > 0;
+}
+
+/** Force programs closed (with their child processes). */
+async function killPids(pids, platform = process.platform) {
+  if (platform !== 'win32') {
+    for (const pid of pids) { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } }
+    return true;
+  }
+  await Promise.all(pids.map((pid) => execFileP('taskkill', ['/PID', String(pid), '/T', '/F'], { timeout: 20000 })));
+  return true;
+}
+
 /** Is any program from inside `dir` running right now? (A one-off check, e.g. before replacing saves.) */
 async function isRunningFrom(dir, platform = process.platform) {
   if (!dir) return false;
@@ -137,19 +162,28 @@ async function linuxProcessesUnder(dir) {
  *   'exit'      ({ reason, error, durationMs, playedMs })  the game is closed
  *               reason: 'closed' | 'stopped' | 'failed' | 'declined' (No to the administrator prompt)
  *               playedMs: time the game was actually running (see the top of this file)
- * and has .stop() to stop tracking manually.
+ * and has .stop() to stop tracking manually, .close() to ask the game to close (like its X button),
+ * and .kill() to force it closed.
+ * With `luna` ({ cmd, argv, cwd }) the game is started through LunaTranslator: Luna itself keeps
+ * running, so only the game's own programs count, and the game gets up to `startupMs` to appear.
  * With exePath null nothing is started: it only watches a game that's already running (from installDir).
  */
-function launch({ exePath, installDir, args = '', localeEmulatorPath = '', useLocaleEmulator = false,
-  platform = process.platform, pollMs = 2500, graceMs = 6000, spawnImpl = spawn, elevateImpl = startElevated }) {
+function launch({ exePath, installDir, args = '', localeEmulatorPath = '', useLocaleEmulator = false, luna = null,
+  platform = process.platform, pollMs = 1000, graceMs = 8000, closeGraceMs = Math.min(2500, graceMs), settleMs = 20000,
+  startupMs = 60000, spawnImpl = spawn, elevateImpl = startElevated, closeImpl = closeWindows, killImpl = killPids }) {
   const ev = new EventEmitter();
   const cwd = exePath ? path.dirname(exePath) : installDir;
   const extra = args ? args.match(/"[^"]*"|\S+/g).map((a) => a.replace(/^"|"$/g, '')) : [];
 
   let cmd = exePath;
   let argv = extra;
+  let workDir = cwd;
   if (!exePath) {
     // Watch-only.
+  } else if (luna) {
+    cmd = luna.cmd;
+    argv = luna.argv;
+    workDir = luna.cwd || path.dirname(luna.cmd);
   } else if (useLocaleEmulator && localeEmulatorPath) {
     cmd = localeEmulatorPath;
     argv = ['-run', exePath, ...extra];
@@ -172,7 +206,9 @@ function launch({ exePath, installDir, args = '', localeEmulatorPath = '', useLo
   // Play time: the sum of the gaps between consecutive checks that both saw the game running.
   let playedMs = 0;
   let lastAliveCheck = startedAt; // the start counts as a sighting: the game was just launched
-  const maxGap = pollMs * 3; // longer than this between two checks = the PC slept; don't count it
+  const maxGap = Math.max(pollMs * 3, 8000); // longer than this between two checks = the PC slept; don't count it
+  let firstSeen = null;
+  let lastPids = [];
   let pendingTitle = null;
   let lastTitle = null;
 
@@ -204,13 +240,24 @@ function launch({ exePath, installDir, args = '', localeEmulatorPath = '', useLo
       if (lastAliveCheck !== null && now - lastAliveCheck <= maxGap) playedMs += now - lastAliveCheck;
       lastAliveCheck = now;
       lastSeen = now;
-      if (pids && pids.length) ev.emit('running', pids);
+      if (pids && pids.length) {
+        if (firstSeen === null) firstSeen = now;
+        lastPids = pids;
+        ev.emit('running', pids);
+      }
     } else {
       // Gone since the last check: count up to halfway, the best guess of when it closed.
       if (lastAliveCheck !== null && now - lastAliveCheck <= maxGap) playedMs += (now - lastAliveCheck) / 2;
       lastAliveCheck = null;
     }
-    if (!done && now - lastSeen >= graceMs && now - startedAt >= graceMs) return finish('closed');
+    if (luna && firstSeen === null) {
+      // Through Luna: nothing of the game yet. Give it time to appear.
+      if (now - startedAt >= startupMs) return finish('failed', 'The game didn\'t start from LunaTranslator.');
+    } else {
+      // Settled games close quickly; just after starting, allow for a launcher handing over.
+      const grace = firstSeen !== null && now - firstSeen >= settleMs ? closeGraceMs : graceMs;
+      if (!done && now - lastSeen >= grace && now - startedAt >= grace) return finish('closed');
+    }
     timer = setTimeout(tick, pollMs);
   };
 
@@ -223,7 +270,7 @@ function launch({ exePath, installDir, args = '', localeEmulatorPath = '', useLo
   const elevate = async () => {
     childAlive = false;
     ev.emit('elevating');
-    const r = await elevateImpl(cmd, argv, cwd);
+    const r = await elevateImpl(cmd, argv, workDir);
     if (done) return;
     if (r.declined) return finish('declined', 'The game needs administrator rights, and permission wasn\'t given.');
     if (!r.pid) return finish('failed', r.error || 'couldn\'t start with administrator rights');
@@ -231,6 +278,11 @@ function launch({ exePath, installDir, args = '', localeEmulatorPath = '', useLo
     lastAliveCheck = lastSeen;
     startWatching([r.pid]);
   };
+
+  // The game's programs as last seen, else the one we started (while it's still running).
+  const targets = () => (lastPids.length ? lastPids : child && childAlive && child.pid && !luna ? [child.pid] : []);
+  ev.close = () => (targets().length ? closeImpl(targets(), platform) : Promise.resolve(false));
+  ev.kill = () => (targets().length ? killImpl(targets(), platform) : Promise.resolve(false));
 
   if (!exePath) {
     childAlive = false;
@@ -241,7 +293,7 @@ function launch({ exePath, installDir, args = '', localeEmulatorPath = '', useLo
   }
 
   try {
-    child = spawnImpl(cmd, argv, { cwd, detached: true, stdio: 'ignore', windowsHide: false });
+    child = spawnImpl(cmd, argv, { cwd: workDir, detached: true, stdio: 'ignore', windowsHide: false });
   } catch (e) {
     if (platform === 'win32' && e.code === 'EACCES') { elevate(); return Object.assign(ev, { stop: () => finish('stopped') }); }
     setImmediate(() => finish('failed', e.message));
@@ -255,13 +307,20 @@ function launch({ exePath, installDir, args = '', localeEmulatorPath = '', useLo
     if (platform === 'win32' && e.code === 'EACCES' && !spawned) { clearTimeout(timer); if (watcher && watcher.stop) watcher.stop(); watcher = null; elevate(); return; }
     finish('failed', e.message);
   });
-  child.on('exit', () => { childAlive = false; });
+  child.on('exit', (code) => {
+    childAlive = false;
+    if (luna && code && firstSeen === null) finish('failed', `LunaTranslator closed before the game started (code ${code}).`);
+  });
   child.unref();
   setImmediate(() => ev.emit('started'));
-  startWatching(child.pid ? [child.pid] : []);
+  if (luna) {
+    // Luna stays open after the game closes: only the game's own programs count.
+    childAlive = false;
+    startWatching([]);
+  } else startWatching(child.pid ? [child.pid] : []);
 
   ev.stop = () => finish('stopped');
   return ev;
 }
 
-module.exports = { launch, linuxProcessesUnder, windowsWatcher, startElevated, isRunningFrom };
+module.exports = { launch, linuxProcessesUnder, windowsWatcher, startElevated, isRunningFrom, closeWindows, killPids };

@@ -121,3 +121,39 @@ test('watch-only: follows a game that is already running and reports when it clo
   assert.strictEqual(info.reason, 'closed');
   assert.ok(info.playedMs >= 1000, `counted ${info.playedMs} ms`);
 });
+
+test('through LunaTranslator: Luna staying open does not keep the game "running"', { skip: process.platform === 'win32' }, async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vns-luna-'));
+  const gameDir = path.join(dir, 'Game');
+  fs.mkdirSync(gameDir);
+  const game = path.join(gameDir, 'game.sh');
+  fs.writeFileSync(game, '#!/bin/sh\nsleep 2\n');
+  fs.chmodSync(game, 0o755);
+  const lunaDir = path.join(dir, 'Luna');
+  fs.mkdirSync(lunaDir);
+  const lunaExe = path.join(lunaDir, 'luna.sh');
+  fs.writeFileSync(lunaExe, `#!/bin/sh\nsleep 1\n"${game}" &\nsleep 20\n`); // starts the game after a moment, stays open
+  fs.chmodSync(lunaExe, 0o755);
+  const t0 = Date.now();
+  const info = await new Promise((resolve) => {
+    launch({ exePath: game, installDir: gameDir, luna: { cmd: lunaExe, argv: [], cwd: lunaDir }, pollMs: 200, graceMs: 800, startupMs: 10000 }).on('exit', resolve);
+  });
+  const secs = (Date.now() - t0) / 1000;
+  assert.strictEqual(info.reason, 'closed');
+  assert.ok(secs >= 3 && secs < 8, `closed after ${secs}s`);
+});
+
+test('Stop asks the game to close, and it is reported closed', { skip: process.platform === 'win32' }, async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vns-close-'));
+  const game = path.join(dir, 'game.sh');
+  fs.writeFileSync(game, '#!/bin/sh\nsleep 60\n');
+  fs.chmodSync(game, 0o755);
+  const ev = launch({ exePath: game, installDir: dir, pollMs: 200, graceMs: 600 });
+  await new Promise((r) => setTimeout(r, 800));
+  const t0 = Date.now();
+  const done = new Promise((resolve) => ev.on('exit', resolve));
+  assert.strictEqual(await ev.close(), true);
+  const info = await done;
+  assert.strictEqual(info.reason, 'closed');
+  assert.ok(Date.now() - t0 < 4000);
+});

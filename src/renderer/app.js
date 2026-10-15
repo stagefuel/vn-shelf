@@ -206,7 +206,7 @@ const BADGE_TEXT = () => ({
 const STATUS_TEXT = () => ({
   playing: t('Reading'), wishlist: t('Plan to read'), stalled: t('On hold'), finished: t('Finished'), dropped: t('Dropped'),
 });
-const STATUS_ORDER = ['playing', 'wishlist', 'stalled', 'finished', 'dropped'];
+const STATUS_ORDER = ['playing', 'finished', 'wishlist', 'stalled', 'dropped'];
 
 const SORTS = () => [
   ['title', t('Title')], ['played', t('Last played')], ['added', t('Recently added')], ['released', t('Release date')],
@@ -250,7 +250,37 @@ function pumpStatus() {
 function categoriesAll() {
   const set = new Set(setup.settings.categories || []);
   for (const g of games) for (const c of g.categories || []) set.add(c);
-  return [...set].sort((a, b) => a.localeCompare(b, currentLanguage()));
+  // Your own order (dragged in the sidebar) first; categories not in it yet go after, A–Z.
+  const order = setup.settings.categoryOrder || [];
+  const at = (c) => { const i = order.indexOf(c); return i < 0 ? Infinity : i; };
+  return [...set].sort((a, b) => (at(a) - at(b)) || a.localeCompare(b, currentLanguage()));
+}
+
+/** Drag a category in the sidebar onto another to move it there. */
+function categoryDrag(el, c, cats) {
+  el.draggable = true;
+  el.addEventListener('dragstart', (e) => { e.dataTransfer.setData('text/x-vns-category', c); e.dataTransfer.effectAllowed = 'move'; el.classList.add('dragging'); });
+  el.addEventListener('dragend', () => el.classList.remove('dragging'));
+  el.addEventListener('dragover', (e) => {
+    if (!e.dataTransfer.types.includes('text/x-vns-category')) return;
+    e.preventDefault();
+    const below = e.offsetY > el.offsetHeight / 2;
+    el.classList.toggle('dropabove', !below);
+    el.classList.toggle('dropbelow', below);
+  });
+  el.addEventListener('dragleave', () => el.classList.remove('dropabove', 'dropbelow'));
+  el.addEventListener('drop', async (e) => {
+    const from = e.dataTransfer.getData('text/x-vns-category');
+    const below = el.classList.contains('dropbelow');
+    el.classList.remove('dropabove', 'dropbelow');
+    if (!from || from === c) return;
+    e.preventDefault();
+    const next = cats.filter((x) => x !== from);
+    next.splice(next.indexOf(c) + (below ? 1 : 0), 0, from);
+    setup = await call('saveSettings', { categoryOrder: next });
+    renderSidebar();
+  });
+  return el;
 }
 
 // ------------------------------------------------------------------ shell: sidebar, views
@@ -279,9 +309,9 @@ function renderSidebar() {
     })(),
     h('div', { class: 'navhead' }, t('Categories'),
       h('button', { class: 'ghost tiny', title: t('New category'), onclick: newCategory }, '+')),
-    ...cats.map((c) => item(h('span', { class: 'catname' }, c), view === 'library' && filter.category === c,
+    ...cats.map((c) => categoryDrag(item(h('span', { class: 'catname' }, c), view === 'library' && filter.category === c,
       () => showLibrary({ category: c, tag: null }),
-      h('span', { class: 'count' }, count(c)))),
+      h('span', { class: 'count' }, count(c))), c, cats)),
   );
 }
 
@@ -663,8 +693,9 @@ function vnGrid(list, { sub, onAdded }) {
       add.disabled = true;
       try {
         const ng = await call('vndbAddFromList', v.vndbId);
+        if (!ng) { add.disabled = false; return; }
         v.gameId = ng.id;
-        toast(t('Added {title}. Find its program on its page to play it on this PC.', { title: v.title }), 'good');
+        toast(t('Added {title}.', { title: v.title }), 'good');
         games = await call('listGames');
         renderSidebar();
         if (onAdded) onAdded();
@@ -809,18 +840,18 @@ function vndbSyncIfStale() {
 function listCard(e, after) {
   const art = h('div', { class: 'art' },
     e.image ? h('img', { src: e.image, alt: '', loading: 'lazy', draggable: 'false', class: e.imageSexual >= 1.5 ? 'nsfw' : null }) : h('div', { class: 'placeholder' }, e.title));
-  const add = h('button', { class: `small${e.linkTo ? '' : ' primary'}`, onclick: async (ev) => {
+  const add = h('button', { class: 'small primary', onclick: async (ev) => {
     ev.stopPropagation();
     add.disabled = true;
     try {
-      await call('vndbAddFromList', e.vndbId);
-      toast(t('Added {title}. Find its program on its page to play it on this PC.', { title: e.title }), 'good');
+      if (!(await call('vndbAddFromList', e.vndbId))) { add.disabled = false; return; }
+      toast(t('Added {title}.', { title: e.title }), 'good');
       games = await call('listGames');
       renderSidebar();
       after();
     } catch { add.disabled = false; }
   } }, t('+ Add'));
-  const link = e.linkTo ? h('button', { class: 'small primary linkbtn', title: t('Link {game} in your library to this VNDB entry', { game: e.linkTo.title }), onclick: async (ev) => {
+  const link = e.linkTo ? h('button', { class: 'small linkbtn', title: t('Link {game} in your library to this VNDB entry', { game: e.linkTo.title }), onclick: async (ev) => {
     ev.stopPropagation();
     try {
       await call('vndbLink', e.linkTo.id, e.vndbId);
@@ -957,7 +988,8 @@ async function manageCategory(cat) {
   }
   const list = (setup.settings.categories || []).filter((c) => c !== cat);
   if (v === 'rename') list.push(to);
-  setup = await call('saveSettings', { categories: list });
+  const order = (setup.settings.categoryOrder || []).flatMap((c) => (c !== cat ? [c] : v === 'rename' ? [to] : []));
+  setup = await call('saveSettings', { categories: list, categoryOrder: order });
   await loadGames();
   if (v === 'rename') showLibrary({ category: to }); else showLibrary({ category: null });
 }
@@ -982,9 +1014,14 @@ async function conflictDialog(info) {
   });
 }
 
-function playOrStop(id) {
-  if (live[id] && live[id].state === 'running') vns.call('stopTracking', id);
-  else play(id);
+async function playOrStop(id) {
+  if (!(live[id] && live[id].state === 'running')) return play(id);
+  const r = await vns.call('closeGame', id).catch(() => null);
+  if (!r || !r.stillOpen) return;
+  const g = games.find((x) => x.id === id) || {};
+  const force = await dialog({ title: t('{title} is still open', { title: g.title || '' }),
+    buttons: [{ label: t('Keep open'), value: false, cls: 'ghost' }, { label: t('Force close'), value: true, cls: 'primary danger' }] });
+  if (force) vns.call('forceCloseGame', id);
 }
 
 async function play(id, opts = {}) {
@@ -1113,12 +1150,97 @@ async function loadGamesKeepView() {
   renderSidebar();
 }
 
+// ------------------------------------------------------------------ cover picker
+
+/** Choose a cover: one of VNDB's (the VN's and every release's), or your own image cropped to fit. */
+async function coverDialog(g) {
+  const grid = h('div', { class: 'coverpick' }, g.vndbId ? h('div', { class: 'faint small' }, t('Loading from VNDB…')) : null);
+  const body = h('div', {},
+    grid,
+    h('div', { class: 'boxactions' }, h('button', { type: 'button', class: 'primary', onclick: () => closeDialog('upload') }, t('Upload image…'))));
+  if (g.vndbId) {
+    vns.call('vndbCovers', g.id).then((list) => {
+      replaceKids(grid, (list || []).map((c) => h('button', { type: 'button', class: 'coveropt', title: c.lang ? c.lang.toUpperCase() : null, onclick: () => closeDialog({ url: c.url }) },
+        h('img', { src: c.thumb, alt: '', loading: 'lazy', draggable: 'false' }))));
+      if (!(list || []).length) replaceKids(grid, h('div', { class: 'faint small' }, t('No covers on VNDB.')));
+    }).catch(() => replaceKids(grid, h('div', { class: 'faint small' }, t('Couldn\'t load covers from VNDB.'))));
+  }
+  const pick = await dialog({ title: t('Cover'), body, wide: true, buttons: [{ label: t('Cancel'), value: null, cls: 'ghost' }] });
+  if (!pick) return false;
+  try {
+    if (pick.url) { await call('setCoverFromUrl', g.id, pick.url); return true; }
+    const src = await call('pickCoverImage');
+    if (!src) return false;
+    const cropped = await cropDialog(src);
+    if (!cropped) return false;
+    await call('setCoverData', g.id, cropped);
+    return true;
+  } catch { return false; }
+}
+
+/** Crop an image to the cover shape (5:7): drag to move, scroll or the slider to zoom. A JPEG data: URL or null. */
+async function cropDialog(src) {
+  const img = await new Promise((resolve, reject) => { const i = new Image(); i.onload = () => resolve(i); i.onerror = reject; i.src = src; }).catch(() => null);
+  if (!img) { toast(t('That image couldn\'t be opened.'), 'bad'); return null; }
+  const W = 300, H = 420;
+  const min = Math.max(W / img.naturalWidth, H / img.naturalHeight);
+  let scale = min, x = (W - img.naturalWidth * min) / 2, y = (H - img.naturalHeight * min) / 2;
+  const pic = h('img', { src, alt: '', draggable: 'false' });
+  const frame = h('div', { class: 'cropframe', style: `width:${W}px;height:${H}px` }, pic);
+  const zoom = h('input', { type: 'range', min: '1', max: '4', step: '0.01', value: '1' });
+  const clamp = () => {
+    x = Math.min(0, Math.max(W - img.naturalWidth * scale, x));
+    y = Math.min(0, Math.max(H - img.naturalHeight * scale, y));
+    pic.style.width = `${img.naturalWidth * scale}px`;
+    pic.style.transform = `translate(${x}px, ${y}px)`;
+  };
+  const zoomTo = (z, cx = W / 2, cy = H / 2) => {
+    const next = min * Math.min(4, Math.max(1, z));
+    x = cx - ((cx - x) * next) / scale;
+    y = cy - ((cy - y) * next) / scale;
+    scale = next;
+    zoom.value = String(scale / min);
+    clamp();
+  };
+  zoom.addEventListener('input', () => zoomTo(Number(zoom.value)));
+  frame.addEventListener('wheel', (e) => { e.preventDefault(); const r = frame.getBoundingClientRect(); zoomTo(scale / min * (e.deltaY < 0 ? 1.1 : 1 / 1.1), e.clientX - r.left, e.clientY - r.top); }, { passive: false });
+  frame.addEventListener('pointerdown', (e) => {
+    frame.setPointerCapture(e.pointerId);
+    const sx = e.clientX - x, sy = e.clientY - y;
+    const move = (ev) => { x = ev.clientX - sx; y = ev.clientY - sy; clamp(); };
+    const up = () => { frame.removeEventListener('pointermove', move); frame.removeEventListener('pointerup', up); };
+    frame.addEventListener('pointermove', move);
+    frame.addEventListener('pointerup', up);
+  });
+  clamp();
+  const render = () => {
+    const out = document.createElement('canvas');
+    out.width = 750; out.height = 1050;
+    out.getContext('2d').drawImage(img, -x / scale, -y / scale, W / scale, H / scale, 0, 0, out.width, out.height);
+    return out.toDataURL('image/jpeg', 0.9);
+  };
+  return dialog({ title: t('Crop cover'), body: h('div', { class: 'cropwrap' }, frame, h('label', { class: 'cropzoom' }, t('Zoom'), zoom)),
+    buttons: [{ label: t('Cancel'), value: null, cls: 'ghost' }, { label: t('Use this'), value: render, cls: 'primary' }] });
+}
+
 // ------------------------------------------------------------------ add game
 
 async function addGameFromExe(exe) {
   if (!setup.configured) { await settingsDialog(true); if (!setup.configured) return; }
   let g;
   try { g = await call('addGame', exe); } catch { return; }
+  if (g && g.existing) {
+    const choice = await dialog({ title: t('{title} is already in your library', { title: g.existing.title }),
+      text: t('Added on your other PC.'),
+      buttons: [{ label: t('Cancel'), value: null, cls: 'ghost' }, { label: t('Add as a new game'), value: 'new', cls: 'ghost' }, { label: t('Set up on this PC'), value: 'here', cls: 'primary' }] });
+    if (!choice) return;
+    if (choice === 'here') {
+      try { await call('setUpHere', g.existing.id, exe); } catch { return; }
+      await loadGames();
+      return openDetail(g.existing.id);
+    }
+    try { g = await call('addGame', exe, { asNew: true }); } catch { return; }
+  }
   if ((await vndbDialog(g, true)) === 'blocked') {
     await vns.call('removeGame', g.id).catch(() => {});
     await loadGames();
@@ -1491,6 +1613,7 @@ async function settingsDialog(first = false) {
   const statsBox = h('input', { type: 'checkbox', checked: s.showStats !== false });
   const look = { theme: s.theme, fonts: { ...(s.fonts || {}) } };
   const lePath = h('input', { type: 'text', value: s.localeEmulatorPath || '', placeholder: t('Path to LEProc.exe (optional)') });
+  const lunaPath = h('input', { type: 'text', value: s.lunaPath || '', placeholder: t('Path to LunaTranslator.exe (optional)') });
   const tools = toolsEditor();
   const notes = patchNotesBox();
 
@@ -1527,6 +1650,11 @@ async function settingsDialog(first = false) {
         h('div', { class: 'val' }, lePath, h('button', { type: 'button', onclick: async () => {
           const f = await vns.call('pickFile', t('Find LEProc.exe'), [{ name: 'LEProc', extensions: ['exe'] }]);
           if (f) lePath.value = f;
+        } }, t('Browse…')))),
+      field(t('LunaTranslator'),
+        h('div', { class: 'val' }, lunaPath, h('button', { type: 'button', onclick: async () => {
+          const f = await vns.call('pickFile', t('Find LunaTranslator.exe'), [{ name: 'LunaTranslator', extensions: ['exe'] }]);
+          if (f) lunaPath.value = f;
         } }, t('Browse…')))),
       field(t('Companion tools on this PC (text hooker, meikipop, Magpie…). Pick which start with each game on its page.'), tools.el),
     ]],
@@ -1580,7 +1708,7 @@ async function settingsDialog(first = false) {
   setup = await call('saveSettings', {
     showStats: statsBox.checked, theme: look.theme || null, fonts: look.fonts,
     deviceName: name.value, ...chooser.get(), language: langSel.value,
-    historyDepth: depth.value, liveMode: liveBox.checked, localeEmulatorPath: lePath.value.trim(), autoUpdate: upd.checked, tools: tools.get(),
+    historyDepth: depth.value, liveMode: liveBox.checked, localeEmulatorPath: lePath.value.trim(), lunaPath: lunaPath.value.trim(), autoUpdate: upd.checked, tools: tools.get(),
     startWithSystem: startBox.checked, closeToTray: closeSel.value === 'tray', allowUmineko: allowU.checked,
   });
   setLanguage(setup.settings.language);
@@ -2189,6 +2317,8 @@ function paintDetail(g, data, opts = {}) {
   const args = h('input', { type: 'text', value: (g.launch && g.launch.args) || '', placeholder: t('Extra launch options (optional)') });
   args.addEventListener('change', () => call('updateGame', id, { launch: { args: args.value } }));
   const le = h('input', { type: 'checkbox', checked: !!(g.launch && g.launch.useLocaleEmulator), disabled: !setup.settings.localeEmulatorPath });
+  const lunaBox = h('input', { type: 'checkbox', checked: !!(g.launch && g.launch.useLuna), disabled: !setup.settings.lunaPath });
+  lunaBox.addEventListener('change', () => call('updateGame', id, { launch: { useLuna: lunaBox.checked } }));
   le.addEventListener('change', () => call('updateGame', id, { launch: { useLocaleEmulator: le.checked } }));
   const launchBox = h('div', { class: 'box' },
     h('div', { class: 'field' }, h('div', { class: 'lbl' }, t('Program on this PC')),
@@ -2199,6 +2329,8 @@ function paintDetail(g, data, opts = {}) {
         h('button', { class: 'small', disabled: !g.installDir, onclick: async () => { if (await call('setGameFolder', id)) { renderDetail(id); refreshStatus(id); } } }, t('Change…')))),
     h('div', { class: 'field' }, h('label', { class: 'check' }, le, t('Start through Locale Emulator (Japanese locale)')),
       !setup.settings.localeEmulatorPath ? h('div', { class: 'faint', style: 'font-size:12px' }, t('Set Locale Emulator\'s location in Settings to use this.')) : null),
+    h('div', { class: 'field' }, h('label', { class: 'check' }, lunaBox, t('Start through LunaTranslator')),
+      !setup.settings.lunaPath ? h('div', { class: 'faint', style: 'font-size:12px' }, t('Set LunaTranslator\'s location in Settings to use this.')) : null),
     h('div', { class: 'field' }, args));
 
   // ---- history
@@ -2224,7 +2356,7 @@ function paintDetail(g, data, opts = {}) {
       g.titleSource === 'window' ? h('div', { class: 'faint small' }, t('Taken from the game\'s window. Type your own to replace it.')) : null),
     h('div', { class: 'boxactions' },
       h('button', { onclick: async () => { await vndbDialog(g, false); renderDetail(id); } }, t('Find on VNDB…')),
-      h('button', { onclick: async () => { if (await call('setCustomCover', id)) renderDetail(id); } }, t('Use my own cover…')),
+      h('button', { onclick: async () => { if (await coverDialog(g)) renderDetail(id); } }, t('Change cover…')),
       h('div', { class: 'spacer' }),
       h('button', { class: 'ghost danger', onclick: async () => {
         const ok = await dialog({ title: t('Remove {title}?', { title: g.title }), text: t('It disappears from the library on every PC. The game itself and its save files on this PC aren\'t touched, and the shared copy is kept (moved aside in the shared folder, or to Drive\'s trash).'),
@@ -2598,7 +2730,7 @@ function updateLive(id) {
       pr ? h('div', { class: 'syncbar inline' }, h('div', { style: `width:${progressPct(pr)}%` })) : null);
   }
   for (const btn of document.querySelectorAll(`.playbtn[data-id="${CSS.escape(id)}"]`)) {
-    btn.textContent = isRunning ? t('Stop tracking') : syncing ? t('Syncing saves…') : t('▶ Play');
+    btn.textContent = isRunning ? t('■ Stop') : syncing ? t('Syncing saves…') : t('▶ Play');
     btn.classList.toggle('stop', !!isRunning);
     btn.classList.toggle('busy', !!syncing);
     btn.disabled = !!syncing;
@@ -2710,10 +2842,12 @@ document.addEventListener('keydown', (e) => {
 
 // Drag an .exe onto the window to add it, or a folder to import the games in it.
 let dragDepth = 0;
-window.addEventListener('dragenter', (e) => { e.preventDefault(); dragDepth++; $('#dropHint').classList.remove('hidden'); });
-window.addEventListener('dragleave', () => { if (--dragDepth <= 0) { dragDepth = 0; $('#dropHint').classList.add('hidden'); } });
+const draggingFiles = (e) => e.dataTransfer && [...e.dataTransfer.types].includes('Files');
+window.addEventListener('dragenter', (e) => { if (!draggingFiles(e)) return; e.preventDefault(); dragDepth++; $('#dropHint').classList.remove('hidden'); });
+window.addEventListener('dragleave', (e) => { if (!draggingFiles(e)) return; if (--dragDepth <= 0) { dragDepth = 0; $('#dropHint').classList.add('hidden'); } });
 window.addEventListener('dragover', (e) => e.preventDefault());
 window.addEventListener('drop', (e) => {
+  if (!draggingFiles(e)) return;
   e.preventDefault();
   dragDepth = 0;
   $('#dropHint').classList.add('hidden');

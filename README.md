@@ -57,6 +57,7 @@ You pick one on first run, and the same one on every PC:
     VNDB list, with **+ Add**
   - **characters**, with details and traits; spoiler characters stay hidden until you ask
   - **staff and brand**: click a name to see everything that writer, artist or brand made
+- **Covers:** pick any cover VNDB has for the game, or upload your own and crop it to fit.
 - **Notes:** a notes box on each game that saves as you type and syncs to your other PCs.
 - **Reading status:** Plan to read, Reading, On hold, Finished, Dropped, with a sidebar filter. Like
   VNDB's list labels, a game can have several (Reading and Finished when re-reading, for example).
@@ -85,7 +86,8 @@ You pick one on first run, and the same one on every PC:
   your list that aren't in your library, below your own games (optional).
 
 ### Adding games
-- **Drag a game's `.exe`** onto the window, or use **+ Add game**, and pick the match from VNDB.
+- **Drag a game's `.exe`** (or a shortcut to it) onto the window, or use **+ Add game**, and pick the
+  match from VNDB. A game your other PC already added is set up on this PC instead of added twice.
 - **Import folder…** adds a whole collection at once:
   1. It finds each game's folder and main program, skipping installers, config tools, cracks and
      updaters.
@@ -119,6 +121,9 @@ You pick one on first run, and the same one on every PC:
 
   Options can include `{gameExe}`, `{gameDir}` and `{title}`, which are filled in for each game.
 - **Locale Emulator:** set `LEProc.exe` in Settings, then tick it per game.
+- **LunaTranslator:** set `LunaTranslator.exe` in Settings, then tick **Start through LunaTranslator**
+  per game. Games in Luna's game list start hooked from the beginning.
+- **Stop** asks the game to close like its X button, with **Force close** if it doesn't.
 - **Upload while playing:** optional; pushes saves about 10 s after each save.
 - **Progress bars:** bigger syncs show how many files and MB are done, on the cover and the game page.
 - **Play time** counts only the time the game itself ran (not launchers, not sleep), and every PC

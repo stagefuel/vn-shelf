@@ -290,3 +290,17 @@ test('vndb list: a game not on VNDB can have statuses and label categories, and 
   assert.deepStrictEqual(x.statuses, ['finished']);
   assert.strictEqual(x.vndbSync, undefined);
 });
+
+test('fetchCovers: the main cover, then each release\'s front and digital covers (Japanese first), no repeats', async () => {
+  const vndb = require('../src/core/vndb');
+  const fake = new FakeVndb();
+  const img = (n, type) => ({ url: `https://t.vndb.org/cv/${n}.jpg`, thumbnail: `https://t.vndb.org/cv.t/${n}.jpg`, type, sexual: 0 });
+  fake.vns.set('v5', { title: 'X', image: img(1) });
+  fake.releases.set('v5', [
+    { languages: [{ lang: 'en' }], images: [img(2, 'pkgfront'), img(3, 'pkgback')] },
+    { languages: [{ lang: 'ja' }], images: [img(4, 'pkgfront'), img(1, 'pkgfront'), img(5, 'dig'), img(6, 'pkgmed')] },
+  ]);
+  const covers = await vndb.fetchCovers('v5', { fetchImpl: fake.fetch });
+  assert.deepStrictEqual(covers.map((c) => c.url.match(/(\d+)\.jpg/)[1]), ['1', '4', '5', '2']);
+  assert.strictEqual(covers[1].lang, 'ja');
+});

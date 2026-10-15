@@ -284,7 +284,37 @@ async function fetchEngines(vndbId, { fetchImpl = fetch } = {}) {
   return [...counts.values()].sort((a, b) => a.rank - b.rank || b.n - a.n).map((k) => k.name);
 }
 
+/**
+ * Covers to choose from for a VN: its main cover, then every release's front cover and digital
+ * cover (Japanese releases first), without repeats. [{ url, thumb, sexual, type, lang }]
+ */
+async function fetchCovers(vndbId, { fetchImpl = fetch } = {}) {
+  const id = idFilter(vndbId);
+  if (!id) throw new Error(`Not a VNDB id: ${vndbId}`);
+  const [vn, rel] = await Promise.all([
+    post({ filters: ['id', '=', id], fields: 'image.url,image.thumbnail,image.sexual', results: 1 }, fetchImpl),
+    post({ filters: ['vn', '=', ['id', '=', id]], fields: 'images.url,images.thumbnail,images.type,images.sexual,languages.lang', results: 100 }, fetchImpl, 'release'),
+  ]);
+  const out = [];
+  const seen = new Set();
+  const add = (img, type, lang) => {
+    if (!img || !img.url || seen.has(img.url)) return;
+    seen.add(img.url);
+    out.push({ url: img.url, thumb: img.thumbnail || img.url, sexual: img.sexual || 0, type, lang });
+  };
+  const v = (vn.results || [])[0];
+  if (v && v.image) add(v.image, 'main', '');
+  const releases = (rel.results || []).map((r) => ({ ...r, ja: (r.languages || []).some((l) => l.lang === 'ja') }))
+    .sort((a, b) => Number(b.ja) - Number(a.ja));
+  for (const r of releases) {
+    for (const img of r.images || []) {
+      if (img.type === 'pkgfront' || img.type === 'dig') add(img, img.type, r.ja ? 'ja' : ((r.languages || [])[0] || {}).lang || '');
+    }
+  }
+  return out;
+}
+
 module.exports = {
   search, bestMatch, fetchInfo, downloadImage, parseDescription, info, LENGTHS,
-  fetchExtras, fetchCharacters, fetchWorks, fetchName, fetchEngines, pickScreenshots, RELATIONS,
+  fetchExtras, fetchCharacters, fetchWorks, fetchName, fetchEngines, fetchCovers, pickScreenshots, RELATIONS,
 };
