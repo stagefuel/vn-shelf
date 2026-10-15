@@ -106,9 +106,9 @@ function updatedExePath(currentExe, oldVersion, newVersion) {
  * Windows: a script that waits for VN Shelf to exit, puts the new .exe in place (under `targetExe`,
  * the new version's name, removing the old file), and starts it.
  * `pids`: VN Shelf's process and the portable launcher that started it; both must be gone first.
- * Returns the script path; run it detached, then quit the app.
+ * `args`: extra arguments for the new exe (e.g. --hidden). Returns the script path; run it detached, then quit the app.
  */
-async function writeSwapScript({ currentExe, newExe, targetExe = currentExe, pid, pids = [pid], dir }) {
+async function writeSwapScript({ currentExe, newExe, targetExe = currentExe, pid, pids = [pid], dir, args = [] }) {
   const q = (s) => s.replace(/"/g, '');
   const waits = [...new Set(pids.filter(Boolean))];
   const renamed = path.resolve(targetExe).toLowerCase() !== path.resolve(currentExe).toLowerCase();
@@ -156,11 +156,11 @@ async function writeSwapScript({ currentExe, newExe, targetExe = currentExe, pid
     'set "TARGET=%CUR%"',
     ':start',
     'echo %TIME% starting VN Shelf>>"%LOG%"',
-    'start "" "%TARGET%"',
+    `start "" "%TARGET%"${args.map((a) => ` "${q(a)}"`).join('')}`,
     '(goto) 2>nul & del "%~f0"',
     '',
   ].join('\r\n');
-  const file = path.join(dir, `vnshelf-update-${pid}.cmd`);
+  const file = path.join(dir, `vnshelf-update-${waits[0]}.cmd`);
   await fsp.writeFile(file, script);
   return file;
 }

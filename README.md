@@ -44,7 +44,9 @@ You pick one on first run, and the same one on every PC:
 - **Views:** covers, a list with small covers, or a compact list with reading status, your rating,
   start and finish dates and time played as columns (click a header to sort).
 - **Sorting:** by title, last played, recently added, release date, VNDB rating, your rating, start
-  or finish date, length or time played.
+  or finish date, length or time played, or **My order** (drag games where you want them). Each
+  category and reading status keeps its own sort.
+- **Status ribbon** on each cover with the game's reading status.
 - **Search:** matches titles, aliases, developers, categories and VNDB tags, and suggests matching
   games, tags, developers and categories as you type. Click a tag on any game to list every game
   with it.
@@ -188,6 +190,8 @@ You pick one on first run, and the same one on every PC:
 - The portable `.exe` updates itself. The download is checked against GitHub's SHA-256, saved
   under the new version's file name, and VN Shelf restarts with your settings and library kept.
 - **Settings → Updates & about** shows the patch notes for your version and links to this page.
+- **Install updates → Install automatically:** downloads updates quietly and restarts into them
+  when no game is running and you're not using the window.
 
 ## Download
 

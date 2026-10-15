@@ -212,8 +212,70 @@ const STATUS_ORDER = ['playing', 'finished', 'wishlist', 'stalled', 'dropped'];
 const SORTS = () => [
   ['title', t('Title')], ['played', t('Last played')], ['added', t('Recently added')], ['released', t('Release date')],
   ['rating', t('VNDB rating')], ['length', t('Length')], ['playtime', t('Time played')], ['status', t('Reading status')],
-  ['vote', t('Your rating')], ['started', t('Started')], ['finished', t('Finished')],
+  ['vote', t('Your rating')], ['started', t('Started')], ['finished', t('Finished')], ['custom', t('My order')],
 ];
+
+// Each view (all games, a category, a reading status) keeps its own sort; All games uses `sort`.
+function sortViewKey() {
+  if (filter.category) return `cat:${filter.category}`;
+  if (filter.status) return `status:${filter.status}`;
+  if (filter.tag) return 'tag';
+  return 'all';
+}
+function currentSort() {
+  const k = sortViewKey();
+  return (k !== 'all' && (setup.settings.sortBy || {})[k]) || setup.settings.sort || 'title';
+}
+async function setSort(sortKey) {
+  const k = sortViewKey();
+  setup = await call('saveSettings', k === 'all' ? { sort: sortKey } : { sortBy: { ...(setup.settings.sortBy || {}), [k]: sortKey } });
+  renderGrid();
+}
+
+/** "My order": your own arrangement (drag covers or lines). Games not arranged yet go last, oldest first. */
+function customIndex() {
+  const order = setup.settings.customOrder || [];
+  const at = new Map(order.map((id, i) => [id, i]));
+  return (g) => (at.has(g.id) ? at.get(g.id) : order.length + 1);
+}
+
+/** Drag a game onto another to move it there (only in My order). Scrolls when held near the top or bottom. */
+function arrangeDrag(el, g) {
+  el.draggable = true;
+  el.addEventListener('dragstart', (e) => { e.dataTransfer.setData('text/x-vns-game', g.id); e.dataTransfer.effectAllowed = 'move'; el.classList.add('dragging'); });
+  el.addEventListener('dragend', () => el.classList.remove('dragging'));
+  el.addEventListener('dragover', (e) => {
+    if (!e.dataTransfer.types.includes('text/x-vns-game')) return;
+    e.preventDefault();
+    const r = el.getBoundingClientRect();
+    const after = el.classList.contains('lrow') ? e.clientY > r.top + r.height / 2 : e.clientX > r.left + r.width / 2;
+    el.classList.toggle('dropbefore', !after);
+    el.classList.toggle('dropafter', after);
+  });
+  el.addEventListener('dragleave', () => el.classList.remove('dropbefore', 'dropafter'));
+  el.addEventListener('drop', async (e) => {
+    const from = e.dataTransfer.getData('text/x-vns-game');
+    const after = el.classList.contains('dropafter');
+    el.classList.remove('dropbefore', 'dropafter');
+    if (!from || from === g.id) return;
+    e.preventDefault();
+    const idx = customIndex();
+    const all = [...games].sort((a, b) => idx(a) - idx(b) || String(a.addedAt || '').localeCompare(String(b.addedAt || ''))).map((x) => x.id).filter((id) => id !== from);
+    all.splice(all.indexOf(g.id) + (after ? 1 : 0), 0, from);
+    setup = await call('saveSettings', { customOrder: all });
+    renderGrid();
+  });
+  return el;
+}
+let dragScroll = 0;
+window.addEventListener('dragover', (e) => {
+  if (!e.dataTransfer || !e.dataTransfer.types.includes('text/x-vns-game')) return;
+  const m = $('main').getBoundingClientRect();
+  const speed = e.clientY < m.top + 60 ? -14 : e.clientY > m.bottom - 60 ? 14 : 0;
+  if (speed && !dragScroll) {
+    dragScroll = requestAnimationFrame(function step() { $('main').scrollTop += speed; dragScroll = 0; });
+  }
+});
 
 const LENGTH_TEXT = () => ({
   'very-short': t('Very short (< 2 h)'), short: t('Short (2–10 h)'), medium: t('Medium (10–30 h)'),
@@ -406,6 +468,8 @@ function cardFor(g) {
     g.coverUrl ? h('img', { src: g.coverUrl, alt: '', loading: 'lazy', draggable: 'false' }) : h('div', { class: 'placeholder' }, shownTitle(g)));
   const b = badgeFor(g);
   if (b) art.append(h('span', { class: `badge ${b}` }, BADGE_TEXT()[b] || b));
+  const main = statusesOf(g).find((x) => STATUS_TEXT()[x]);
+  if (main) art.append(h('span', { class: `ribbon ${main}`, title: statusesOf(g).map((x) => STATUS_TEXT()[x]).filter(Boolean).join(', ') }));
   const pr = progressShown(g.id);
   if (pr) art.append(h('div', { class: 'syncbar' }, h('div', { style: `width:${progressPct(pr)}%` })));
   if (g.installed && !(live[g.id] && ['running', 'syncing'].includes(live[g.id].state))) {
@@ -434,8 +498,9 @@ function cardFor(g) {
 function updateCards(id) {
   const g = games.find((x) => x.id === id);
   if (!g) return;
-  for (const old of document.querySelectorAll(`.card[data-id="${CSS.escape(id)}"]`)) old.replaceWith(cardFor(g));
-  for (const old of document.querySelectorAll(`.lrow[data-id="${CSS.escape(id)}"]`)) old.replaceWith(rowFor(g, old.dataset.mode));
+  const arranging = (el) => el.closest('#grid.arranging');
+  for (const old of document.querySelectorAll(`.card[data-id="${CSS.escape(id)}"]`)) old.replaceWith(arranging(old) ? arrangeDrag(cardFor(g), g) : cardFor(g));
+  for (const old of document.querySelectorAll(`.lrow[data-id="${CSS.escape(id)}"]`)) old.replaceWith(arranging(old) ? arrangeDrag(rowFor(g, old.dataset.mode), g) : rowFor(g, old.dataset.mode));
   updateLive(id);
 }
 
@@ -523,6 +588,7 @@ function sortGames(list, key) {
     vote: (a, b) => (b.vote || 0) - (a.vote || 0),
     started: (a, b) => String(b.started || '').localeCompare(String(a.started || '')),
     finished: (a, b) => String(b.finished || '').localeCompare(String(a.finished || '')),
+    custom: ((idx) => (a, b) => idx(a) - idx(b) || String(a.addedAt || '').localeCompare(String(b.addedAt || '')))(customIndex()),
   }[key] || ((a, b) => a.title.localeCompare(b.title, 'ja'));
   return [...list].sort((a, b) => by(a, b) || shownTitle(a).localeCompare(shownTitle(b), 'ja'));
 }
@@ -555,11 +621,8 @@ const LIST_COLUMNS = () => [
 
 function listHeader(mode) {
   return h('div', { class: `lhead ${mode}` }, mode === 'rows' ? h('span') : null, LIST_COLUMNS().map(([k, label]) => {
-    const on = setup.settings.sort === k;
-    return h('button', { type: 'button', class: `lcol c-${k}${on ? ' on' : ''}`, onclick: async () => {
-      setup = await call('saveSettings', { sort: k });
-      renderGrid();
-    } }, label, on ? ' ▾' : '');
+    const on = currentSort() === k;
+    return h('button', { type: 'button', class: `lcol c-${k}${on ? ' on' : ''}`, onclick: () => setSort(k) }, label, on ? ' ▾' : '');
   }));
 }
 
@@ -586,14 +649,12 @@ function renderGrid() {
   if (filter.category) list = list.filter((g) => (g.categories || []).includes(filter.category));
   if (filter.tag) list = list.filter((g) => g.vndb && (g.vndb.tags || []).some((x) => x.id === filter.tag.id));
   if (filter.status) list = list.filter((g) => statusesOf(g).includes(filter.status));
-  list = sortGames(list, setup.settings.sort);
+  const sortKey = currentSort();
+  list = sortGames(list, sortKey);
 
   const sortSel = h('select', { class: 'sortsel', title: t('Sort by') },
-    SORTS().map(([k, label]) => h('option', { value: k, selected: setup.settings.sort === k }, label)));
-  sortSel.addEventListener('change', async () => {
-    setup = await call('saveSettings', { sort: sortSel.value });
-    renderGrid();
-  });
+    SORTS().map(([k, label]) => h('option', { value: k, selected: sortKey === k }, label)));
+  sortSel.addEventListener('change', () => setSort(sortSel.value));
   const chips = [];
   if (filter.category) chips.push(h('span', { class: 'chip on' }, `${t('Category')}: ${filter.category}`, h('button', { class: 'x', title: t('Clear'), onclick: () => showLibrary({ category: null }) }, '×')));
   if (filter.tag) chips.push(h('span', { class: 'chip on' }, `${t('Tag')}: ${filter.tag.name}`, h('button', { class: 'x', title: t('Clear'), onclick: () => showLibrary({ tag: null }) }, '×')));
@@ -610,8 +671,11 @@ function renderGrid() {
     h('div', { class: 'spacer' }), listToggle, h('span', { class: 'dim small' }, t('Sort by')), sortSel, viewSwitch());
   const mode = libraryView();
   $('#grid').className = mode === 'covers' ? 'grid' : `gamelist ${mode}`;
-  if (mode === 'covers') $('#grid').replaceChildren(...list.map(cardFor));
-  else $('#grid').replaceChildren(...(list.length ? [listHeader(mode)] : []), ...list.map((g) => rowFor(g, mode)));
+  const arranging = sortKey === 'custom';
+  const one = (g) => { const el = mode === 'covers' ? cardFor(g) : rowFor(g, mode); return arranging ? arrangeDrag(el, g) : el; };
+  $('#grid').classList.toggle('arranging', arranging);
+  if (mode === 'covers') $('#grid').replaceChildren(...list.map(one));
+  else $('#grid').replaceChildren(...(list.length ? [listHeader(mode)] : []), ...list.map(one));
   const below = listOnlyBelow(q);
   if (!$('#listOnly')) $('#noMatch').after(h('div', { id: 'listOnly' }));
   replaceKids($('#listOnly'), below);
@@ -1064,7 +1128,9 @@ async function manageCategory(cat) {
   const list = (setup.settings.categories || []).filter((c) => c !== cat);
   if (v === 'rename') list.push(to);
   const order = (setup.settings.categoryOrder || []).flatMap((c) => (c !== cat ? [c] : v === 'rename' ? [to] : []));
-  setup = await call('saveSettings', { categories: list, categoryOrder: order });
+  const sortBy = { ...(setup.settings.sortBy || {}) };
+  if (sortBy[`cat:${cat}`]) { if (v === 'rename') sortBy[`cat:${to}`] = sortBy[`cat:${cat}`]; delete sortBy[`cat:${cat}`]; }
+  setup = await call('saveSettings', { categories: list, categoryOrder: order, sortBy });
   await loadGames();
   if (v === 'rename') showLibrary({ category: to }); else showLibrary({ category: null });
 }
@@ -1696,6 +1762,9 @@ async function settingsDialog(first = false) {
   const depth = h('input', { type: 'number', min: '1', max: '100', value: String(s.historyDepth) });
   const liveBox = h('input', { type: 'checkbox', checked: s.liveMode });
   const upd = h('input', { type: 'checkbox', checked: s.autoUpdate !== false });
+  const updInstall = h('select', { id: 'updInstall', title: t('Install updates') },
+    h('option', { value: 'ask', selected: s.updateInstall !== 'auto' }, t('Ask first')),
+    h('option', { value: 'auto', selected: s.updateInstall === 'auto' }, t('Install automatically')));
   const startBox = h('input', { type: 'checkbox', checked: !!s.startWithSystem });
   const closeSel = h('select', {},
     [['tray', t('Keep running in the tray')], ['quit', t('Quit VN Shelf')]].map(([v, l]) => h('option', { value: v, selected: (s.closeToTray !== false) === (v === 'tray') }, l)));
@@ -1762,6 +1831,7 @@ async function settingsDialog(first = false) {
       field(t('Updates'),
         h('div', { class: 'val wrap' }, h('label', { class: 'check' }, upd, t('Check for updates when VN Shelf starts')),
           h('button', { type: 'button', class: 'small', onclick: () => checkUpdatesNow() }, t('Check now')))),
+      field(t('Install updates'), updInstall),
     ]],
   ];
   if (!tabs.some(([k]) => k === settingsTab)) settingsTab = 'general';
@@ -1799,7 +1869,7 @@ async function settingsDialog(first = false) {
   setup = await call('saveSettings', {
     showStats: statsBox.checked, theme: look.theme || null, fonts: look.fonts,
     deviceName: name.value, ...chooser.get(), language: langSel.value,
-    historyDepth: depth.value, liveMode: liveBox.checked, localeEmulatorPath: lePath.value.trim(), lunaPath: lunaPath.value.trim(), autoUpdate: upd.checked, tools: tools.get(),
+    historyDepth: depth.value, liveMode: liveBox.checked, localeEmulatorPath: lePath.value.trim(), lunaPath: lunaPath.value.trim(), autoUpdate: upd.checked, updateInstall: updInstall.value, tools: tools.get(),
     startWithSystem: startBox.checked, closeToTray: closeSel.value === 'tray', allowUmineko: allowU.checked,
   });
   setLanguage(setup.settings.language);
@@ -2972,6 +3042,7 @@ window.addEventListener('drop', (e) => {
   const cached = await vns.call('listGames', { cached: true }).catch(() => null);
   if (cached && cached.length) { games = cached; showHome(); }
   if (setup.update) showUpdatePopup(setup.update);
+  if (setup.settings.justUpdated) toast(t('Updated to {version}', { version: setup.settings.justUpdated }), 'good');
   games = await call('listGames').catch(() => []);
   if (cached && cached.length) {
     if (view === 'home') renderHome();

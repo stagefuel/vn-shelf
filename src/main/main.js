@@ -1,5 +1,5 @@
 'use strict';
-const { app, BrowserWindow, ipcMain, dialog, shell, Notification, safeStorage, Tray, Menu, nativeImage } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, Notification, safeStorage, Tray, Menu, nativeImage, powerMonitor } = require('electron');
 const path = require('path');
 const { spawn } = require('child_process');
 const fs = require('fs');
@@ -56,6 +56,7 @@ const startHidden = process.argv.includes('--hidden'); // started with the compu
 const REPO_URL = 'https://github.com/stagefuel/vn-shelf';
 const TOPBAR_HEIGHT = 52; // keep in step with .topbar in styles.css
 const running = new Map(); // id -> { ev, watchers, liveTimer, mode }
+let justUpdated = null; // the new version, on its first start after an update
 const starting = new Set(); // ids whose Play is still checking saves
 
 // Last line of defence: an error nothing else caught goes to error.log in the settings folder instead
@@ -728,7 +729,7 @@ function fontsInfo() {
 
 // ---------------------------------------------------------------- sharing this PC's look with the other PC
 
-const SHARED_KEYS = ['language', 'sort', 'showStats', 'closeToTray', 'historyDepth', 'liveMode', 'autoUpdate', 'theme', 'categoryOrder', 'showListOnly', 'libraryView'];
+const SHARED_KEYS = ['language', 'sort', 'showStats', 'closeToTray', 'historyDepth', 'liveMode', 'autoUpdate', 'updateInstall', 'theme', 'categoryOrder', 'showListOnly', 'libraryView', 'sortBy', 'customOrder'];
 let publishTimer = null;
 
 function publishSettingsSoon() {
@@ -920,7 +921,11 @@ const api = {
         language: config.data.language,
         sort: config.data.sort,
         libraryView: config.data.libraryView || 'covers',
+        sortBy: config.data.sortBy || {},
+        customOrder: config.data.customOrder || [],
         autoUpdate: config.data.autoUpdate,
+        updateInstall: config.data.updateInstall === 'auto' ? 'auto' : 'ask',
+        justUpdated: justUpdated,
         tools: config.data.tools,
         categories: config.data.categories,
         categoryOrder: config.data.categoryOrder || [],
@@ -986,8 +991,13 @@ const api = {
     if (s.lunaPath !== undefined) patch.lunaPath = String(s.lunaPath || '');
     if (s.language !== undefined) patch.language = ['auto', 'en', 'ja'].includes(s.language) ? s.language : 'auto';
     if (s.sort !== undefined) patch.sort = String(s.sort);
+    if (s.sortBy !== undefined && s.sortBy && typeof s.sortBy === 'object') {
+      patch.sortBy = Object.fromEntries(Object.entries(s.sortBy).slice(0, 500).map(([k, v]) => [String(k).slice(0, 200), String(v).slice(0, 30)]));
+    }
+    if (s.customOrder !== undefined) patch.customOrder = [...new Set((s.customOrder || []).map(String))].slice(0, 20000);
     if (s.libraryView !== undefined) patch.libraryView = ['covers', 'rows', 'list'].includes(s.libraryView) ? s.libraryView : 'covers';
     if (s.autoUpdate !== undefined) patch.autoUpdate = !!s.autoUpdate;
+    if (s.updateInstall !== undefined) patch.updateInstall = s.updateInstall === 'auto' ? 'auto' : 'ask';
     if (s.startWithSystem !== undefined) patch.startWithSystem = !!s.startWithSystem;
     if (s.closeToTray !== undefined) patch.closeToTray = !!s.closeToTray;
     if (s.allowUmineko !== undefined) patch.allowUmineko = !!s.allowUmineko;
@@ -1005,7 +1015,9 @@ const api = {
         closeWithGame: t.closeWithGame !== false, allGames: !!t.allGames,
       }));
     }
-    const onlyLocal = Object.keys(patch).every((k) => ['language', 'sort', 'autoUpdate', 'categories', 'tools', 'startWithSystem', 'closeToTray', 'allowUmineko', 'showStats', 'theme', 'fonts'].includes(k));
+    // Only a change of storage (or of what the sync engine is built with) restarts syncing and
+    // re-shares everything; display and other preferences don't.
+    const onlyLocal = !Object.keys(patch).some((k) => ['cloudDir', 'backend', 'deviceName', 'historyDepth', 'liveMode'].includes(k));
     await config.set(patch);
     publishSettingsSoon();
     if (patch.startWithSystem !== undefined) await applyStartWithSystem(patch.startWithSystem).catch(() => {});
@@ -1742,21 +1754,13 @@ const api = {
   async installUpdate() {
     const info = updateInfo || (await api.checkUpdate());
     if (!info) return { upToDate: true };
-    const exe = process.env.PORTABLE_EXECUTABLE_FILE;
-    if (process.platform !== 'win32' || !exe || !info.asset) {
+    if (!canSelfUpdate(info)) {
       await shell.openExternal(info.page);
       return { opened: true };
     }
     if (running.size) throw new Error('Close your games first; VN Shelf restarts to update.');
-    const newExe = `${exe}.new`;
-    await updater.download(info.asset, newExe, { onProgress: (p) => send('update-progress', p) });
-    // The portable launcher (our parent) holds the exe open until it has cleaned up, so wait for it too.
-    const script = await updater.writeSwapScript({
-      currentExe: exe, newExe, targetExe: updater.updatedExePath(exe, app.getVersion(), info.version),
-      pids: [process.pid, process.ppid], dir: app.getPath('temp'),
-    });
-    updater.launchSwapScript(script);
-    setTimeout(() => app.quit(), 300);
+    await stageUpdate(info, (p) => send('update-progress', p));
+    await swapToUpdate(info);
     return { restarting: true };
   },
 
@@ -1953,6 +1957,8 @@ app.whenReady().then(async () => {
     });
   }
   vndbToken = tokenStore('vndb-token.json');
+  if (config.data.lastVersion && updater.compareVersions(app.getVersion(), config.data.lastVersion) > 0) justUpdated = app.getVersion();
+  if (config.data.lastVersion !== app.getVersion()) config.set({ lastVersion: app.getVersion() }).catch(() => {});
   rebuild();
   // A previous update that didn't finish can leave the downloaded exe next to this one.
   if (process.env.PORTABLE_EXECUTABLE_FILE) {
@@ -1975,11 +1981,66 @@ app.whenReady().then(async () => {
     setTimeout(async () => {
       try {
         const u = await api.checkUpdate();
+        if (u && config.data.updateInstall === 'auto' && (await autoInstall(u).catch(() => false)) !== false) return;
         if (u) send('update-available', u);
       } catch { /* offline: try again next start */ }
     }, 4000);
   }
+  // Left running in the tray for days: look again twice a day when updates install themselves.
+  setInterval(async () => {
+    if (!config.data.autoUpdate || config.data.updateInstall !== 'auto' || stagedUpdate || process.env.VNS_NO_UPDATE_CHECK) return;
+    try { const u = await api.checkUpdate(); if (u) await autoInstall(u); } catch { /* try later */ }
+  }, 12 * 3600 * 1000);
 });
+
+// ---- self-update
+
+const canSelfUpdate = (info) => process.platform === 'win32' && !!process.env.PORTABLE_EXECUTABLE_FILE && !!(info && info.asset);
+let stagedUpdate = null; // { version, file } once the new exe is downloaded
+
+/** Download the new exe next to the current one (once per version). */
+async function stageUpdate(info, onProgress) {
+  const newExe = `${process.env.PORTABLE_EXECUTABLE_FILE}.new`;
+  if (stagedUpdate && stagedUpdate.version === info.version) return newExe;
+  await updater.download(info.asset, newExe, { onProgress });
+  stagedUpdate = { version: info.version, file: newExe };
+  return newExe;
+}
+
+/** Quit and let the swap script put the staged exe in place and start it (hidden if we are). */
+async function swapToUpdate(info, { hidden = false } = {}) {
+  const exe = process.env.PORTABLE_EXECUTABLE_FILE;
+  // The portable launcher (our parent) holds the exe open until it has cleaned up, so wait for it too.
+  const script = await updater.writeSwapScript({
+    currentExe: exe, newExe: `${exe}.new`, targetExe: updater.updatedExePath(exe, app.getVersion(), info.version),
+    pids: [process.pid, process.ppid], dir: app.getPath('temp'), args: hidden ? ['--hidden'] : [],
+  });
+  updater.launchSwapScript(script);
+  setTimeout(() => app.quit(), 300);
+}
+
+/** A good moment to restart: no game running or starting, no saves copying, and nobody using the window. */
+function quietMoment() {
+  if (running.size || starting.size || busyGames().length) return false;
+  const away = !win || win.isDestroyed() || !win.isVisible() || win.isMinimized();
+  let idle = 0;
+  try { idle = powerMonitor.getSystemIdleTime(); } catch { /* not available */ }
+  return away || idle >= 300;
+}
+
+/** "Install automatically": download quietly, then restart into the new version at a quiet moment. */
+async function autoInstall(info) {
+  if (process.env.VNS_FAKE_AUTO_INSTALL) { send('update-staged', info); return; } // test hook
+  if (!canSelfUpdate(info)) return false;
+  await stageUpdate(info);
+  const t = setInterval(() => {
+    if (!quietMoment()) return;
+    clearInterval(t);
+    const hidden = !win || win.isDestroyed() || !win.isVisible();
+    swapToUpdate(info, { hidden }).catch(() => {});
+  }, 60000);
+  return true;
+}
 
 // Never quit in the middle of copying saves: wait (up to 2 minutes) for syncs to finish first.
 let quitWhenSynced = false;

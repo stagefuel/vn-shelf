@@ -325,6 +325,45 @@ const zipOut = path.join(base, 'k3-saves.zip');
   result.statusOnCard = await page.textContent('#grid .card .sub');
   await shot(page, 'f12-status');
 
+  // ---- status ribbon, a sort per view, My order (drag), install updates setting
+  result.ribbon = await page.$$eval('#grid .card .ribbon', (r) => r.map((x) => x.className));
+  await page.selectOption('#libraryView .sortsel', 'played');
+  await page.click('#sidebar .navitem:has-text("All games")');
+  await page.waitForSelector('.libtoolbar h1:has-text("All games")');
+  await page.selectOption('#libraryView .sortsel', 'custom');
+  await page.waitForSelector('#grid.arranging .card');
+  const order = () => page.$$eval('#grid .card', (c) => c.map((x) => x.dataset.id));
+  const before = await order();
+  await page.dragAndDrop(`#grid .card[data-id="${before[2]}"]`, `#grid .card[data-id="${before[0]}"]`, { targetPosition: { x: 5, y: 40 } });
+  await page.waitForTimeout(500);
+  const afterCovers = await order();
+  result.arrangeCovers = afterCovers[0] === before[2];
+  await page.click('.viewsw button >> nth=2');
+  await page.waitForSelector('#grid.arranging .lrow');
+  const rows = () => page.$$eval('#grid .lrow', (c) => c.map((x) => x.dataset.id));
+  const r0 = await rows();
+  const box = await page.$eval(`#grid .lrow[data-id="${r0[0]}"]`, (e) => { const b = e.getBoundingClientRect(); return { h: b.height }; });
+  await page.dragAndDrop(`#grid .lrow[data-id="${r0[0]}"]`, `#grid .lrow[data-id="${r0[r0.length - 1]}"]`, { targetPosition: { x: 20, y: box.h - 3 } });
+  await page.waitForTimeout(500);
+  const r1 = await rows();
+  result.arrangeList = r1[r1.length - 1] === r0[0];
+  result.customOrderSaved = await page.evaluate(() => vns.call('getSetup').then((x) => x.settings.customOrder.length));
+  await page.click('.viewsw button >> nth=0');
+  await page.click('#sidebar .navitem:has-text("Finished")');
+  await page.waitForSelector('.libtoolbar h1:has-text("Finished")');
+  result.sortPerView = { finished: await page.$eval('#libraryView .sortsel', (x) => x.value) };
+  await page.click('#sidebar .navitem:has-text("All games")');
+  await page.waitForSelector('.libtoolbar h1:has-text("All games")');
+  result.sortPerView.all = await page.$eval('#libraryView .sortsel', (x) => x.value);
+  await shot(page, 'f12b-my-order');
+  await page.click('#settingsBtn');
+  await page.click('dialog[open] .tab[data-tab="about"]');
+  await page.selectOption('dialog[open] #updInstall', 'auto');
+  await shot(page, 'f12c-updates');
+  await page.click('dialog[open] .dfoot button:has-text("Save")');
+  await page.waitForTimeout(400);
+  result.updateInstall = await page.evaluate(() => vns.call('getSetup').then((x) => x.settings.updateInstall));
+
   // ---- theme and fonts
   await page.click('#settingsBtn');
   await page.click('dialog[open] .tab[data-tab="look"]');

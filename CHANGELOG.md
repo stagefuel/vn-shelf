@@ -16,6 +16,23 @@ update itself (Settings → Updates).
   Both lists show the title, reading status, your rating, Started, Finished and time played. Click
   a column header to sort by it (your rating, Started and Finished are also new choices under Sort
   by). The view is remembered and is copied by "Copy settings from another PC".
+- **A sort for each view.** All games, each category and each reading status remember their own
+  Sort by. Renaming a category keeps its sort.
+- **My order** (under Sort by): drag covers or list lines to arrange games yourself. Hold a game near
+  the top or bottom edge to scroll. The order syncs to your other PCs with your settings.
+- **Status ribbon on covers:** a small coloured ribbon in the corner shows a game's reading status
+  (hover for all of them).
+- **Install updates automatically** (Settings → Updates & about → Install updates). VN Shelf then
+  downloads a new version quietly and restarts into it when no game is running or starting, no
+  saves are being copied, and the window is closed, hidden or you've been away for five minutes. If
+  it was in the tray, it comes back in the tray. On the next start it says which version it updated
+  to. The default is still to ask first.
+
+### Fixed
+- Changing a display setting (the library view, dragging a category, Show Not in Library and the
+  like) no longer restarts save sync and re-uploads your settings each time. Only storage settings
+  (where saves are kept, this PC's name, history depth, live mode) do that now. This had happened
+  since 0.10.0; saves were never at risk.
 
 ## 0.13.0
 

@@ -207,6 +207,15 @@ test('tools: started with the game and closed with it (only those set to close)'
   process.kill(-hs[1].child.pid, 'SIGTERM');
 });
 
+test('updater: the swap script passes extra arguments to the new exe and is named after the first pid', async () => {
+  const dir = tmp();
+  const script = await updater.writeSwapScript({ currentExe: 'C:\\VN\\VN Shelf.exe', newExe: 'C:\\VN\\VN Shelf.exe.new', pids: [111, 222], dir, args: ['--hidden'] });
+  assert.strictEqual(path.basename(script), 'vnshelf-update-111.cmd');
+  assert.match(fs.readFileSync(script, 'utf8'), /start "" "%TARGET%" "--hidden"/);
+  const plain = fs.readFileSync(await updater.writeSwapScript({ currentExe: 'a.exe', newExe: 'a.exe.new', pid: 5, dir }), 'utf8');
+  assert.match(plain, /start "" "%TARGET%"\r\n/);
+});
+
 test('updater (Windows): the swap script outlives its launcher and replaces the exe after the old process exits', { skip: process.platform !== 'win32', timeout: 60000 }, async () => {
   const { spawn } = require('child_process');
   const dir = tmp();
