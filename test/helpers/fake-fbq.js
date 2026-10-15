@@ -56,7 +56,7 @@ class FakeFbq {
       return send(200, { message: 'here is your token!', token: t });
     }
     if (u.pathname === '/api/users' && req.method === 'GET') { // a member only sees itself
-      return send(200, [{ username: w.user, scopes: [{ name: this.source, scope: '/VinnieArchive' }] }]);
+      return send(200, [{ username: w.user, scopes: [{ name: this.source, scope: '/files' }] }]);
     }
     if (u.pathname === '/api/resources' && req.method === 'GET') { // metadata: exists or not
       if (q.source !== this.source) return send(403, { status: 403, message: 'no source' });
