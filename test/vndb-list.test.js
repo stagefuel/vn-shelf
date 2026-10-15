@@ -279,3 +279,14 @@ test('fetchEngines prefers official Japanese Windows releases and skips other pl
   assert.deepStrictEqual(req.body.filters, ['vn', '=', ['id', '=', 'v11']]);
   assert.deepStrictEqual(await vndb.fetchEngines('v99', { fetchImpl: fake.fetch }), []);
 });
+
+test('vndb list: a game not on VNDB can have statuses and label categories, and is never synced', async () => {
+  const s = setup({ games: [{ id: 'x', title: 'Doujin Game', statuses: ['finished'], status: 'finished', categories: ['Favourites'], vote: 90 }] });
+  const r = await s.run({ full: true });
+  assert.strictEqual(r.pushed + r.pulled, 0);
+  assert.ok(!s.fake.requests.some((q) => q.method === 'PATCH'));
+  const x = s.lib.get('x');
+  assert.deepStrictEqual(x.categories, ['Favourites']);
+  assert.deepStrictEqual(x.statuses, ['finished']);
+  assert.strictEqual(x.vndbSync, undefined);
+});

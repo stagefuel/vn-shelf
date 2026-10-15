@@ -2041,7 +2041,7 @@ function categoryBox(g) {
   };
   box.append(h('div', { class: 'field' },
     h('div', { class: 'tags' },
-      all.map((c) => h('button', { class: `chip${mine.has(c) ? ' on' : ''}`, onclick: () => toggle(c), title: vndbLabelled(c) ? t('Syncs with your VNDB label of the same name') : null },
+      all.map((c) => h('button', { class: `chip${mine.has(c) ? ' on' : ''}`, onclick: () => toggle(c), title: vndbLabelled(c) && g.vndbId ? t('Syncs with your VNDB label of the same name') : null },
         mine.has(c) ? `✓ ${c}` : c, vndbLabelled(c) && g.vndbId ? h('span', { class: 'vlabel' }, 'VNDB') : null)),
       h('button', { class: 'chip add', onclick: async () => {
         const input = h('input', { type: 'text', placeholder: t('Category name') });

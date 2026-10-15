@@ -1042,7 +1042,7 @@ const api = {
     if (listChange) allowed.listEditedAt = new Date().toISOString();
     const g = await library.update(id, allowed);
     send('games-changed');
-    if (listChange) vndbSyncSoon();
+    if (listChange && g.vndbId) vndbSyncSoon(); // games not on VNDB never sync
     return decorate(g);
   },
 

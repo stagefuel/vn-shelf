@@ -4,6 +4,13 @@ All notable changes to VN Shelf. Download any version from the
 [Releases page](https://github.com/stagefuel/vn-shelf/releases). From 0.3.0 on, VN Shelf can
 update itself (Settings → Updates).
 
+## 0.10.1
+
+### Fixed
+- Games that aren't on VNDB can be given any reading status or category, including ones named like
+  a VNDB label. They stay local only: changing them no longer sends a request to VNDB, and their
+  category chips no longer say they sync.
+
 ## 0.10.0
 
 A tidier game page, and VNs on your VNDB list now show up alongside your own games.
