@@ -271,15 +271,16 @@ for (const kind of ['drive', 'dir']) {
     const env = await twoPcs(kind);
     const { game, a } = env;
     try {
-      for (let i = 0; i < 9; i++) {
+      a.engine.historyDepth = 2;
+      for (let i = 0; i < 4; i++) {
         a.save('s.dat', `v${i}`);
         await sync(a, game);
         await new Promise((r) => setTimeout(r, 1050));
       }
       const hist = await a.engine.listHistory(game.id);
-      assert.strictEqual(hist.length, 5);
+      assert.strictEqual(hist.length, 2);
       const blobs = await a.engine.store.listBlobs(game.id);
-      assert.ok(blobs.size <= 6, `blobs: ${blobs.size}`); // current + 5 history versions
+      assert.ok(blobs.size <= 3, `blobs: ${blobs.size}`); // current + 2 history versions
     } finally { await env.close(); }
   });
 

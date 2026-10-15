@@ -79,7 +79,10 @@ You pick one on first run, and the same one on every PC:
 - **Syncs by itself:** at start-up, every 15 minutes and a few seconds after a change, usually with
   one request.
 - **Your VNDB list** page: VNs on your list that aren't in your library, with **+ Add**, and
-  **Link** for a game you already have under the same name.
+  **Link** for a game you already have under the same name. It opens instantly from the copy kept
+  on your PC.
+- **Not in Library:** reading statuses and categories that match a VNDB label also list the VNs on
+  your list that aren't in your library, below your own games (optional).
 
 ### Adding games
 - **Drag a game's `.exe`** onto the window, or use **+ Add game**, and pick the match from VNDB.

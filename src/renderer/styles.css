@@ -488,7 +488,12 @@ body.has-bg .homehero .bgfade { background: linear-gradient(180deg, color-mix(in
 
 /* ---------- VNDB list ---------- */
 .listcard .listbtns { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
-.listcard .listbtns button { padding: 4px 10px; }
+.listcard .listbtns button { padding: 4px 10px; max-width: 100%; }
+.listcard .listbtns .linkbtn { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.listonly { margin: -34px 22px 0; padding-top: 4px; border-top: 1px solid var(--line); }
+.listonly .grid { padding: 6px 0 60px; }
+.listonlyhead { display: flex; align-items: baseline; gap: 10px; margin: 12px 0 14px; }
+.listonlyhead h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--text-faint); font-weight: 600; margin: 0; }
 .listcard img.nsfw { filter: blur(10px); }
 .listfields { display: flex; gap: 14px; flex-wrap: wrap; padding: 12px 14px 4px; }
 .listfields .field { padding: 0; border: 0; }
@@ -556,12 +561,14 @@ body.has-bg .homehero .bgfade { background: linear-gradient(180deg, color-mix(in
 @media (max-width: 980px) { .hero .inner { flex-wrap: wrap; } .hero .herolist { margin-left: 0; } }
 /* Both columns end at the same height: the last box in each grows to fill. */
 .panel { display: flex; flex-direction: column; }
-.panel > .box:last-child { flex: 1; }
-.panel > .box.notesbox:last-child { display: flex; flex-direction: column; }
-.panel > .box.notesbox:last-child > .field { flex: 1; display: flex; flex-direction: column; }
-.panel > .box.notesbox:last-child textarea.notes { flex: 1; }
+.panel > .fill { flex: 1; display: flex; flex-direction: column; }
+.panel > .fill > .box:first-child { flex: 1; }
+.panel > .box.notesbox { flex: 1; display: flex; flex-direction: column; }
+.panel > .box.notesbox > .field { flex: 1; display: flex; flex-direction: column; }
+.panel > .box.notesbox textarea.notes { flex: 1; }
 .staffrow { display: flex; gap: 8px; align-items: baseline; padding: 4px 0; }
 .people { display: inline-flex; flex-wrap: wrap; gap: 4px 6px; }
 .person { background: none; border: 0; padding: 1px 2px; color: var(--accent); cursor: pointer; font: inherit; font-size: 13.5px; }
 .person:hover { text-decoration: underline; }
 @media (max-width: 700px) { .chardlg { flex-direction: column; } }
+.iconbtn { font-size: 15px; padding: 2px 8px; }

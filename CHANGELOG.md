@@ -4,6 +4,31 @@ All notable changes to VN Shelf. Download any version from the
 [Releases page](https://github.com/stagefuel/vn-shelf/releases). From 0.3.0 on, VN Shelf can
 update itself (Settings → Updates).
 
+## 0.10.0
+
+A tidier game page, and VNs on your VNDB list now show up alongside your own games.
+
+### Game page
+- **Rating and dates** are in the header, on the right next to Play and Sync now.
+- **Right column:** Categories, then Notes, then Launch and the rest.
+- **About** now holds the screenshots (after the description, before release date and length) and
+  the staff (after the tags). A long staff list is cut short, with **Show all staff**.
+- **Related** and **Characters** are side by side below. Each shows two rows, then **Show n more**.
+- Both columns end at the same height; Notes or Save locations stretch to fill the gap.
+
+### VNDB list
+- **Not in Library:** a reading status, or a category that's also a VNDB label, lists the VNs with
+  that status or label on your VNDB list that aren't in your library. They're in their own group
+  below your games, with **+ Add**. Turn them off with **Show Not in Library** in the toolbar or in
+  Settings → VNDB.
+- **Your VNDB list** opens instantly: the last copy is kept on the PC and shown straight away, and
+  the page syncs with VNDB in the background when it's been more than two minutes.
+- Fixed the **Link to** button running past the card, and **+ Add** next to it is a proper button.
+
+### Smaller
+- The library header shows just the count, and a category's rename/delete is a ✎ button.
+- The slowest tests are shorter (the unit tests run in about 19 s instead of 29 s).
+
 ## 0.9.1
 
 Auto-detect can now use VNDB to find the save folder of a game whose engine it can't recognise from

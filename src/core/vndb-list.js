@@ -375,6 +375,7 @@ async function syncList({ client, user, canWrite, games, cache, full = false, up
 /** List entries whose VN isn't in the library (blacklisted ones left out), for "Your VNDB list". */
 function listOnly(cache, games) {
   const have = new Set(games.map((g) => g.vndbId).filter(Boolean));
+  const labelName = new Map((cache.customLabels || []).map((l) => [l.id, l.label]));
   return Object.values(cache.entries || {})
     .filter((e) => !have.has(e.id) && !(e.labels || []).some((l) => (l.id || l) === BLACKLIST))
     .map((e) => ({
@@ -388,6 +389,7 @@ function listOnly(cache, games) {
       status: statusOf((e.labels || []).map((l) => l.id || l)),
       statuses: statusesOfLabels((e.labels || []).map((l) => l.id || l)),
       labelIds: (e.labels || []).map((l) => l.id || l),
+      categories: (e.labels || []).map((l) => labelName.get(l.id || l)).filter(Boolean),
       vote: cleanVote(e.vote),
       lastmod: e.lastmod || 0,
     }))

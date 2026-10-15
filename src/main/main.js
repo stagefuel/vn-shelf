@@ -737,6 +737,9 @@ let vndbSoonTimer = null;
 const VNDB_FULL_EVERY = 6 * 3600 * 1000; // re-read the whole list this often (finds removed entries)
 
 function vndbCacheFile() { return path.join(app.getPath('userData'), 'vndb-list.json'); }
+// The "Your VNDB list" page as last shown, so it appears at once next time.
+function listOnlyFile() { return path.join(app.getPath('userData'), 'vndb-list-view.json'); }
+let listOnlySaved = null;
 
 function vndbClient(token) {
   return new vndbList.VndbListClient({ token, apiBase: process.env.VNS_VNDB_API || undefined, gapMs: process.env.VNS_VNDB_API ? 0 : 1000 });
@@ -785,6 +788,7 @@ async function vndbSyncOnce({ full }) {
       update: (id, patch) => library.update(id, patch).catch((e) => logError('vndb', e)),
       log: (e) => logError('vndb', e),
     });
+    cache.customLabels = r.labels.map((l) => ({ id: l.id, label: l.label }));
     await fsu.writeJson(vndbCacheFile(), cache);
     if (config.data.vndb && config.data.vndb.userId === v.userId) {
       await config.set({ vndb: { ...config.data.vndb, lastSyncAt: new Date().toISOString(), lastError: r.errors.length ? `${r.errors[0].title}: ${r.errors[0].message}` : null, labels: r.labels.map((l) => l.label) } });
@@ -874,6 +878,7 @@ const api = {
         closeToTray: config.data.closeToTray,
         allowUmineko: config.data.allowUmineko,
         showStats: config.data.showStats,
+        showListOnly: config.data.showListOnly !== false,
         theme: config.data.theme,
         fonts: fontsInfo(),
       },
@@ -934,6 +939,7 @@ const api = {
     if (s.closeToTray !== undefined) patch.closeToTray = !!s.closeToTray;
     if (s.allowUmineko !== undefined) patch.allowUmineko = !!s.allowUmineko;
     if (s.showStats !== undefined) patch.showStats = !!s.showStats;
+    if (s.showListOnly !== undefined) patch.showListOnly = !!s.showListOnly;
     if (s.theme !== undefined) patch.theme = cleanTheme(s.theme);
     if (s.fonts !== undefined) patch.fonts = { ...config.data.fonts, en: String(s.fonts.en || '').slice(0, 100), ja: String(s.fonts.ja || '').slice(0, 100) };
     if (s.categories !== undefined) patch.categories = [...new Set(s.categories.map((c) => String(c).trim()).filter(Boolean))];
@@ -1367,6 +1373,7 @@ const api = {
     vndbToken.save(token);
     const prev = config.data.vndb;
     if (prev && prev.userId !== info.id) await fs.promises.rm(vndbCacheFile(), { force: true });
+    listOnlySaved = null;
     await config.set({ vndb: { userId: info.id, username: info.username, canWrite: perms.includes('listwrite'), labels: [], lastSyncAt: null, lastError: null } });
     vndbSync({ full: true }).catch(() => {});
     return api.getSetup();
@@ -1377,6 +1384,8 @@ const api = {
     vndbToken.clear();
     await config.set({ vndb: null });
     await fs.promises.rm(vndbCacheFile(), { force: true });
+    await fs.promises.rm(listOnlyFile(), { force: true });
+    listOnlySaved = null;
     send('vndb-state', vndbInfo());
     return api.getSetup();
   },
@@ -1387,8 +1396,17 @@ const api = {
   },
 
   /** List entries whose VN isn't in the library, each with an unlinked game of the same name if there is one. */
-  async vndbListOnly() {
-    if (!config.data.vndb || !library) return { entries: [] };
+  /**
+   * VNs on the VNDB list that aren't in the library. With { cached }, the copy saved last time
+   * (instant, for showing straight away while the real one is worked out), or null.
+   */
+  async vndbListOnly({ cached } = {}) {
+    if (!config.data.vndb) return { entries: [] };
+    if (cached) {
+      if (!listOnlySaved) listOnlySaved = await fsu.readJson(listOnlyFile(), null);
+      return listOnlySaved && listOnlySaved.user === config.data.vndb.userId ? { ...listOnlySaved.view, cached: true } : null;
+    }
+    if (!library) return { entries: [] };
     const cache = (await fsu.readJson(vndbCacheFile(), null)) || {};
     if (cache.user !== config.data.vndb.userId) return { entries: [], loading: true };
     const games = await library.list({ maxAge: STATUS_MAX_AGE });
@@ -1398,7 +1416,12 @@ const api = {
       const match = unlinked.find((g) => [g.title, g.titleAlt].map(detect.normName).some((n) => n.length >= 3 && names.some((m) => detect.namesMatch(n, m))));
       return { ...e, linkTo: match ? { id: match.id, title: match.title } : null };
     });
-    return { entries, loading: !cache.fullAt };
+    const view = { entries, loading: !cache.fullAt };
+    if (!view.loading) {
+      listOnlySaved = { user: config.data.vndb.userId, view };
+      fsu.writeJson(listOnlyFile(), listOnlySaved).catch(() => {});
+    }
+    return view;
   },
 
   /** Add a VN from the VNDB list to the library (not installed on this PC until its game is located). */

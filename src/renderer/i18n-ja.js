@@ -601,7 +601,7 @@ Object.assign(JA, {
   '{n} changes sent to VNDB': '{n} 件の変更を VNDB に送りました',
   '{n} game updated from VNDB': 'VNDB から {n} 本を更新しました',
   '{n} games updated from VNDB': 'VNDB から {n} 本を更新しました',
-  '{n} not in your library': 'ライブラリにないもの {n} 本',
+  '{n} not in library': 'ライブラリにない {n} 本',
   // messages from the main process
   'VNDB didn\'t accept the token. Make a new one and connect again.': 'VNDB がトークンを受け付けませんでした。新しいトークンを作って接続し直してください。',
   'Paste your VNDB token first.': '先に VNDB のトークンを貼り付けてください。',
@@ -668,6 +668,8 @@ Object.assign(JA, {
   'Show all staff': 'スタッフをすべて表示',
   'Show {n} more': 'さらに{n}件表示',
   'Show less': '表示を減らす',
+  'Not in Library': 'ライブラリにない',
+  'Show Not in Library': 'ライブラリにないものを表示',
   'Loading from VNDB…': 'VNDB から読み込み中…',
   'Loading screenshots, characters and staff from VNDB…': 'スクリーンショット・キャラクター・スタッフを VNDB から読み込み中…',
   'Couldn\'t load screenshots, characters and staff from VNDB.': 'スクリーンショット・キャラクター・スタッフを VNDB から読み込めませんでした。',

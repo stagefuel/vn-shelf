@@ -152,13 +152,14 @@ test('missing shared folder gives a clear error', async () => {
 
 test('history keeps only the newest N versions', async () => {
   const { game, a } = await setup();
-  for (let i = 0; i < 9; i++) {
+  a.engine.historyDepth = 2;
+  for (let i = 0; i < 4; i++) {
     a.save('s.dat', `v${i}`);
     await sync(a, game);
     await new Promise((r) => setTimeout(r, 1100)); // history names have 1-second resolution
   }
   const hist = await a.engine.listHistory(game.id);
-  assert.strictEqual(hist.length, 5);
+  assert.strictEqual(hist.length, 2);
 });
 
 test('include patterns limit which files sync', async () => {

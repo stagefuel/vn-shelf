@@ -46,6 +46,7 @@ async function until(what, fn, ms = 20000) {
   fake.setEntry('v11', { labels: [1, 10], vote: 80, started: '2026-01-01', vn: { title: 'Linked Game' } });
   fake.setEntry('v12', { labels: [5], vn: { title: 'Only On The List' } });
   fake.setEntry('v13', { labels: [2], vote: 70, vn: { title: 'Wanted Game' } });
+  fake.setEntry('v14', { labels: [10], vn: { title: 'Favourite Elsewhere' } });
   // Game-page extras: Japanese and English screenshot sets (only the Japanese should show), a relation
   // to a game in the library, a spoiler character, staff and a brand.
   const px = 'data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACwAAAAAAQABAAACAkQBADs=';
@@ -103,23 +104,43 @@ async function until(what, fn, ms = 20000) {
     result.tokenNotInConfig = !fs.readFileSync(path.join(userData, 'config.json'), 'utf8').includes(fake.token);
     result.tokenNotShared = !JSON.stringify(fs.readdirSync(cloudDir, { recursive: true })).includes('vndb');
 
-    // ---- Your VNDB list: two VNs not in the library; one can be linked to "Wanted Game"
+    // ---- a category that's a VNDB label lists the label's VNs that aren't in the library, on their own row
+    await page.click('.navitem:has-text("Favourites")');
+    await until('list-only row', () => page.locator('#listOnly .listcard').count().then((n) => n === 1));
+    result.listOnlyRow = {
+      own: await page.locator('#grid .card').count(),
+      below: await page.locator('#listOnly .listcard').textContent(),
+      separate: await page.evaluate(() => document.querySelector('#listOnly').getBoundingClientRect().top >= document.querySelector('#grid .card:last-child').getBoundingClientRect().bottom),
+    };
+    if (result.listOnlyRow.own !== 1 || !result.listOnlyRow.below.includes('Favourite Elsewhere') || !result.listOnlyRow.separate) throw new Error(`list-only row wrong: ${JSON.stringify(result.listOnlyRow)}`);
+    await shot(page, '02b-category-with-list');
+    await page.uncheck('#libToolbar input[type=checkbox]');
+    await until('row hidden', () => page.locator('#listOnly .listcard').count().then((n) => n === 0));
+    result.listOnlyHidden = true;
+    await page.click('#settingsBtn');
+    await page.click('.tab[data-tab="vndb"]');
+    await page.check('.tabpane[data-tab="vndb"] input[type=checkbox]');
+    await page.click('#dlg button:has-text("Cancel")');
+    await until('row back', () => page.locator('#listOnly .listcard').count().then((n) => n === 1));
+
+    // ---- Your VNDB list: VNs not in the library; one can be linked to "Wanted Game"
     await page.click('.navitem:has-text("Your VNDB list")');
-    await until('list cards', () => page.locator('#vndbView .listcard').count().then((n) => n === 2));
+    await until('list cards', () => page.locator('#vndbView .listcard').count().then((n) => n === 3));
+    result.listSaved = fs.existsSync(path.join(userData, 'vndb-list-view.json'));
     await shot(page, '03-vndb-list');
     await page.click('#vndbView button:has-text("Link to")');
     await until('linked', () => readGame('wanted-bbbbbb').vndbId === 'v13');
     await until('linked game pulled', () => readGame('wanted-bbbbbb').status === 'finished');
     result.linked = { vndbId: readGame('wanted-bbbbbb').vndbId, status: readGame('wanted-bbbbbb').status, vote: readGame('wanted-bbbbbb').vote };
-    await until('one card left', () => page.locator('#vndbView .listcard').count().then((n) => n === 1));
-    await page.click('#vndbView button:has-text("+ Add")');
+    await until('two cards left', () => page.locator('#vndbView .listcard').count().then((n) => n === 2));
+    await page.click('#vndbView .listcard:has-text("Only On The List") button:has-text("+ Add")');
     const added = await until('added from list', () => {
       const ids = fs.readdirSync(path.join(cloudDir, 'games')).filter((n) => !n.startsWith('.'));
       const g = ids.map(readGame).find((x) => x.vndbId === 'v12');
       return g && g.status === 'wishlist' ? g : null;
     });
     result.added = { title: added.title, status: added.status };
-    await until('list empty', () => page.locator('#vndbView .empty').count().then((n) => n === 1));
+    await until('one card left', () => page.locator('#vndbView .listcard').count().then((n) => n === 1));
 
     // ---- game page: status → Finished fills the date and goes to VNDB; rating too
     await page.click('.navitem:has-text("All games")');
@@ -161,6 +182,7 @@ async function until(what, fn, ms = 20000) {
       return {
         listInHero: !!document.querySelector('.hero .herolist .listfields select'),
         firstRight: r.querySelector('h2').textContent,
+        notesRight: [...r.querySelectorAll('h2')].map((x) => x.textContent).join('|').search(/notes/i) < [...r.querySelectorAll('h2')].map((x) => x.textContent).join('|').search(/launch/i) && !!r.querySelector('.notesbox'),
         shotsInAbout: !!about.querySelector('.xshots .shot'),
         shotsBeforeFacts: about.querySelector('.xshots').compareDocumentPosition(about.querySelector('.facts')) === Node.DOCUMENT_POSITION_FOLLOWING,
         staffAfterTags: about.querySelector('.tags').compareDocumentPosition(about.querySelector('.xstaff')) === Node.DOCUMENT_POSITION_FOLLOWING,
@@ -172,7 +194,7 @@ async function until(what, fn, ms = 20000) {
       };
     });
     const L = result.layout;
-    if (!L.listInHero || !/categories/i.test(L.firstRight) || !L.shotsInAbout || !L.shotsBeforeFacts || !L.staffAfterTags) throw new Error(`layout wrong: ${JSON.stringify(L)}`);
+    if (!L.listInHero || !/categories/i.test(L.firstRight) || !L.notesRight || !L.shotsInAbout || !L.shotsBeforeFacts || !L.staffAfterTags) throw new Error(`layout wrong: ${JSON.stringify(L)}`);
     if (Math.abs(L.panelHeights[2] - L.panelHeights[3]) > 2) throw new Error(`panels end at different heights: ${L.panelHeights}`);
     if (L.cols.length !== 2 || L.cols[0][1] === L.cols[1][1]) throw new Error(`related/characters not side by side: ${JSON.stringify(L.cols)}`);
     if (!(L.relatedShown < L.relatedAll) || !L.moreBtn) throw new Error(`related not limited: ${JSON.stringify(L)}`);
