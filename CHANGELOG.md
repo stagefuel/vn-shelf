@@ -6,6 +6,16 @@ update itself (Settings → Updates).
 
 ## Unreleased
 
+### Changed
+- "Your VNDB list" is now **My List**, with a count in the sidebar like the other entries.
+- Settings keeps the same size on every tab; longer tabs scroll under the tabs.
+- The hidden Umineko option moved to Settings → Games & tools.
+- With the Japanese interface, the library, Home, My List and related/staff lists show each game's
+  Japanese title when one is known (and sort by it); the English title moves to the second line.
+- Game pages: Characters on the left and Related on the right, always.
+- Save locations is no longer stretched to fill the left column on short pages (games from IGDB or
+  not on VNDB).
+
 ### Fixed
 - Picking a VNDB or IGDB match for a game and then going to another game before it finished
   applying could pull you back to the first game. A late update now only redraws the game you're

@@ -69,7 +69,7 @@ You pick one on first run, and the same one on every PC:
 - **Titles from the game's window** for games not linked to VNDB, tidied of version numbers and
   engine names.
 
-### Your VNDB list
+### My List (your VNDB list)
 - **Connect your VNDB account** in Settings → VNDB with a token from vndb.org (My Profile →
   Applications). The token stays on that PC, encrypted.
 - **Two-way sync** for every game linked to VNDB:
@@ -81,7 +81,7 @@ You pick one on first run, and the same one on every PC:
   Notes never sync. When both sides changed the same thing, the newer change wins.
 - **Syncs by itself:** at start-up, every 15 minutes and a few seconds after a change, usually with
   one request.
-- **Your VNDB list** page: VNs on your list that aren't in your library, with **+ Add**, and
+- **My List** page: VNs on your list that aren't in your library, with **+ Add**, and
   **Link** for a game you already have under the same name. It opens instantly from the copy kept
   on your PC.
 - **Not in Library:** reading statuses and categories that match a VNDB label also list the VNs on

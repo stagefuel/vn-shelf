@@ -1,6 +1,6 @@
 'use strict';
 // End-to-end check of the VNDB list sync against a stand-in VNDB (test/helpers/fake-vndb.js):
-// connect with a token, pull status/labels/rating, the "Your VNDB list" view with Add and Link,
+// connect with a token, pull status/labels/rating, the "My List" view with Add and Link,
 // a status and rating change sent to VNDB, and a change made on VNDB coming back with Sync now.
 // Linux: DISPLAY=:97 node scripts/ui-smoke-vndb.js <shots dir>     (no internet needed)
 // Windows / a packaged build: set VNS_EXE to the app's .exe.
@@ -24,7 +24,7 @@ const game = (id, fields) => write(path.join(cloudDir, 'games', id, 'game.json')
   id, cover: null, exe: null, engine: null, saves: [], launch: { useLocaleEmulator: false, args: '' }, status: '', categories: [],
   titleAlt: '', developer: '', vndbId: null, addedAt: '2026-10-01T00:00:00.000Z', titleSource: 'user', ...fields,
 }));
-game('linked-aaaaaa', { title: 'Linked Game', vndbId: 'v11', vndb: { id: 'v11', description: 'A story.', released: '2020-01-01', length: 'long', languages: ['ja'], platforms: ['win'], tags: [{ id: 'g1', name: 'Romance', rating: 2.5, spoiler: 0 }], fetchedAt: '2026-01-01T00:00:00Z' } });
+game('linked-aaaaaa', { title: 'Linked Game', titleAlt: 'リンクゲーム', vndbId: 'v11', vndb: { id: 'v11', description: 'A story.', released: '2020-01-01', length: 'long', languages: ['ja'], platforms: ['win'], tags: [{ id: 'g1', name: 'Romance', rating: 2.5, spoiler: 0 }], fetchedAt: '2026-01-01T00:00:00Z' } });
 game('wanted-bbbbbb', { title: 'Wanted Game' });
 game('remote-cccccc', { title: 'Remote Game', exe: 'remote.exe' }); // added on the other PC, not set up here
 const onlyExe = path.join(base, 'Games', 'OnlyGame', 'only.exe');
@@ -137,14 +137,32 @@ async function until(what, fn, ms = 20000) {
     await until('row hidden', () => page.locator('#listOnly .listcard').count().then((n) => n === 0));
     result.listOnlyHidden = true;
     await page.click('#settingsBtn');
+    // Settings keeps one size whichever tab is open; long tabs scroll inside it.
+    const heights = [];
+    for (const tab of ['general', 'games', 'look', 'vndb']) {
+      await page.click(`.tab[data-tab="${tab}"]`);
+      heights.push(Math.round((await page.locator('#dlg').boundingBox()).height));
+    }
+    result.settingsHeights = heights;
+    if (new Set(heights).size !== 1) throw new Error(`settings changes size: ${heights}`);
+    result.uminekoUnderGames = await page.locator('.tabpane[data-tab="games"] .tinyopt').count() === 1 && await page.locator('.tabpane[data-tab="general"] .tinyopt').count() === 0;
+    if (!result.uminekoUnderGames) throw new Error('hidden option not under Games & tools');
     await page.click('.tab[data-tab="vndb"]');
     await page.check('.tabpane[data-tab="vndb"] input[type=checkbox]');
     await page.click('#dlg button:has-text("Cancel")');
     await until('row back', () => page.locator('#listOnly .listcard').count().then((n) => n === 1));
 
-    // ---- Your VNDB list: VNs not in the library; one can be linked to "Wanted Game"
-    await page.click('.navitem:has-text("Your VNDB list")');
+    // ---- Japanese interface: Japanese titles where known
+    await page.evaluate(async () => { setup = await window.vns.call('saveSettings', { language: 'ja' }); setLanguage('ja'); });
+    await page.evaluate(() => showLibrary({ category: null, status: null, tag: null }));
+    result.jaTitles = await page.$$eval('#grid .card .title', (x) => x.map((y) => y.textContent));
+    if (!result.jaTitles.includes('リンクゲーム') || !result.jaTitles.includes('Wanted Game')) throw new Error(`Japanese titles: ${result.jaTitles}`);
+    await page.evaluate(async () => { setup = await window.vns.call('saveSettings', { language: 'en' }); setLanguage('en'); renderSidebar(); });
+
+    // ---- My List: VNs not in the library; one can be linked to "Wanted Game"
+    await page.click('.navitem:has-text("My List")');
     await until('list cards', () => page.locator('#vndbView .listcard').count().then((n) => n === 3));
+    result.myListCount = await until('My List count', () => page.locator('.navitem:has-text("My List") .count').textContent().then((x) => (x === '3' ? x : null)));
     result.listSaved = fs.existsSync(path.join(userData, 'vndb-list-view.json'));
     await shot(page, '03-vndb-list');
     await page.click('#vndbView button:has-text("Link to")');
@@ -243,15 +261,16 @@ async function until(what, fn, ms = 20000) {
         staffAfterTags: about.querySelector('.tags').compareDocumentPosition(about.querySelector('.xstaff')) === Node.DOCUMENT_POSITION_FOLLOWING,
         panelHeights: [l.getBoundingClientRect().bottom, r.getBoundingClientRect().bottom, l.lastElementChild.getBoundingClientRect().bottom, r.lastElementChild.getBoundingClientRect().bottom].map(Math.round),
         cols: xs.map((x) => [x.querySelector('h2').textContent, Math.round(x.getBoundingClientRect().left)]),
-        relatedShown: xs[0].querySelectorAll('.card.mini:not([hidden])').length,
-        relatedAll: xs[0].querySelectorAll('.card.mini').length,
-        moreBtn: (xs[0].querySelector('.morebtn:not([hidden])') || {}).textContent || null,
+        relatedShown: xs[1].querySelectorAll('.card.mini:not([hidden])').length,
+        relatedAll: xs[1].querySelectorAll('.card.mini').length,
+        moreBtn: (xs[1].querySelector('.morebtn:not([hidden])') || {}).textContent || null,
       };
     });
     const L = result.layout;
     if (!L.listInHero || !/categories/i.test(L.firstRight) || !L.notesRight || !L.shotsInAbout || !L.shotsBeforeFacts || !L.staffAfterTags) throw new Error(`layout wrong: ${JSON.stringify(L)}`);
-    if (Math.abs(L.panelHeights[2] - L.panelHeights[3]) > 2) throw new Error(`panels end at different heights: ${L.panelHeights}`);
-    if (L.cols.length !== 2 || L.cols[0][1] === L.cols[1][1]) throw new Error(`related/characters not side by side: ${JSON.stringify(L.cols)}`);
+    // The right column fills down to the left one when the left is taller (Save locations is never stretched).
+    if (L.panelHeights[2] > L.panelHeights[3] + 2) throw new Error(`gap under the right column: ${L.panelHeights}`);
+    if (L.cols.length !== 2 || L.cols[0][1] >= L.cols[1][1] || !/characters/i.test(L.cols[0][0]) || !/related/i.test(L.cols[1][0])) throw new Error(`characters should be left, related right: ${JSON.stringify(L.cols)}`);
     if (!(L.relatedShown < L.relatedAll) || !L.moreBtn) throw new Error(`related not limited: ${JSON.stringify(L)}`);
     await page.click('.xcol:has-text("Related") .morebtn');
     result.layout.relatedAfterMore = await page.locator('.xcol:has-text("Related") .card.mini:visible').count();
@@ -317,7 +336,7 @@ async function until(what, fn, ms = 20000) {
     await until('disconnected', () => page.locator('.tabpane[data-tab="vndb"] input[type=password]').count().then((n) => n === 1));
     result.tokenRemoved = !fs.existsSync(path.join(userData, 'vndb-token.json'));
     await page.click('#dlg button:has-text("Cancel")');
-    result.sidebarGone = (await page.locator('.navitem:has-text("Your VNDB list")').count()) === 0;
+    result.sidebarGone = (await page.locator('.navitem:has-text("My List")').count()) === 0;
     console.log(JSON.stringify(result, null, 2));
     const bad = ['lightboxClosedStaysOnPage', 'bothStatuses', 'badTokenRefused', 'tokenNotInConfig', 'tokenNotShared', 'tokenRemoved', 'sidebarGone'].filter((k) => !result[k]);
     if (bad.length) throw new Error(`failed: ${bad.join(', ')}`);

@@ -150,8 +150,9 @@ function markdownEl(md) {
  * Show the shared dialog. `buttons`: [{ label, value, cls, validate }]. Resolves with the clicked
  * value, or null on Escape.
  */
-function dialog({ title, text, body, buttons = [{ label: t('OK'), value: true, cls: 'primary' }], wide }) {
+function dialog({ title, text, body, buttons = [{ label: t('OK'), value: true, cls: 'primary' }], wide, cls }) {
   const dlg = $('#dlg');
+  dlg.className = cls || '';
   const form = $('#dlgBody');
   form.replaceChildren();
   dlg.style.width = wide ? 'min(860px, calc(100vw - 32px))' : '';
@@ -291,7 +292,13 @@ function applyStaticText() {
   for (const el of document.querySelectorAll('[data-t-title]')) el.title = t(el.dataset.tTitle);
 }
 
+let listOnlyAsked = false;
 function renderSidebar() {
+  // My List's count comes from the saved list: load it once, then keep it current.
+  if (setup.vndb && setup.vndb.connected && !listOnlyView && !listOnlyAsked) {
+    listOnlyAsked = true;
+    loadListOnly().then((r) => { if (r) renderSidebar(); refreshListOnly(); });
+  }
   const cats = categoriesAll();
   const count = (c) => games.filter((g) => (g.categories || []).includes(c)).length;
   const item = (label, active, onclick, extra) => h('div', { class: `navitem${active ? ' active' : ''}`, onclick }, label, extra || null);
@@ -299,7 +306,8 @@ function renderSidebar() {
   replaceKids(nav,
     item(t('Home'), view === 'home', () => showHome()),
     item(t('All games'), view === 'library' && !filter.category && !filter.tag && !filter.status, () => showLibrary({ category: null, tag: null }), h('span', { class: 'count' }, games.length)),
-    setup.vndb && setup.vndb.connected ? item(t('Your VNDB list'), view === 'vndb', () => showVndbList()) : null,
+    setup.vndb && setup.vndb.connected ? item(t('My List'), view === 'vndb', () => showVndbList(),
+      listOnlyView && !listOnlyView.loading ? h('span', { class: 'count' }, (listOnlyView.entries || []).length) : null) : null,
     ...(() => {
       const used = STATUS_ORDER.filter((st) => games.some((g) => statusesOf(g).includes(st)));
       if (!used.length) return [];
@@ -387,9 +395,14 @@ async function loadGames() {
   for (const g of games) refreshStatus(g.id);
 }
 
+// With the Japanese interface, titles show in Japanese where one is known (VNDB's original title).
+const hasJapanese = (x) => /[\u3040-\u30ff\u3400-\u9fff]/.test(x || '');
+function shownTitle(x) { return currentLanguage() === 'ja' && hasJapanese(x.titleAlt) ? x.titleAlt : x.title; }
+function otherTitle(x) { return shownTitle(x) === x.title ? x.titleAlt : x.title; }
+
 function cardFor(g) {
   const art = h('div', { class: 'art' },
-    g.coverUrl ? h('img', { src: g.coverUrl, alt: '', loading: 'lazy', draggable: 'false' }) : h('div', { class: 'placeholder' }, g.title));
+    g.coverUrl ? h('img', { src: g.coverUrl, alt: '', loading: 'lazy', draggable: 'false' }) : h('div', { class: 'placeholder' }, shownTitle(g)));
   const b = badgeFor(g);
   if (b) art.append(h('span', { class: `badge ${b}` }, BADGE_TEXT()[b] || b));
   const pr = progressShown(g.id);
@@ -408,12 +421,12 @@ function cardFor(g) {
     if (showStats && g.lastPlayed) parts.push(' · ');
   }
   if (showStats && g.lastPlayed) parts.push(g.playMinutes ? `${hours(g.playMinutes)} · ${ago(g.lastPlayed)}` : t('Played {when}', { when: ago(g.lastPlayed) }));
-  else if (!sts.length) parts.push(g.titleAlt || g.developer || '');
+  else if (!sts.length) parts.push(otherTitle(g) || g.developer || '');
   const sub = parts;
   return h('div', { class: `card${g.installed ? '' : ' uninstalled'}`, tabindex: '0', 'data-id': g.id,
     onclick: () => openDetail(g.id), onkeydown: (e) => { if (e.key === 'Enter') openDetail(g.id); } },
   art,
-  h('div', { class: 'title' }, g.title),
+  h('div', { class: 'title' }, shownTitle(g)),
   h('div', { class: 'sub' }, sub));
 }
 
@@ -448,11 +461,11 @@ function homeHero(g) {
     h('div', { class: 'bgfade' }),
     h('div', { class: 'inner' },
       h('div', { class: 'cover', onclick: () => openDetail(g.id), title: t('Open the game page') },
-        g.coverUrl ? h('img', { src: g.coverUrl, alt: '', draggable: 'false' }) : h('div', { class: 'placeholder' }, g.title)),
+        g.coverUrl ? h('img', { src: g.coverUrl, alt: '', draggable: 'false' }) : h('div', { class: 'placeholder' }, shownTitle(g))),
       h('div', { class: 'grow' },
         h('div', { class: 'eyebrow' }, t('Last played')),
-        h('h1', { onclick: () => openDetail(g.id) }, g.title),
-        g.titleAlt ? h('div', { class: 'alt' }, g.titleAlt) : null,
+        h('h1', { onclick: () => openDetail(g.id) }, shownTitle(g)),
+        otherTitle(g) ? h('div', { class: 'alt' }, otherTitle(g)) : null,
         h('div', { class: 'facts' },
           fact(t('Developer'), g.developer),
           fact(t('Released'), year),
@@ -497,7 +510,7 @@ function matchesSearch(g, q) {
 
 function sortGames(list, key) {
   const by = {
-    title: (a, b) => a.title.localeCompare(b.title, 'ja'),
+    title: (a, b) => shownTitle(a).localeCompare(shownTitle(b), 'ja'),
     played: (a, b) => String(b.lastPlayed || '').localeCompare(String(a.lastPlayed || '')),
     added: (a, b) => String(b.addedAt || '').localeCompare(String(a.addedAt || '')),
     released: (a, b) => String((b.vndb || {}).released || '').localeCompare(String((a.vndb || {}).released || '')),
@@ -506,7 +519,7 @@ function sortGames(list, key) {
     playtime: (a, b) => (b.playMinutes || 0) - (a.playMinutes || 0),
     status: (a, b) => (STATUS_ORDER.indexOf(a.status) + 1 || 99) - (STATUS_ORDER.indexOf(b.status) + 1 || 99),
   }[key] || ((a, b) => a.title.localeCompare(b.title, 'ja'));
-  return [...list].sort((a, b) => by(a, b) || a.title.localeCompare(b.title, 'ja'));
+  return [...list].sort((a, b) => by(a, b) || shownTitle(a).localeCompare(shownTitle(b), 'ja'));
 }
 
 function renderGrid() {
@@ -582,7 +595,7 @@ function extrasParts(g) {
       limitRows(vnGrid(extras.relations, { sub: (r) => `${RELATION_TEXT()[r.relation] || r.relation}${r.official ? '' : ` (${t('unofficial')})`}`, onAdded: () => redraw() }))) : null;
     const characters = chars && chars.length ? h('div', { class: 'xcol' }, h('h2', {}, t('Characters')), charactersEl(chars, () => redraw())) : null;
     replaceKids(parts.bottom,
-      related || characters ? h('div', { class: 'xcols' }, related, characters) : null,
+      related || characters ? h('div', { class: 'xcols' }, characters || h('div', { class: 'xcol' }), related || h('div', { class: 'xcol' })) : null,
       extras === null ? h('div', { class: 'faint small' }, t('Couldn\'t load screenshots, characters and staff from VNDB.')) : null);
   };
   const redraw = () => { const c = extrasCache.get(g.vndbId); if (c) draw(c.extras, c.chars); };
@@ -703,8 +716,8 @@ function vnGrid(list, { sub, onAdded }) {
     } }, t('+ Add'));
     return h('div', { class: 'card mini', title: v.gameId ? null : t('Open on VNDB'),
       onclick: () => (v.gameId ? openDetail(v.gameId) : vns.call('openExternal', `https://vndb.org/${v.vndbId}`)) },
-    h('div', { class: 'art' }, v.image ? h('img', { src: v.image, alt: '', loading: 'lazy', draggable: 'false' }) : h('div', { class: 'placeholder' }, v.title)),
-    h('div', { class: 'title' }, v.title),
+    h('div', { class: 'art' }, v.image ? h('img', { src: v.image, alt: '', loading: 'lazy', draggable: 'false' }) : h('div', { class: 'placeholder' }, shownTitle(v))),
+    h('div', { class: 'title' }, shownTitle(v)),
     h('div', { class: 'sub' }, [sub(v), (v.released || '').slice(0, 4)].filter(Boolean).join(' · ')),
     mark, add);
   }));
@@ -826,6 +839,7 @@ async function refreshListOnly() {
   if (!r) return false;
   const changed = JSON.stringify(r) !== JSON.stringify(listOnlyView && { ...listOnlyView, cached: undefined });
   listOnlyView = r;
+  if (changed) renderSidebar(); // My List's count
   return changed;
 }
 /** Sync with VNDB in the background when it's been a while, so the list is current. */
@@ -839,7 +853,7 @@ function vndbSyncIfStale() {
 /** A card for a VN on the VNDB list that isn't in the library: + Add, or Link to a game with the same name. */
 function listCard(e, after) {
   const art = h('div', { class: 'art' },
-    e.image ? h('img', { src: e.image, alt: '', loading: 'lazy', draggable: 'false', class: e.imageSexual >= 1.5 ? 'nsfw' : null }) : h('div', { class: 'placeholder' }, e.title));
+    e.image ? h('img', { src: e.image, alt: '', loading: 'lazy', draggable: 'false', class: e.imageSexual >= 1.5 ? 'nsfw' : null }) : h('div', { class: 'placeholder' }, shownTitle(e)));
   const add = h('button', { class: 'small primary', onclick: async (ev) => {
     ev.stopPropagation();
     add.disabled = true;
@@ -862,7 +876,7 @@ function listCard(e, after) {
   } }, t('Link to “{game}”', { game: e.linkTo.title })) : null;
   return h('div', { class: 'card listcard', title: t('Open on VNDB'), onclick: () => vns.call('openExternal', `https://vndb.org/${e.vndbId}`) },
     art,
-    h('div', { class: 'title' }, e.title),
+    h('div', { class: 'title' }, shownTitle(e)),
     h('div', { class: 'sub' }, (e.statuses || []).map((x, i) => [i ? ', ' : null, h('span', { class: `sdot ${x}` }), STATUS_TEXT()[x]]),
       e.vote ? `${(e.statuses || []).length ? ' · ' : ''}★ ${e.vote / 10}` : null),
     h('div', { class: 'listbtns' }, link, add));
@@ -888,7 +902,7 @@ function drawVndbList(r) {
   const syncing = setup.vndb && setup.vndb.syncing;
   replaceKids($('#vndbView'),
     h('div', { class: 'libtoolbar' },
-      h('h1', {}, t('Your VNDB list')),
+      h('h1', {}, t('My List')),
       h('span', { class: 'dim' }, t('{n} not in library', { n: list.length })),
       h('div', { class: 'spacer' }),
       statusSel,
@@ -1544,6 +1558,8 @@ function vndbPane() {
         h('button', { type: 'button', class: 'small', disabled: !!v.syncing, onclick: () => vndbSyncNow() }, v.syncing ? t('Syncing…') : t('Sync with VNDB now')),
         h('button', { type: 'button', class: 'small ghost', onclick: async () => {
           setup = await call('vndbDisconnect');
+          listOnlyView = null;
+          listOnlyAsked = false;
           if (view === 'vndb') showHome();
           renderSidebar();
           draw();
@@ -1557,7 +1573,7 @@ function vndbPane() {
         h('li', {}, t('Your rating and the started / finished dates')),
         h('li', {}, labels.length ? t('Categories named like one of your labels: {labels}', { labels: labels.join(', ') })
           : t('Categories named like one of your own VNDB labels (you have none yet; make them on vndb.org)')),
-        h('li', {}, t('VNs on your list that aren\'t in your library are under "Your VNDB list" in the sidebar.')))),
+        h('li', {}, t('VNs on your list that aren\'t in your library are under "My List" in the sidebar.')))),
       field(null, h('label', { class: 'check' },
         h('input', { type: 'checkbox', checked: setup.settings.showListOnly !== false, onchange: async (e) => {
           setup = await call('saveSettings', { showListOnly: e.target.checked });
@@ -1641,7 +1657,6 @@ async function settingsDialog(first = false) {
       field(t('Your other PC'), h('div', { class: 'val wrap' },
         h('button', { type: 'button', class: 'small', onclick: () => { closeDialog(false); copySettingsDialog(); } }, t('Copy settings from another PC…'))),
       h('div', { class: 'faint small' }, t('Copies the theme, fonts, background and other preferences.'))),
-      h('label', { class: 'check tinyopt' }, allowU, t('Allow adding Umineko no Naku Koro ni')),
     ]],
     ['saves', t('Saves & sync'), [
       field(t('Where to keep saves — choose the same cloud service on every PC'), chooser.el),
@@ -1659,6 +1674,7 @@ async function settingsDialog(first = false) {
       h('div', { class: 'faint small' }, t('Switching where saves are kept doesn\'t move games already added; add them again on the new storage.')),
     ]],
     ['games', t('Games & tools'), [
+      h('label', { class: 'check tinyopt' }, allowU, t('Allow adding Umineko no Naku Koro ni')),
       field(t('Locale Emulator (for games that need Japanese locale)'),
         h('div', { class: 'val' }, lePath, h('button', { type: 'button', onclick: async () => {
           const f = await vns.call('pickFile', t('Find LEProc.exe'), [{ name: 'LEProc', extensions: ['exe'] }]);
@@ -1707,6 +1723,7 @@ async function settingsDialog(first = false) {
     title: t('Settings'),
     body: [h('div', { class: 'tabs' }, tabs.map(([k]) => tabBtns[k])), ...tabs.map(([k]) => panes[k])],
     wide: true,
+    cls: 'settingsdlg',
     buttons: [
       { label: t('Cancel'), value: false, cls: 'ghost' },
       { label: t('Save'), value: true, cls: 'primary', validate: () => {
@@ -2295,8 +2312,8 @@ function paintDetail(g, data, opts = {}) {
     h('div', { class: 'inner' },
       h('div', { class: 'cover' }, g.coverUrl ? h('img', { src: g.coverUrl, alt: '' }) : h('div', { class: 'placeholder' }, g.title)),
       h('div', { class: 'grow' },
-        h('h1', {}, g.title),
-        g.titleAlt ? h('div', { class: 'alt' }, g.titleAlt) : null,
+        h('h1', {}, shownTitle(g)),
+        otherTitle(g) ? h('div', { class: 'alt' }, otherTitle(g)) : null,
         h('div', { class: 'meta' },
           g.developer ? h('span', {}, g.developer) : null,
           g.engine ? h('span', {}, g.engine) : g.vndbId ? fillVndbEngine(h('span', { class: 'vndbengine', hidden: true }), (extrasCache.get(g.vndbId) || {}).extras) : null,
@@ -2798,7 +2815,7 @@ vns.on('vndb-state', (st) => {
   setup.vndb = st;
   if (vndbPaneDraw && $('#dlg').open) vndbPaneDraw();
   if (view === 'vndb' && (!st.syncing || !wasSyncing)) renderVndbList({ fresh: !st.syncing });
-  if (wasSyncing && !st.syncing && view === 'library' && st.connected) refreshListOnly().then((changed) => { if (changed && view === 'library') renderGrid(); });
+  if (wasSyncing && !st.syncing && st.connected) refreshListOnly().then((changed) => { if (changed && view === 'library') renderGrid(); });
   renderSidebar();
 });
 // The other PC changed something (added a game, uploaded saves, edited a game): show it.
