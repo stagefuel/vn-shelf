@@ -24,7 +24,7 @@ const game = (id, fields) => write(path.join(cloudDir, 'games', id, 'game.json')
   id, cover: null, exe: null, engine: null, saves: [], launch: { useLocaleEmulator: false, args: '' }, status: '', categories: [],
   titleAlt: '', developer: '', vndbId: null, addedAt: '2026-10-01T00:00:00.000Z', titleSource: 'user', ...fields,
 }));
-game('linked-aaaaaa', { title: 'Linked Game', vndbId: 'v11' });
+game('linked-aaaaaa', { title: 'Linked Game', vndbId: 'v11', vndb: { id: 'v11', description: 'A story.', released: '2020-01-01', length: 'long', languages: ['ja'], platforms: ['win'], tags: [{ id: 'g1', name: 'Romance', rating: 2.5, spoiler: 0 }], fetchedAt: '2026-01-01T00:00:00Z' } });
 game('wanted-bbbbbb', { title: 'Wanted Game' });
 write(path.join(userData, 'config.json'), JSON.stringify({ cloudDir, backend: 'folder', deviceName: 'PC1', autoUpdate: false }));
 const readGame = (id) => JSON.parse(fs.readFileSync(path.join(cloudDir, 'games', id, 'game.json'), 'utf8'));
@@ -52,7 +52,8 @@ async function until(what, fn, ms = 20000) {
   const shotOf = (lang) => ({ url: px, thumbnail: px, dims: [800, 600], thumbnail_dims: [136, 102], release: { languages: [{ lang }] } });
   fake.extras.set('v11', {
     screenshots: [shotOf('en'), shotOf('ja'), shotOf('ru'), shotOf('ja')],
-    relations: [{ id: 'v13', relation: 'seq', relation_official: true, title: 'Wanted Game', released: '2021-01-01' }, { id: 'v99', relation: 'fan', relation_official: true, title: 'A Fandisc', released: '2022-01-01' }],
+    relations: [{ id: 'v13', relation: 'seq', relation_official: true, title: 'Wanted Game', released: '2021-01-01' }, { id: 'v99', relation: 'fan', relation_official: true, title: 'A Fandisc', released: '2022-01-01' },
+      ...Array.from({ length: 14 }, (_, i) => ({ id: `v${200 + i}`, relation: 'set', relation_official: true, title: `Same Setting ${i + 1}`, released: '2023-01-01' }))],
     staff: [{ id: 's1', name: 'Writer Person', original: '書き手', role: 'scenario', note: null }],
     developers: [{ id: 'p1', name: 'Brand Co', original: 'ブランド' }],
   });
@@ -147,17 +148,51 @@ async function until(what, fn, ms = 20000) {
     await page.waitForSelector('.vnextras h2:has-text("Characters")', { timeout: 20000 });
     result.extras = {
       sections: await page.$$eval('.vnextras h2', (x) => x.map((y) => y.textContent)),
-      screenshots: await page.locator('.vnextras .shot').count(),
+      screenshots: await page.locator('.xshots .shot').count(),
       related: await page.$$eval('.vnextras .card.mini', (x) => x.map((y) => y.textContent)),
       characters: await page.locator('.vnextras .charcard').count(),
     };
+    // Layout: rating & dates in the header, Categories first on the right, screenshots and staff in
+    // About, both panels the same height, Related and Characters side by side with Show more.
+    result.layout = await page.evaluate(() => {
+      const [l, r] = document.querySelectorAll('.panels > .panel');
+      const about = l.querySelector('.box');
+      const xs = [...document.querySelectorAll('.xcols > .xcol')];
+      return {
+        listInHero: !!document.querySelector('.hero .herolist .listfields select'),
+        firstRight: r.querySelector('h2').textContent,
+        shotsInAbout: !!about.querySelector('.xshots .shot'),
+        shotsBeforeFacts: about.querySelector('.xshots').compareDocumentPosition(about.querySelector('.facts')) === Node.DOCUMENT_POSITION_FOLLOWING,
+        staffAfterTags: about.querySelector('.tags').compareDocumentPosition(about.querySelector('.xstaff')) === Node.DOCUMENT_POSITION_FOLLOWING,
+        panelHeights: [l.getBoundingClientRect().bottom, r.getBoundingClientRect().bottom, l.lastElementChild.getBoundingClientRect().bottom, r.lastElementChild.getBoundingClientRect().bottom].map(Math.round),
+        cols: xs.map((x) => [x.querySelector('h2').textContent, Math.round(x.getBoundingClientRect().left)]),
+        relatedShown: xs[0].querySelectorAll('.card.mini:not([hidden])').length,
+        relatedAll: xs[0].querySelectorAll('.card.mini').length,
+        moreBtn: (xs[0].querySelector('.morebtn:not([hidden])') || {}).textContent || null,
+      };
+    });
+    const L = result.layout;
+    if (!L.listInHero || !/categories/i.test(L.firstRight) || !L.shotsInAbout || !L.shotsBeforeFacts || !L.staffAfterTags) throw new Error(`layout wrong: ${JSON.stringify(L)}`);
+    if (Math.abs(L.panelHeights[2] - L.panelHeights[3]) > 2) throw new Error(`panels end at different heights: ${L.panelHeights}`);
+    if (L.cols.length !== 2 || L.cols[0][1] === L.cols[1][1]) throw new Error(`related/characters not side by side: ${JSON.stringify(L.cols)}`);
+    if (!(L.relatedShown < L.relatedAll) || !L.moreBtn) throw new Error(`related not limited: ${JSON.stringify(L)}`);
+    await page.click('.xcol:has-text("Related") .morebtn');
+    result.layout.relatedAfterMore = await page.locator('.xcol:has-text("Related") .card.mini:visible').count();
+    if (result.layout.relatedAfterMore !== L.relatedAll) throw new Error('Show more did not show every related VN');
+    await page.click('.xcol:has-text("Related") .morebtn');
+    await page.evaluate(() => { document.querySelector('main').scrollTop = 0; });
+    await shot(page, '05a-layout-top');
+    await page.locator('.xstaff').scrollIntoViewIfNeeded();
+    await shot(page, '05c-layout-middle');
+    await page.locator('.xcols').scrollIntoViewIfNeeded();
+    await shot(page, '05b-layout-bottom');
     // No engine known from the files, so the hero shows VNDB's.
     result.extras.engine = await page.locator('.hero .vndbengine').textContent();
     if (result.extras.engine !== 'Engine (VNDB): SiglusEngine') throw new Error(`VNDB engine not shown: ${result.extras.engine}`);
     if (result.extras.screenshots !== 2) throw new Error(`expected the 2 Japanese screenshots, got ${result.extras.screenshots}`);
     if (result.extras.characters !== 1) throw new Error('spoiler character should be hidden');
     if (!result.extras.related.some((x) => x.includes('Wanted Game') && x.includes('In your library'))) throw new Error('related game not marked as in the library');
-    await page.click('.vnextras .shot >> nth=0');
+    await page.click('.xshots .shot >> nth=0');
     await page.waitForSelector('.lightbox');
     await page.keyboard.press('ArrowRight');
     result.lightboxCount = await page.textContent('.lightbox .lbcount');
@@ -169,9 +204,9 @@ async function until(what, fn, ms = 20000) {
     await page.waitForSelector('.chardlg');
     result.characterDialog = await page.textContent('.chardlg');
     await page.click('#dlg button:has-text("Close")');
-    await page.locator('.vnextras .person:has-text("書き手")').scrollIntoViewIfNeeded();
+    await page.locator('.xstaff .person:has-text("書き手")').scrollIntoViewIfNeeded();
     await shot(page, '05-extras');
-    await page.click('.vnextras .person:has-text("書き手")');
+    await page.click('.xstaff .person:has-text("書き手")');
     await page.waitForSelector('#worksView .card.mini');
     result.works = await page.$$eval('#worksView .card.mini', (x) => x.map((y) => y.textContent));
     await shot(page, '06-works');

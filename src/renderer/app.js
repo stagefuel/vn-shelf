@@ -524,29 +524,76 @@ const CHAR_ROLE_TEXT = () => ({ main: t('Protagonist'), primary: t('Main charact
 
 const extrasCache = new Map(); // vndbId -> { extras, chars } for this session (redraws without waiting)
 
-function extrasSection(g) {
-  const host = h('div', { class: 'vnextras', 'data-vid': g.vndbId });
+/**
+ * VNDB extras for a game page: screenshots and staff go in the About box, related VNs and
+ * characters in two columns below the panels. Loaded once per game and kept in extrasCache.
+ */
+function extrasParts(g) {
+  const parts = {
+    shots: h('div', { class: 'xshots' }),
+    staff: h('div', { class: 'xstaff' }),
+    bottom: h('div', { class: 'vnextras', 'data-vid': g.vndbId }),
+  };
   const draw = (extras, chars) => {
-    if (!host.isConnected && host.dataset.drawn) return;
-    host.dataset.drawn = '1';
+    if (!parts.bottom.isConnected && parts.bottom.dataset.drawn) return;
+    parts.bottom.dataset.drawn = '1';
     fillVndbEngine(document.querySelector('.hero .vndbengine'), extras);
-    replaceKids(host,
-      extras && extras.screenshots.length ? [h('h2', {}, t('Screenshots')), galleryEl(extras.screenshots)] : null,
-      extras && extras.relations.length ? [h('h2', {}, t('Related')), vnGrid(extras.relations, { sub: (r) => `${RELATION_TEXT()[r.relation] || r.relation}${r.official ? '' : ` (${t('unofficial')})`}`, onAdded: () => redraw() })] : null,
-      chars && chars.length ? [h('h2', {}, t('Characters')), charactersEl(chars, () => redraw())] : null,
-      extras && (extras.staff.length || extras.developers.length) ? [h('h2', {}, t('Staff')), staffEl(extras)] : null,
+    replaceKids(parts.shots, extras && extras.screenshots.length ? galleryEl(extras.screenshots) : null);
+    replaceKids(parts.staff, extras && (extras.staff.length || extras.developers.length) ? staffEl(extras) : null);
+    const related = extras && extras.relations.length ? h('div', { class: 'xcol' }, h('h2', {}, t('Related')),
+      limitRows(vnGrid(extras.relations, { sub: (r) => `${RELATION_TEXT()[r.relation] || r.relation}${r.official ? '' : ` (${t('unofficial')})`}`, onAdded: () => redraw() }))) : null;
+    const characters = chars && chars.length ? h('div', { class: 'xcol' }, h('h2', {}, t('Characters')), charactersEl(chars, () => redraw())) : null;
+    replaceKids(parts.bottom,
+      related || characters ? h('div', { class: 'xcols' }, related, characters) : null,
       extras === null ? h('div', { class: 'faint small' }, t('Couldn\'t load screenshots, characters and staff from VNDB.')) : null);
   };
   const redraw = () => { const c = extrasCache.get(g.vndbId); if (c) draw(c.extras, c.chars); };
   const cached = extrasCache.get(g.vndbId);
-  if (cached) { draw(cached.extras, cached.chars); return host; }
-  replaceKids(host, h('div', { class: 'faint small' }, t('Loading screenshots, characters and staff from VNDB…')));
+  if (cached) { draw(cached.extras, cached.chars); return parts; }
+  replaceKids(parts.bottom, h('div', { class: 'faint small' }, t('Loading screenshots, characters and staff from VNDB…')));
   (async () => {
     const [extras, chars] = await Promise.all([vns.call('vndbExtras', g.id).catch(() => null), vns.call('vndbCharacters', g.id).catch(() => [])]);
     extrasCache.set(g.vndbId, { extras, chars });
-    if (host.isConnected) draw(extras, chars);
+    if (parts.bottom.isConnected) draw(extras, chars);
   })();
-  return host;
+  return parts;
+}
+
+/** Show only the first rows of a card grid, with a button for the rest. Recounted when the width changes. */
+function limitRows(grid, rows = 2) {
+  let open = false;
+  let width = -1;
+  const btn = h('button', { type: 'button', class: 'ghost tiny morebtn', hidden: true });
+  const apply = () => {
+    const items = [...grid.children];
+    for (const x of items) x.hidden = false;
+    if (!grid.isConnected) return;
+    const tops = [...new Set(items.map((x) => x.offsetTop))].sort((a, b) => a - b);
+    const extra = tops.length > rows ? items.filter((x) => x.offsetTop >= tops[rows]) : [];
+    if (!open) for (const x of extra) x.hidden = true;
+    btn.hidden = !extra.length;
+    btn.textContent = open ? t('Show less') : t('Show {n} more', { n: extra.length });
+  };
+  btn.addEventListener('click', () => { open = !open; apply(); });
+  new ResizeObserver(() => { if (grid.clientWidth !== width) { width = grid.clientWidth; apply(); } }).observe(grid);
+  return h('div', { class: 'limited' }, grid, btn);
+}
+
+/** Cap a block's height, with a button to show all of it when it's taller. */
+function clipHeight(el, max, moreText) {
+  let open = false;
+  const wrap = h('div', { class: 'clipped', style: `max-height:${max}px` }, el);
+  const btn = h('button', { type: 'button', class: 'ghost tiny morebtn', hidden: true });
+  const apply = () => {
+    const tall = el.scrollHeight > max + 8;
+    wrap.style.maxHeight = open || !tall ? 'none' : `${max}px`;
+    wrap.classList.toggle('cut', tall && !open);
+    btn.hidden = !tall;
+    btn.textContent = open ? t('Show less') : moreText;
+  };
+  btn.addEventListener('click', () => { open = !open; apply(); });
+  new ResizeObserver(apply).observe(el);
+  return h('div', {}, wrap, btn);
 }
 
 /** VNDB's engine in the game page header, shown when VN Shelf couldn't tell it from the game's files. */
@@ -628,11 +675,11 @@ function charactersEl(chars, redraw) {
   const shown = chars.filter((c) => showSpoilers || !c.spoiler);
   const hidden = chars.length - shown.length;
   return h('div', {},
-    h('div', { class: 'chargrid' }, shown.map((c) => h('button', { type: 'button', class: `charcard${c.spoiler ? ' spoil' : ''}`, onclick: () => characterDialog(c) },
+    limitRows(h('div', { class: 'chargrid' }, shown.map((c) => h('button', { type: 'button', class: `charcard${c.spoiler ? ' spoil' : ''}`, onclick: () => characterDialog(c) },
       c.image ? h('img', { src: c.image, alt: '', loading: 'lazy', draggable: 'false' }) : h('div', { class: 'noimg' }),
       h('div', { class: 'cname' }, c.original || c.name),
       c.original ? h('div', { class: 'csub' }, c.name) : null,
-      h('div', { class: 'csub' }, CHAR_ROLE_TEXT()[c.role] || c.role)))),
+      h('div', { class: 'csub' }, CHAR_ROLE_TEXT()[c.role] || c.role))))),
     hidden ? h('button', { type: 'button', class: 'ghost tiny', onclick: () => { showSpoilers = true; redraw(); } }, t('Show {n} spoiler characters', { n: hidden })) : null,
     showSpoilers && chars.some((c) => c.spoiler) ? h('button', { type: 'button', class: 'ghost tiny', onclick: () => { showSpoilers = false; redraw(); } }, t('Hide spoiler characters')) : null);
 }
@@ -677,13 +724,14 @@ function staffEl(extras) {
     onclick: () => showWorks(p.id, p.original || p.name) }, p.original || p.name, roleNote ? h('span', { class: 'faint' }, ` ${roleNote}`) : null);
   const byRole = (role) => extras.staff.filter((p) => p.roles.includes(role));
   const others = extras.staff.filter((p) => !p.roles.some((r) => MAIN_ROLES.includes(r)));
-  return h('div', { class: 'box staffbox' },
+  return clipHeight(h('div', { class: 'staffbox' },
     extras.developers.length ? h('div', { class: 'staffrow' }, h('span', { class: 'k' }, t('Brand')),
       h('span', { class: 'people' }, extras.developers.map((d) => person(d)))) : null,
     MAIN_ROLES.filter((r) => byRole(r).length).map((r) => h('div', { class: 'staffrow' }, h('span', { class: 'k' }, STAFF_ROLE_TEXT()[r]),
       h('span', { class: 'people' }, byRole(r).map((p) => person(p))))),
-    others.length ? h('details', { class: 'staffmore' }, h('summary', {}, t('Other staff ({n})', { n: others.length })),
-      h('div', { class: 'people' }, others.map((p) => person(p, `(${p.roles.map((r) => STAFF_ROLE_TEXT()[r] || r).join(', ')})`)))) : null);
+    others.length ? h('div', { class: 'staffrow' }, h('span', { class: 'k' }, t('Other staff')),
+      h('span', { class: 'people' }, others.map((p) => person(p, `(${p.roles.map((r) => STAFF_ROLE_TEXT()[r] || r).join(', ')})`)))) : null),
+  150, t('Show all staff'));
 }
 
 // ---- a person's or brand's works
@@ -1847,7 +1895,7 @@ function descriptionEl(segments) {
   return box;
 }
 
-function aboutBox(g) {
+function aboutBox(g, parts) {
   const v = g.vndb;
   const box = h('div', { class: 'box' });
   if (!g.vndbId) {
@@ -1857,7 +1905,8 @@ function aboutBox(g) {
   }
   if (!v) {
     box.append(h('div', { class: 'note' }, t('VNDB info hasn\'t been downloaded for this game yet.')),
-      h('div', { class: 'boxactions' }, h('button', { onclick: () => refreshVndb(g.id) }, t('Get info from VNDB'))));
+      h('div', { class: 'boxactions' }, h('button', { onclick: () => refreshVndb(g.id) }, t('Get info from VNDB'))),
+      parts ? parts.shots : null, parts ? parts.staff : null);
     return box;
   }
   const facts = [
@@ -1871,11 +1920,13 @@ function aboutBox(g) {
   const hidden = (v.tags || []).length - tags.length;
   box.append(
     v.description ? descriptionEl(g.descSegments) : h('div', { class: 'note' }, t('VNDB has no description for this game.')),
+    parts ? parts.shots : null,
     h('div', { class: 'facts' }, facts.map(([k, val]) => h('div', { class: 'fact' }, h('span', { class: 'k' }, k), h('span', {}, val)))),
     h('div', { class: 'tags' },
       tags.map((x) => h('button', { class: `tag tagbtn${x.spoiler ? ' spoil' : ''}`, title: t('Show games with this tag'), onclick: () => { $('#search').value = ''; showLibrary({ tag: { id: x.id, name: x.name }, category: null }); } }, x.name)),
       hidden ? h('button', { class: 'ghost tiny', onclick: () => { showSpoilers = true; renderDetail(g.id, { noAuto: true }); } }, t('Show {n} spoiler tags', { n: hidden })) : null,
       showSpoilers && (v.tags || []).some((x) => x.spoiler) ? h('button', { class: 'ghost tiny', onclick: () => { showSpoilers = false; renderDetail(g.id, { noAuto: true }); } }, t('Hide spoiler tags')) : null),
+    parts ? parts.staff : null,
     h('div', { class: 'boxactions' },
       h('button', { class: 'small', onclick: () => vns.call('openExternal', `https://vndb.org/${g.vndbId}`) }, t('VNDB page')),
       h('button', { class: 'small ghost', onclick: () => refreshVndb(g.id) }, t('Refresh from VNDB')),
@@ -1904,7 +1955,7 @@ function notesBox(g) {
   };
   area.addEventListener('input', () => { state.textContent = t('Editing…'); clearTimeout(timer); timer = setTimeout(saveNow, 800); });
   area.addEventListener('blur', saveNow);
-  return h('div', { class: 'box' }, h('div', { class: 'field' }, area, h('div', { class: 'faint small' }, t('Notes sync to your other PCs with the game.'), ' ', state)));
+  return h('div', { class: 'box notesbox' }, h('div', { class: 'field' }, area, h('div', { class: 'faint small' }, t('Notes sync to your other PCs with the game.'), ' ', state)));
 }
 
 function vndbLabelled(c) {
@@ -2035,7 +2086,8 @@ function paintDetail(g, data, opts = {}) {
           h('button', { id: 'playBtn', class: 'play playbtn', 'data-id': id, onclick: () => playOrStop(id) }, t('▶ Play')),
           h('button', { onclick: () => syncNow(id), disabled: loading || !g.installed || !saves.length }, t('Sync now')),
           statusSelect(g)),
-        h('div', { id: 'statusline', class: 'statusline', 'data-id': id }))));
+        h('div', { id: 'statusline', class: 'statusline', 'data-id': id })),
+      h('div', { class: 'herolist' }, listBox(g))));
   const loadingNote = () => h('div', { class: 'note' }, t('Loading…'));
 
   // ---- save locations
@@ -2117,20 +2169,20 @@ function paintDetail(g, data, opts = {}) {
   const main$ = $('main');
   const scroll = $('#detailView').dataset.id === id ? main$.scrollTop : 0;
   $('#detailView').dataset.id = id;
+  const parts = g.vndbId ? extrasParts(g) : null;
   $('#detailView').replaceChildren(hero, h('div', { class: 'panels' },
     h('div', { class: 'panel' },
-      h('h2', {}, t('About')), aboutBox(g),
+      h('h2', {}, t('About')), aboutBox(g, parts),
       h('h2', {}, t('Save locations')), saveBox, suggestBox,
       h('h2', {}, t('Notes')), detailNotes.el),
     h('div', { class: 'panel' },
+      h('h2', {}, t('Categories')), categoryBox(g),
       h('h2', {}, t('Launch')), launchBox,
       h('h2', {}, t('Start with this game')), tools,
-      h('h2', {}, t('Your rating & dates')), listBox(g),
-      h('h2', {}, t('Categories')), categoryBox(g),
       h('h2', {}, t('Save backup')), backupBox(g),
       h('h2', {}, t('History')), histBox,
       h('h2', {}, t('Details')), detailsBox)),
-    g.vndbId ? extrasSection(g) : null);
+    parts ? parts.bottom : null);
   main$.scrollTop = scroll;
   updateLive(id);
   if (loading) return;

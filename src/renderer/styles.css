@@ -535,10 +535,33 @@ body.has-bg .homehero .bgfade { background: linear-gradient(180deg, color-mix(in
 .traitrow { font-size: 13px; margin: 3px 0; }
 .traitrow .k, .staffrow .k { color: var(--text-faint); display: inline-block; min-width: 120px; }
 .spoiltrait { color: var(--warn); }
-.staffbox { padding: 10px 14px; }
+.staffbox { padding: 2px 0; }
+.xstaff:not(:empty) { padding: 10px 14px 12px; border-top: 1px solid var(--line); }
+.xshots:not(:empty) { padding: 4px 14px 14px; }
+.xshots .shots { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+.clipped { overflow: hidden; position: relative; }
+.clipped.cut::after { content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 36px; background: linear-gradient(transparent, var(--bg-raised)); pointer-events: none; }
+.morebtn { margin-top: 6px; }
+.limited > .minigrid > [hidden], .limited > .chargrid > [hidden] { display: none !important; }
+.xcols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 26px; align-items: start; }
+@media (max-width: 1040px) { .xcols { grid-template-columns: 1fr; } }
+/* Rating and dates in the header, right-aligned beside Play / Sync now. */
+.hero .inner > .grow { flex: 1 1 320px; min-width: 0; }
+.hero .herolist { margin-left: auto; flex: 0 0 auto; width: 290px; }
+.hero .herolist .box { background: color-mix(in srgb, var(--bg-raised) 85%, transparent); border: 1px solid var(--line); border-radius: var(--radius); }
+.hero .herolist .listfields { flex-direction: column; gap: 8px; padding: 12px 14px 6px; }
+.hero .herolist .listfields .field { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.hero .herolist .listfields .lbl { margin: 0; }
+.hero .herolist .listfields input[type=date], .hero .herolist .listfields select { width: 150px; }
+@media (max-width: 980px) { .hero .inner { flex-wrap: wrap; } .hero .herolist { margin-left: 0; } }
+/* Both columns end at the same height: the last box in each grows to fill. */
+.panel { display: flex; flex-direction: column; }
+.panel > .box:last-child { flex: 1; }
+.panel > .box.notesbox:last-child { display: flex; flex-direction: column; }
+.panel > .box.notesbox:last-child > .field { flex: 1; display: flex; flex-direction: column; }
+.panel > .box.notesbox:last-child textarea.notes { flex: 1; }
 .staffrow { display: flex; gap: 8px; align-items: baseline; padding: 4px 0; }
 .people { display: inline-flex; flex-wrap: wrap; gap: 4px 6px; }
 .person { background: none; border: 0; padding: 1px 2px; color: var(--accent); cursor: pointer; font: inherit; font-size: 13.5px; }
 .person:hover { text-decoration: underline; }
-.staffmore summary { cursor: pointer; color: var(--text-dim); font-size: 13px; padding: 6px 0; }
 @media (max-width: 700px) { .chardlg { flex-direction: column; } }
