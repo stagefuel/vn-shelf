@@ -4,7 +4,9 @@ All notable changes to VN Shelf. Download any version from the
 [Releases page](https://github.com/stagefuel/vn-shelf/releases). From 0.3.0 on, VN Shelf can
 update itself (Settings → Updates).
 
-## Unreleased
+## 0.14.1
+
+Parts of one VN sync to VNDB as one, and archive versions and parts get their own names.
 
 ### New
 - **Parts of one VN sync as one.** When several games in your library are on the same VNDB entry
