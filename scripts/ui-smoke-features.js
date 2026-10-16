@@ -13,7 +13,7 @@ const { readZip } = require('../src/core/zip');
 const WIN = process.platform === 'win32';
 const shots = path.resolve(process.argv[2] || 'shots-features');
 fs.mkdirSync(shots, { recursive: true });
-const base = fs.mkdtempSync(path.join(os.tmpdir(), 'vns-uif-'));
+const base = require('./smoke-tmp').smokeTmp('vns-uif-'); // deleted when the script ends
 let lastPage = null;
 const shot = (page, n) => page.screenshot({ path: path.join(shots, `${n}.png`) });
 const write = (p, s = '') => { fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, s); };

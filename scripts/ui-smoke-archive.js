@@ -18,7 +18,7 @@ const unpack = require('../src/core/unpack');
 
 const shots = path.resolve(process.argv[2] || 'shots-archive');
 fs.mkdirSync(shots, { recursive: true });
-const base = fs.mkdtempSync(path.join(os.tmpdir(), 'vns-uia-'));
+const base = require('./smoke-tmp').smokeTmp('vns-uia-'); // deleted when the script ends
 const shot = (page, n) => page.screenshot({ path: path.join(shots, `${n}.png`) });
 const write = (p, s = '') => { fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, s); };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -56,18 +56,34 @@ async function until(what, fn, ms = 30000) {
   const bigZip = path.join(base, 'src', 'big.zip');
   execFileSync(sevenZip, ['a', '-mx0', bigZip, path.join(base, 'src', 'ビッグゲーム')], { stdio: 'ignore' });
   const bigBuf = fs.readFileSync(bigZip);
+  // Small zipped games: the second part of Big Game, two versions of another VN, and one added later.
+  const smallZip = (name, exe) => {
+    const d = path.join(base, 'src', name);
+    write(path.join(d, exe), crypto.randomBytes(150000));
+    const z = path.join(base, 'src', `${name}.zip`);
+    execFileSync(sevenZip, ['a', z, d], { stdio: 'ignore' });
+    return fs.readFileSync(z);
+  };
+  const part2 = smallZip('ビッグゲーム後編', 'part2.exe');
+  const verOrig = smallZip('VerOrig', 'ver.exe');
+  const verHd = smallZip('VerHD', 'verhd.exe');
+  const newZip = smallZip('NewGame', 'new.exe');
   const item = (p, kind, title, vids, files, extra = {}) => ({ path: p, kind, group: p.split('/')[0], title, vids, size: files.reduce((s, f) => s + f[1], 0),
     files: files.map(([fp, size]) => ({ path: fp, size })), ...extra });
   const index = { version: 1, generated: '2026-10-15T00:00:00Z', items: [
     item('Brand/ゲームA', 'folder', 'ゲームA', ['v501'], [['Brand/ゲームA/gamea.zip', zipBuf.length]]),
     item('Brand/Disc Game', 'folder', 'ディスクゲーム', ['v502'], [['Brand/Disc Game/DISC.ISO', iso.length]], { edition: '初回限定版' }),
     item('Other/Big Game', 'folder', 'ビッグゲーム', ['v503'], [['Other/Big Game/big.zip', bigBuf.length]], { part: '前編' }),
+    item('Other/Big Game 2', 'folder', 'ビッグゲーム', ['v503'], [['Other/Big Game 2/part2.zip', part2.length]], { part: '後編' }),
+    item('Brand/Ver Game/Original', 'folder', 'バージョンゲーム', ['v504'], [['Brand/Ver Game/Original/v.zip', verOrig.length]], { edition: 'Original' }),
+    item('Brand/Ver Game/HD', 'folder', 'バージョンゲーム', ['v504'], [['Brand/Ver Game/HD/hd.zip', verHd.length]], { edition: 'HD' }),
   ] };
   const fbq = new FakeFbq({
     users: { reader: { password: 'secret pass', api: true } },
     files: {
       '/vns/vnshelf-index.json': JSON.stringify(index), '/vns/Brand/ゲームA/gamea.zip': zipBuf,
-      '/vns/Brand/Disc Game/DISC.ISO': iso, '/vns/Other/Big Game/big.zip': bigBuf,
+      '/vns/Brand/Disc Game/DISC.ISO': iso, '/vns/Other/Big Game/big.zip': bigBuf, '/vns/Other/Big Game 2/part2.zip': part2,
+      '/vns/Brand/Ver Game/Original/v.zip': verOrig, '/vns/Brand/Ver Game/HD/hd.zip': verHd, '/vns/New/New Game/new.zip': newZip,
     },
   });
   const fbqSrv = await fbq.listen();
@@ -76,6 +92,8 @@ async function until(what, fn, ms = 30000) {
   vndbFake.vns.set('v501', { title: 'Game A', alttitle: 'ゲームA', image: { url: px, sexual: 0 } });
   vndbFake.vns.set('v502', { title: 'Disc Game', alttitle: 'ディスクゲーム', image: { url: px, sexual: 0 } });
   vndbFake.vns.set('v503', { title: 'Big Game', alttitle: 'ビッグゲーム', image: null });
+  vndbFake.vns.set('v504', { title: 'Version Game', alttitle: 'バージョンゲーム', image: null });
+  vndbFake.vns.set('v505', { title: 'New Game', alttitle: '新作', image: null });
   const vndbSrv = await vndbFake.listen();
   const result = {};
   let app;
@@ -124,7 +142,7 @@ async function until(what, fn, ms = 30000) {
     // ---- the Archive view
     await until('Archive in the sidebar', () => page.locator('#sidebar .navitem:has-text("Archive")').count());
     await page.click('#sidebar .navitem:has-text("Archive")');
-    await until('archive cards', () => page.locator('#archiveView .card').count().then((n) => n === 3));
+    await until('archive cards (one per VN)', () => page.locator('#archiveView .card').count().then((n) => n === 4));
     result.cards = await page.$$eval('#archiveView .card', (c) => c.map((x) => `${x.querySelector('.title').textContent} | ${x.querySelector('.sub').textContent}`));
     await shot(page, 'a02-archive');
     await page.fill('#archiveSearch', 'disc');
@@ -153,7 +171,12 @@ async function until(what, fn, ms = 30000) {
 
     // ---- pause and resume (slow server), carrying on with a byte range
     fbq.slowMs = 40;
-    await page.click('#archiveView .card:has-text("Big Game") button');
+    await page.click('#archiveView .card:has-text("Big Game")');
+    await page.waitForSelector('#dlg[open] .chooser');
+    result.partsChooser = await page.$$eval('#dlg[open] .chooserow .chooselabel > div:first-child', (r) => r.map((x) => x.textContent));
+    await shot(page, 'a04b-parts-chooser');
+    await page.click('#dlg[open] .chooserow:has-text("前編") button');
+    await page.keyboard.press('Escape');
     await until('downloading', () => page.locator('.dlrow.downloading').count());
     await until('some progress', () => page.evaluate(() => vns.call('archiveDownloads')).then((l) => (l.find((j) => j.state === 'downloading') || {}).received > 100000));
     await page.click('.dlrow.downloading button[title="Pause"]');
@@ -168,6 +191,45 @@ async function until(what, fn, ms = 30000) {
     result.partTitled = await page.evaluate(() => vns.call('listGames')).then((gs) => (gs.find((x) => x.vndbId === 'v503') || {}).title);
     if (result.partTitled !== 'Big Game 前編') result.partTitled = false;
     result.resumedWithRange = fbq.requests.some((r) => r.query.file === '/vns/Other/Big Game/big.zip' && r.range);
+
+    // ---- the chooser knows which part is in the library; the other part is its own game
+    await page.click('#archiveView .card:has-text("Big Game")');
+    await page.waitForSelector('#dlg[open] .chooser');
+    result.partInLibrary = await page.textContent('#dlg[open] .chooserow:has-text("前編")').then((x) => /In library/.test(x));
+    await page.click('#dlg[open] .chooserow:has-text("後編") button');
+    await page.keyboard.press('Escape');
+    await until('part 2 installed', () => page.evaluate(() => vns.call('listGames')).then((gs) => gs.filter((x) => x.vndbId === 'v503').length === 2), 60000);
+    result.partTitles = await page.evaluate(() => vns.call('listGames')).then((gs) => gs.filter((x) => x.vndbId === 'v503').map((x) => x.title).sort());
+    if (JSON.stringify(result.partTitles) !== JSON.stringify(['Big Game 前編', 'Big Game 後編'])) result.partTitles = false;
+
+    // ---- versions: one card, pick one; only that one counts as in the library
+    result.versionsBadge = await page.textContent('#archiveView .card:has-text("Version Game") .badge');
+    await page.click('#archiveView .card:has-text("Version Game")');
+    await page.waitForSelector('#dlg[open] .chooser');
+    result.versionLabels = await page.$$eval('#dlg[open] .chooserow .chooselabel > div:first-child', (r) => r.map((x) => x.textContent));
+    await page.click('#dlg[open] .chooserow:has-text("HD") button');
+    await page.keyboard.press('Escape');
+    await until('HD installed', () => page.evaluate(() => vns.call('listGames')).then((gs) => gs.some((x) => x.vndbId === 'v504')), 60000);
+    await page.click('#archiveView button[title="Refresh"]');
+    await until('card says 1 in library', () => page.textContent('#archiveView .card:has-text("Version Game") .sub').then((x) => /1 in library/.test(x)));
+    await page.click('#archiveView .card:has-text("Version Game")');
+    await page.waitForSelector('#dlg[open] .chooser');
+    result.onlyHdInLibrary = await page.$$eval('#dlg[open] .chooserow', (r) => r.map((x) => /In library/.test(x.textContent))).then((v) => JSON.stringify(v) === '[false,true]');
+    await page.keyboard.press('Escape');
+
+    // ---- Home: a VN added to the archive after connecting shows under "New in the archive"
+    const idx = JSON.parse(fbq.files.get('/vns/vnshelf-index.json'));
+    idx.items.push(item('New/New Game', 'folder', '新作', ['v505'], [['New/New Game/new.zip', newZip.length]], { added: new Date(Date.now() + 1000).toISOString() }));
+    idx.generated = new Date().toISOString();
+    fbq.files.set('/vns/vnshelf-index.json', Buffer.from(JSON.stringify(idx)));
+    await page.click('#archiveView button[title="Refresh"]');
+    await until('new item listed', () => page.locator('#archiveView .card:has-text("New Game")').count());
+    await page.click('#sidebar .navitem:has-text("Home")');
+    await until('new in the archive on Home', () => page.locator('#homeView h2:has-text("New in the archive")').count());
+    result.homeNew = await page.$$eval('#homeView h2:has-text("New in the archive") + .recentrow .card .title', (c) => c.map((x) => x.textContent));
+    await shot(page, 'a06-home-new');
+    if (JSON.stringify(result.homeNew) !== '["New Game"]') result.homeNew = false;
+    await page.click('#sidebar .navitem:has-text("Archive")');
 
     // ---- disconnect: the entry goes
     await page.click('#settingsBtn');
@@ -191,7 +253,7 @@ async function until(what, fn, ms = 30000) {
     await page.click('#sidebar .navitem:has-text("Archive")');
     await until('archive cards again', () => page.locator('#archiveView .card').count());
     fbq.tokens.clear(); // e.g. the admin removed it
-    await page.click('#archiveView button[title="Refresh"]');
+    await page.evaluate(() => vns.call('archiveItems', { fresh: true }).catch(() => null)); // any refused request signs out
     await until('signed out by the server', () => page.locator('#sidebar .navitem:has-text("Archive")').count().then((n) => n === 0));
     result.revokedHidesArchive = await page.evaluate(() => !document.querySelector('#homeView').classList.contains('hidden'));
 

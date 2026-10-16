@@ -4,6 +4,16 @@ All notable changes to VN Shelf. Download any version from the
 [Releases page](https://github.com/stagefuel/vn-shelf/releases). From 0.3.0 on, VN Shelf can
 update itself (Settings → Updates).
 
+## Unreleased
+
+### New
+- **Archive: one card per VN.** Versions (SWAN SONG and its HD builds) and parts (Schwarzesmarken
+  紅血の紋章 / 殉教者たち) share one card. Click it, or ↓ on My List, to pick one; parts also have
+  **↓ All parts**. Each version shows whether it's in your library, its size, and whether it's a
+  disc image you install yourself.
+- **New in the archive** on Home: VNs added to the archive in the last 30 days (since this PC
+  connected) that aren't in your library.
+
 ## 0.14.2
 
 Fixes games crashing while VN Shelf watched them.

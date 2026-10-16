@@ -655,3 +655,9 @@ body.has-bg .homehero .bgfade { background: linear-gradient(180deg, color-mix(in
 .archinfo dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 12px; margin: 0; }
 .archinfo dt { color: var(--text-faint); }
 .archinfo dd { margin: 0; overflow-wrap: anywhere; }
+.chooser { display: grid; gap: 2px; min-width: min(460px, 80vw); }
+.chooserow { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 12px; padding: 8px 0; border-top: 1px solid var(--line); }
+.chooserow:first-child { border-top: 0; }
+.chooselabel { min-width: 0; overflow-wrap: anywhere; }
+.chooserow .good { color: var(--play); }
+.hometitle .small { margin-left: 10px; vertical-align: middle; }

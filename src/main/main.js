@@ -945,6 +945,7 @@ async function archiveState() {
     downloadDir: archiveDownloadDir(),
     sevenZip: await unpack.find7z(a && a.sevenZip).catch(() => null),
     keepArchives: !!(a && a.keepArchives),
+    connectedAt: (a && a.connectedAt) || null,
   };
 }
 
@@ -1022,6 +1023,7 @@ async function installDownloaded(job) {
     const match = job.vids && job.vids[0] ? await vndb.bestMatch(job.vids[0]).catch(() => null) : null;
     const [r] = await api.importGames([{ exe: pick.exe, dir: pick.dir, title: job.title, match }]);
     if (!r || r.error) throw new Error((r && r.error) || 'Couldn\'t add the game.');
+    await library.update(r.id, { archiveKey: job.key }); // so "In library" can be shown per version
     if (job.part) {
       // Parts released separately stay separate games, named with their part (VNDB has one title
       // for all of them). Set by hand-style, so a VNDB refresh leaves it.
@@ -1062,7 +1064,7 @@ const api = {
       driveAvailable: !!googleAuth,
       googleSignedIn: !!(googleAuth && googleAuth.signedIn()),
       googleEmail: config.data.googleEmail || null,
-      archive: { connected: !!archiveClient(), count: (config.data.archive || {}).count || 0 },
+      archive: { connected: !!archiveClient(), count: (config.data.archive || {}).count || 0, connectedAt: (config.data.archive || {}).connectedAt || null },
       settings: {
         cloudDir: config.data.cloudDir,
         deviceName: config.data.deviceName || os.hostname(),
@@ -1904,7 +1906,10 @@ const api = {
     const name = `VN Shelf (${config.data.deviceName || os.hostname()})`;
     const c = await archive.connect(server, String(username || '').trim(), String(password || ''), { tokenName: name });
     archiveToken.save({ token: c.token, tokenName: c.tokenName });
-    await config.set({ archive: { ...(config.data.archive || {}), server: c.server, username: c.username, index: null, count: 0 } });
+    const prev = config.data.archive || {};
+    // "New in the archive" counts from the first time this PC connected to this server.
+    const connectedAt = prev.server === c.server && prev.connectedAt ? prev.connectedAt : new Date().toISOString();
+    await config.set({ archive: { ...prev, server: c.server, username: c.username, index: null, count: 0, connectedAt } });
     archiveIndexCache = null;
     try {
       await archiveIndex({ fresh: true });
@@ -1951,17 +1956,25 @@ const api = {
     const byId = new Map(briefs.map((b) => [b.vndbId, b]));
     const games = library ? await library.list({ maxAge: STATUS_MAX_AGE }) : [];
     const inLib = new Map(games.filter((g) => g.vndbId).map((g) => [g.vndbId, g.id]));
+    const byKey = new Map(games.filter((g) => g.archiveKey).map((g) => [g.archiveKey, g.id]));
+    // Several versions/parts of one VN: only the one you downloaded counts as in the library
+    // (by vids alone, any one of them would mark them all).
+    const siblings = new Map();
+    for (const it of items) { const k = (it.vids || []).slice().sort().join(',') || it.path; siblings.set(k, (siblings.get(k) || 0) + 1); }
     const cache = config.data.vndb ? (await fsu.readJson(vndbCacheFile(), null)) || {} : {};
     const onList = new Set(Object.keys(cache.entries || {}));
     return {
       generated: index.generated || null,
       items: items.map((it) => {
         const b = (it.vids || []).map((v) => byId.get(v)).find(Boolean);
-        const gid = (it.vids || []).map((v) => inLib.get(v)).find(Boolean);
+        const sk = (it.vids || []).slice().sort().join(',') || it.path;
+        const gid = byKey.get(it.path) || (siblings.get(sk) === 1 ? (it.vids || []).map((v) => inLib.get(v)).find(Boolean) : null);
+        const pl = unpack.plan((it.files || []).map((f) => f.path));
         return {
           key: it.path, title: it.title, titleEn: it.titleEn || (b && b.title) || null, group: it.group, kind: it.kind,
           vids: it.vids || [], igdb: it.igdb || null, edition: it.edition || null, part: it.part || null,
-          size: it.size || 0, fileCount: (it.files || []).length,
+          size: it.size || 0, fileCount: (it.files || []).length, added: it.added || null,
+          disc: !pl.extract.length && pl.discs.length > 0,
           image: b ? b.image : null, released: b ? b.released : null, developer: b ? b.developer : null,
           gameId: gid || null, onList: (it.vids || []).some((v) => onList.has(v)),
         };

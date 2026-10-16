@@ -12,7 +12,7 @@ const { FakeVndb } = require('../test/helpers/fake-vndb');
 
 const shots = path.resolve(process.argv[2] || 'shots-vndb');
 fs.mkdirSync(shots, { recursive: true });
-const base = fs.mkdtempSync(path.join(os.tmpdir(), 'vns-uiv-'));
+const base = require('./smoke-tmp').smokeTmp('vns-uiv-'); // deleted when the script ends
 const shot = (page, n) => page.screenshot({ path: path.join(shots, `${n}.png`) });
 const write = (p, s = '') => { fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, s); };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

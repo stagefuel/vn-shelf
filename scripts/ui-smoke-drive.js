@@ -10,7 +10,7 @@ const { startFakeDrive } = require('../test/helpers/fake-drive');
 
 const shots = path.resolve(process.argv[2] || 'shots-drive');
 fs.mkdirSync(shots, { recursive: true });
-const base = fs.mkdtempSync(path.join(os.tmpdir(), 'vns-uid-'));
+const base = require('./smoke-tmp').smokeTmp('vns-uid-'); // deleted when the script ends
 let lastPage = null;
 let fdGlobal = null;
 const WIN = process.platform === 'win32';

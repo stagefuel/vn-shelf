@@ -8,7 +8,7 @@ const path = require('path');
 
 const shots = path.resolve(process.argv[2] || 'shots');
 fs.mkdirSync(shots, { recursive: true });
-const base = fs.mkdtempSync(path.join(os.tmpdir(), 'vns-ui-'));
+const base = require('./smoke-tmp').smokeTmp('vns-ui-'); // deleted when the script ends
 const cloudRoot = path.join(base, 'shared-dropbox');
 fs.mkdirSync(cloudRoot, { recursive: true });
 

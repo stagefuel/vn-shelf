@@ -556,8 +556,22 @@ function renderHome() {
   replaceKids($('#homeView'),
     played.length ? homeHero(played[0]) : null,
     list.length ? h('h2', { class: 'hometitle' }, played.length ? t('Recently played') : t('Recently added')) : null,
-    list.length ? h('div', { class: 'recentrow' }, list.slice(0, 24).map(cardFor)) : null);
+    list.length ? h('div', { class: 'recentrow' }, list.slice(0, 24).map(cardFor)) : null,
+    archiveNewRow());
   if (played.length) updateLive(played[0].id);
+}
+
+/** Home: VNs added to the archive in the last 30 days (since this PC connected), not in the library yet. */
+function archiveNewRow() {
+  const a = setup.archive;
+  if (!a || !a.connected || !archiveData) return null;
+  const since = Math.max(Date.parse(a.connectedAt || 0) || 0, Date.now() - 30 * 24 * 3600 * 1000);
+  const fresh = archiveGroups().filter((g) => g.gameIds.length < g.items.length && g.items.some((i) => Date.parse(i.added || 0) > since))
+    .sort((x, y) => String(y.added).localeCompare(String(x.added)));
+  if (!fresh.length) return null;
+  return [h('h2', { class: 'hometitle' }, t('New in the archive'),
+    h('button', { class: 'small ghost', onclick: () => showArchive() }, t('Archive'))),
+  h('div', { class: 'recentrow' }, fresh.slice(0, 24).map(archiveCard))];
 }
 
 // ------------------------------------------------------------------ library grid
@@ -954,7 +968,7 @@ let archiveSeq = 0;
 function archiveNavCount() {
   const active = archiveJobs.find((j) => j.state === 'downloading');
   if (active && active.total) return h('span', { class: 'count' }, `↓ ${Math.floor((active.received / active.total) * 100)}%`);
-  const n = archiveData ? archiveData.items.length : setup.archive && setup.archive.count;
+  const n = archiveData ? archiveGroups().length : setup.archive && setup.archive.count;
   return n ? h('span', { class: 'count' }, n) : null;
 }
 
@@ -970,9 +984,66 @@ async function loadArchive({ fresh = false } = {}) {
   return archiveData;
 }
 
-/** VNDB ids in the archive → item, for the ↓ buttons on My List. */
+/**
+ * The archive's VNs: items with the same VNDB ids are one VN with several versions or parts
+ * (SWAN SONG: original + HD builds; Schwarzesmarken: two parts). One card each.
+ */
+function archiveGroups() {
+  if (!archiveData) return [];
+  const groups = new Map();
+  for (const it of archiveData.items) {
+    const k = it.vids.length ? [...it.vids].sort().join(',') : it.key;
+    if (!groups.has(k)) groups.set(k, { key: k, items: [] });
+    groups.get(k).items.push(it);
+  }
+  return [...groups.values()].map((g) => {
+    const first = g.items[0];
+    const parts = g.items.length > 1 && g.items.every((i) => i.part);
+    return {
+      ...g, first, parts, title: first.title, titleEn: first.titleEn, image: g.items.map((i) => i.image).find(Boolean) || null,
+      group: first.group, vids: first.vids, onList: g.items.some((i) => i.onList),
+      gameIds: g.items.map((i) => i.gameId).filter(Boolean),
+      size: g.items.reduce((n, i) => n + i.size, 0),
+      added: g.items.map((i) => i.added || '').sort().pop() || null,
+      label: (i) => i.part || i.edition || baseName(i.key),
+    };
+  });
+}
+
+/** The archive's VN for a VNDB id, for the ↓ buttons on My List. */
 function archiveFor(vid) {
-  return setup.archive && setup.archive.connected && archiveData && vid ? archiveData.items.find((i) => i.vids.includes(vid)) : null;
+  if (!setup.archive || !setup.archive.connected || !archiveData || !vid) return null;
+  return archiveGroups().find((g) => g.vids.includes(vid)) || null;
+}
+
+/** ↓ on a VN: straight to the download when there's one version, else the chooser. */
+function archiveGet(g) {
+  if (g.items.length === 1) return startArchiveDownload(g.first);
+  return archiveChooser(g);
+}
+
+async function archiveChooser(g) {
+  const draw = (box) => replaceKids(box, g.items.map((it) => {
+    const job = jobFor(it.key);
+    const state = it.gameId ? h('span', { class: 'good small' }, t('In library'))
+      : job && !['error'].includes(job.state) ? h('span', { class: 'dim small' }, JOB_TEXT()[job.state] || job.state) : null;
+    return h('div', { class: 'chooserow' },
+      h('div', { class: 'chooselabel' }, h('div', {}, g.label(it)),
+        h('div', { class: 'dim small' }, [sizeText(it.size), it.disc ? t('disc image, install it yourself') : null].filter(Boolean).join(' · '))),
+      state,
+      !it.gameId && (!job || job.state === 'error') ? h('button', { class: 'small primary', onclick: async () => { await startArchiveDownload(it); draw(box); } }, '↓') : null);
+  }));
+  const box = h('div', { class: 'chooser' });
+  draw(box);
+  const missing = g.items.filter((it) => !it.gameId && !jobFor(it.key));
+  const v = await dialog({
+    title: shownTitle({ title: g.titleEn || g.title, titleAlt: g.title }),
+    text: g.parts ? t('{n} parts', { n: g.items.length }) : t('{n} versions', { n: g.items.length }),
+    body: box,
+    buttons: [{ label: t('Close'), value: null, cls: 'ghost' },
+      ...(g.parts && missing.length > 1 ? [{ label: `↓ ${t('All parts')}`, value: 'all', cls: 'primary' }] : [])],
+  });
+  if (v === 'all') for (const it of missing) await startArchiveDownload(it);
 }
 
 const JOB_TEXT = () => ({
@@ -1017,7 +1088,22 @@ function downloadsPanel() {
     }));
 }
 
-function archiveCard(it) {
+function archiveCard(g) {
+  if (g.items.length === 1) return archiveItemCard(g.first);
+  const shown = { title: g.titleEn || g.title, titleAlt: g.title };
+  const art = h('div', { class: 'art' },
+    g.image ? h('img', { src: g.image, alt: '', loading: 'lazy', draggable: 'false' }) : h('div', { class: 'placeholder' }, shownTitle(shown)));
+  const n = g.items.length;
+  if (g.gameIds.length === n) art.append(h('span', { class: 'badge synced' }, t('In library')));
+  else art.append(h('span', { class: 'badge' }, g.parts ? t('{n} parts', { n }) : t('{n} versions', { n })));
+  return h('div', { class: 'card listcard', onclick: () => archiveChooser(g) },
+    art,
+    h('div', { class: 'title' }, shownTitle(shown)),
+    h('div', { class: 'sub' }, [g.group, g.gameIds.length && g.gameIds.length < n ? t('{n} in library', { n: g.gameIds.length }) : null].filter(Boolean).join(' · ')),
+    h('div', { class: 'listbtns' }, g.gameIds.length < n ? h('button', { class: 'small primary', onclick: (ev) => { ev.stopPropagation(); archiveChooser(g); } }, '↓ …') : null));
+}
+
+function archiveItemCard(it) {
   const shown = { title: it.titleEn || it.title, titleAlt: it.title };
   const art = h('div', { class: 'art' },
     it.image ? h('img', { src: it.image, alt: '', loading: 'lazy', draggable: 'false' }) : h('div', { class: 'placeholder' }, shownTitle(shown)));
@@ -1068,10 +1154,7 @@ async function renderArchive({ fresh = false } = {}) {
 
 function drawArchive() {
   if (view !== 'archive') return;
-  const all = archiveData ? archiveData.items : [];
-  const q = archiveFilter.q.trim().toLowerCase();
-  const list = all.filter((it) => (!archiveFilter.show || (archiveFilter.show === 'list' ? it.onList : !it.gameId))
-    && (!q || q.split(/\s+/).every((w) => [it.title, it.titleEn, it.group, it.developer, it.edition, ...it.vids].join(' ').toLowerCase().includes(w))));
+  const list = archiveFiltered();
   const search = h('input', { type: 'search', id: 'archiveSearch', placeholder: t('Search the archive'), value: archiveFilter.q });
   search.addEventListener('input', () => { archiveFilter.q = search.value; drawArchiveGrid(); });
   const show = h('select', { class: 'sortsel', id: 'archiveShow' },
@@ -1091,11 +1174,15 @@ function drawArchive() {
   drawArchiveGrid(list);
 }
 
-function drawArchiveGrid(pre) {
-  const all = archiveData ? archiveData.items : [];
+function archiveFiltered() {
   const q = archiveFilter.q.trim().toLowerCase();
-  const list = pre || all.filter((it) => (!archiveFilter.show || (archiveFilter.show === 'list' ? it.onList : !it.gameId))
-    && (!q || q.split(/\s+/).every((w) => [it.title, it.titleEn, it.group, it.developer, it.edition, ...it.vids].join(' ').toLowerCase().includes(w))));
+  const hay = (g) => g.items.flatMap((it) => [it.title, it.titleEn, it.group, it.developer, it.edition, it.part, ...it.vids]).join(' ').toLowerCase();
+  return archiveGroups().filter((g) => (!archiveFilter.show || (archiveFilter.show === 'list' ? g.onList : g.gameIds.length < g.items.length))
+    && (!q || q.split(/\s+/).every((w) => hay(g).includes(w))));
+}
+
+function drawArchiveGrid(pre) {
+  const list = pre || archiveFiltered();
   if ($('#archiveCount')) $('#archiveCount').textContent = String(list.length);
   replaceKids($('#archiveGrid'), !archiveData ? h('div', { class: 'empty' }, h('p', {}, t('Couldn\'t load the archive.')))
     : list.length ? h('div', { class: 'grid' }, list.map(archiveCard)) : h('div', { class: 'empty' }, h('p', {}, t('Nothing matches.'))));
@@ -1123,7 +1210,7 @@ vns.on('archive-state', (st) => {
   archiveData = null;
   archiveJobs = [];
   replaceKids($('#archiveView'));
-  if (view === 'archive') showHome();
+  if (view === 'archive' || view === 'home') showHome();
   else if (view === 'vndb') renderVndbList({ fresh: false });
   else if (view === 'library') renderGrid();
   renderSidebar();
@@ -1251,7 +1338,8 @@ function listCard(e, after) {
     } catch { /* toast shown */ }
   } }, t('Link to “{game}”', { game: e.linkTo.title })) : null;
   const inArchive = archiveFor(e.vndbId);
-  const fetchBtn = inArchive && !jobFor(inArchive.key) ? h('button', { class: 'small', title: t('Download from the archive'), onclick: (ev) => { ev.stopPropagation(); startArchiveDownload(inArchive); } }, `↓ ${sizeText(inArchive.size)}`) : null;
+  const fetchBtn = inArchive && (inArchive.items.length > 1 || !jobFor(inArchive.first.key)) ? h('button', { class: 'small', title: t('Download from the archive'), onclick: (ev) => { ev.stopPropagation(); archiveGet(inArchive); } },
+    inArchive.items.length > 1 ? '↓ …' : `↓ ${sizeText(inArchive.first.size)}`) : null;
   return h('div', { class: 'card listcard', title: t('Open on VNDB'), onclick: () => vns.call('openExternal', `https://vndb.org/${e.vndbId}`) },
     art,
     h('div', { class: 'title' }, shownTitle(e)),
@@ -3307,6 +3395,6 @@ window.addEventListener('drop', (e) => {
   for (const g of games) refreshStatus(g.id);
   if (setup.archive && setup.archive.connected) {
     archiveJobs = await vns.call('archiveDownloads').catch(() => []);
-    loadArchive().then(() => { renderSidebar(); if (view === 'vndb') renderVndbList({ fresh: false }); else if (view === 'library') renderGrid(); });
+    loadArchive().then(() => { renderSidebar(); if (view === 'vndb') renderVndbList({ fresh: false }); else if (view === 'library') renderGrid(); else if (view === 'home') renderHome(); });
   }
 })();

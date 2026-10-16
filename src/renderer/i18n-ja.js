@@ -763,4 +763,10 @@ Object.assign(JA, {
   'Connect to the archive first.': '先にアーカイブに接続してください。',
   'That VN isn\'t in the archive any more.': 'その作品はもうアーカイブにありません。',
   'This archive needs a password.': 'このアーカイブにはパスワードが必要です。',
+  '{n} parts': '{n} パート',
+  '{n} versions': '{n} バージョン',
+  'All parts': 'すべてのパート',
+  'disc image, install it yourself': 'ディスクイメージ（手動でインストール）',
+  '{n} in library': 'ライブラリに {n}',
+  'New in the archive': 'アーカイブの新着',
 });
