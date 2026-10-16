@@ -4,7 +4,9 @@ All notable changes to VN Shelf. Download any version from the
 [Releases page](https://github.com/stagefuel/vn-shelf/releases). From 0.3.0 on, VN Shelf can
 update itself (Settings → Updates).
 
-## Unreleased
+## 0.14.4
+
+A safer sync when a save file can't be read, plus archive and layout fixes.
 
 ### Fixed
 - **Saves can no longer go missing on your other PC when a file can't be read.** If a save file
