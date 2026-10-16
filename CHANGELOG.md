@@ -4,7 +4,9 @@ All notable changes to VN Shelf. Download any version from the
 [Releases page](https://github.com/stagefuel/vn-shelf/releases). From 0.3.0 on, VN Shelf can
 update itself (Settings → Updates).
 
-## Unreleased
+## 0.14.2
+
+Fixes games crashing while VN Shelf watched them.
 
 ### Fixed
 - **Games could crash while VN Shelf watched them** (seen with Fate/stay night: "0xc0000028",
