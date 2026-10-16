@@ -683,6 +683,8 @@ function startGame(game, mode, onExit, { lunaPlan = null } = {}) {
     useLocaleEmulator: !!(game.launch && game.launch.useLocaleEmulator),
     localeEmulatorPath: config.data.localeEmulatorPath,
     luna: lunaPlan && lunaPlan.mode === 'exec' ? lunaPlan : null,
+    // The window title is only wanted for a game still named after its folder (see takeWindowTitle).
+    wantTitle: !game.vndbId && !game.igdb && (!game.titleSource || game.titleSource === 'folder'),
   });
   const entry = { ev, watchers: [], liveTimer: null, mode, startedAt: Date.now(), tools: [] };
   running.set(game.id, entry);

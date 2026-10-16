@@ -4,6 +4,16 @@ All notable changes to VN Shelf. Download any version from the
 [Releases page](https://github.com/stagefuel/vn-shelf/releases). From 0.3.0 on, VN Shelf can
 update itself (Settings → Updates).
 
+## Unreleased
+
+### Fixed
+- **Games could crash while VN Shelf watched them** (seen with Fate/stay night: "0xc0000028",
+  twice). To keep a game's name tidy, VN Shelf read its window title every second, and the way it
+  read it sent a message into the game's window. Inside the game, that message passes through any
+  program that hooks every window (here, the window manager WinSplit Revolution), and that crashed
+  the game. VN Shelf now sends the game nothing while you play: it only reads the title for games
+  still named after their folder, stops once it has it, and reads it without messaging the game.
+
 ## 0.14.1
 
 Parts of one VN sync to VNDB as one, and archive versions and parts get their own names.

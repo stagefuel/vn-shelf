@@ -32,10 +32,19 @@ function execFileP(cmd, args, opts = {}) {
  * us (a game running as administrator). Visible programs outside the folder that the game opened
  * (a browser for its website, say) don't count, or the game would never look closed.
  * One PowerShell for the whole session is far cheaper than starting one per check.
+ * `wantTitle`: also report the game's window title (only for games still named after their folder),
+ * until it has been the same three times. It's read without sending the game's window anything:
+ * Process.MainWindowTitle calls GetWindowTextLength, which sends WM_GETTEXTLENGTH into the game,
+ * and once a second that ran through every hook DLL injected into the game (one, WinSplit
+ * Revolution's, crashed Fate/stay night with 0xc0000028). GetWindowText with our own buffer reads
+ * another process's title from Windows itself, and finding the window (MainWindowHandle) only
+ * enumerates windows.
  */
-function windowsWatcher(dir, intervalMs, rootPids = []) {
+function windowsWatcher(dir, intervalMs, rootPids = [], wantTitle = false) {
   const script = "[Console]::OutputEncoding=[Text.Encoding]::UTF8; $d=$env:VNS_DIR.TrimEnd('\\')+'\\'; [Console]::Out.AutoFlush=$true; " +
     '$fam=@{}; foreach ($r in ($env:VNS_ROOTS -split \',\' | Where-Object { $_ })) { $fam[[int]$r]=1 }; ' +
+    "$want=($env:VNS_TITLE -eq '1'); $same=0; $lastT=''; " +
+    "if ($want) { try { Add-Type -Namespace VNS -Name Win -MemberDefinition '[DllImport(\"user32.dll\", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr h, System.Text.StringBuilder s, int n);' } catch { $want=$false } }; " +
     'while ($true) { ' +
     '$all = @(Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,ExecutablePath); ' +
     '$alive=@{}; foreach ($p in $all) { $alive[[int]$p.ProcessId]=1 }; ' +
@@ -46,13 +55,14 @@ function windowsWatcher(dir, intervalMs, rootPids = []) {
     'if (($x -and $x.StartsWith($d, [System.StringComparison]::OrdinalIgnoreCase)) -or ($fam.ContainsKey($i) -and -not $x)) { $i } }; ' +
     "[Console]::Out.WriteLine('PIDS ' + ($out -join ',')); " +
     // The game's window title: usually the game's real name (used to tidy up folder-name titles).
-    "$tt=''; foreach ($i in @($out)) { try { $w=[Diagnostics.Process]::GetProcessById($i).MainWindowTitle; if ($w) { $tt=$w; break } } catch {} }; " +
-    "if ($tt) { [Console]::Out.WriteLine('TITLE ' + $tt) }; " +
+    'if ($want) { $tt=\'\'; foreach ($i in @($out)) { try { $h=[Diagnostics.Process]::GetProcessById($i).MainWindowHandle; ' +
+    'if ($h -ne [IntPtr]::Zero) { $sb=New-Object Text.StringBuilder 512; [void][VNS.Win]::GetWindowText($h, $sb, 512); if ($sb.Length) { $tt=$sb.ToString(); break } } } catch {} }; ' +
+    "if ($tt) { [Console]::Out.WriteLine('TITLE ' + $tt); if ($tt -eq $lastT) { $same++ } else { $same=1; $lastT=$tt }; if ($same -ge 3) { $want=$false } } }; " +
     `Start-Sleep -Milliseconds ${intervalMs} }`;
   const w = { pids: null, failed: false, proc: null, title: null };
   try {
     w.proc = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], {
-      env: { ...process.env, VNS_DIR: dir, VNS_ROOTS: rootPids.join(',') }, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'],
+      env: { ...process.env, VNS_DIR: dir, VNS_ROOTS: rootPids.join(','), VNS_TITLE: wantTitle ? '1' : '0' }, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'],
     });
   } catch {
     w.failed = true;
@@ -170,7 +180,7 @@ async function linuxProcessesUnder(dir) {
  */
 function launch({ exePath, installDir, args = '', localeEmulatorPath = '', useLocaleEmulator = false, luna = null,
   platform = process.platform, pollMs = 1000, graceMs = 8000, closeGraceMs = Math.min(2500, graceMs), settleMs = 20000,
-  startupMs = 60000, spawnImpl = spawn, elevateImpl = startElevated, closeImpl = closeWindows, killImpl = killPids }) {
+  startupMs = 60000, wantTitle = false, spawnImpl = spawn, elevateImpl = startElevated, closeImpl = closeWindows, killImpl = killPids }) {
   const ev = new EventEmitter();
   const cwd = exePath ? path.dirname(exePath) : installDir;
   const extra = args ? args.match(/"[^"]*"|\S+/g).map((a) => a.replace(/^"|"$/g, '')) : [];
@@ -262,7 +272,7 @@ function launch({ exePath, installDir, args = '', localeEmulatorPath = '', useLo
   };
 
   const startWatching = (rootPids) => {
-    watcher = platform === 'win32' ? windowsWatcher(installDir, Math.min(pollMs, 2000), rootPids) : null;
+    watcher = platform === 'win32' ? windowsWatcher(installDir, Math.min(pollMs, 2000), rootPids, wantTitle) : null;
     timer = setTimeout(tick, Math.min(pollMs, 1500));
   };
 
