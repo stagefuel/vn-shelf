@@ -28,6 +28,11 @@ function cleanTitle(name) {
   s = tidy(s.replace(/[\s+-]+(win|win32|win64|windows|pc|x64|x86)$/i, '')); // "game_win"
   s = tidy(s.replace(/[\s+-]+(eng|english|en|jp|jpn|japanese|ja)$/i, '')); // "BLACK SHEEP TOWN_eng"
   s = tidy(s.replace(/[\s+-]+\d{6,8}$/, '')); // "Game 20250829"
+  // Edition and download tags that aren't in brackets: "サクラノ詩 DL版", "Title HD", "DL版 Title".
+  const TAG = '(?:DL版|ダウンロード版|パッケージ版|通常版|初回版|初回限定版|限定版|豪華版|HD版|HD|DL|download)';
+  for (let i = 0; i < 3; i++) {
+    s = tidy(s.replace(new RegExp(`[\\s+_-]+${TAG}$`, 'i'), '').replace(new RegExp(`^${TAG}[\\s+_-]+`, 'i'), ''));
+  }
   return s || String(name);
 }
 

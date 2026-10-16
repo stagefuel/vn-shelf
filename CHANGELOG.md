@@ -14,6 +14,21 @@ update itself (Settings → Updates).
 - **New in the archive** on Home: VNs added to the archive in the last 30 days (since this PC
   connected) that aren't in your library.
 
+### Changed
+- **Search is more precise** (library, suggestions, archive):
+  - A number matches that whole number: "1" finds "Vol. 1", not 11 or 2010.
+  - Letters match the start of a word: "k" finds Kanon but not every title with a k in it, and
+    "toki" finds "Sakura no Toki".
+  - Japanese with kanji, or two or more kana, still matches anywhere in a name.
+  - Several words in one name must come in the order typed. Words found in different places (a
+    title and a tag, say) still match in any order.
+- Titles from folder names drop loose edition and download tags such as "DL版", "HD" and
+  "初回限定版", not only bracketed ones.
+
+### Fixed
+- Two different games using the same engine program (BGI.exe, SiglusEngine.exe, RealLive.exe,
+  AdvHD.exe and others) are no longer taken for one game when you add the second.
+
 ## 0.14.2
 
 Fixes games crashing while VN Shelf watched them.

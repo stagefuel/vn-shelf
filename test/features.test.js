@@ -121,6 +121,15 @@ test('import: title cleanup', () => {
   assert.strictEqual(importer.cleanTitle('DemonsRoots1.2.1'), 'DemonsRoots');
   assert.strictEqual(importer.cleanTitle('Some_Game_v1.05'), 'Some Game');
   assert.strictEqual(importer.cleanTitle('新説魔法少女+v115'), '新説魔法少女');
+  assert.strictEqual(importer.cleanTitle('サクラノ詩 DL版'), 'サクラノ詩');
+  assert.strictEqual(importer.cleanTitle('DL版 素晴らしき日々'), '素晴らしき日々');
+  assert.strictEqual(importer.cleanTitle('SWAN SONG HD'), 'SWAN SONG');
+  assert.strictEqual(importer.cleanTitle('Title HD 初回限定版'), 'Title');
+  assert.strictEqual(importer.cleanTitle('HD'), 'HD', 'never empties a title');
+  assert.strictEqual(importer.cleanTitle('Hardcore Game'), 'Hardcore Game');
+  const { SHARED_EXE } = require('../src/core/detect');
+  assert.ok(['BGI.exe', 'SiglusEngine.exe', 'RealLive.exe', 'AdvHD.exe', 'game.exe', 'Start.exe'].every((x) => SHARED_EXE.test(x)), 'engine exes are shared');
+  assert.ok(!SHARED_EXE.test('kkk.exe') && !SHARED_EXE.test('swansong.exe'), 'a game\'s own exe is not');
   assert.strictEqual(importer.cleanTitle('Fate Stay Night'), 'Fate Stay Night');
   // Real folder names from a test library
   assert.strictEqual(importer.cleanTitle('Dai Sengoku Rance MG_2025_08_29(1)'), 'Dai Sengoku Rance MG');

@@ -589,8 +589,7 @@ function showLibrary(f) {
 function matchesSearch(g, q) {
   if (!q) return true;
   const tags = g.vndb && g.vndb.tags ? g.vndb.tags.filter((x) => showSpoilers || !x.spoiler).map((x) => x.name) : [];
-  const hay = [g.title, g.titleAlt, g.developer, ...(g.vndb ? g.vndb.aliases || [] : []), ...tags, ...(g.categories || [])].join(' \n ').toLowerCase();
-  return q.split(/\s+/).every((w) => hay.includes(w));
+  return vnsSearch.matches([g.title, g.titleAlt, g.developer, ...(g.vndb ? g.vndb.aliases || [] : []), ...tags, ...(g.categories || [])], q);
 }
 
 function sortGames(list, key) {
@@ -1176,9 +1175,9 @@ function drawArchive() {
 
 function archiveFiltered() {
   const q = archiveFilter.q.trim().toLowerCase();
-  const hay = (g) => g.items.flatMap((it) => [it.title, it.titleEn, it.group, it.developer, it.edition, it.part, ...it.vids]).join(' ').toLowerCase();
+  const fields = (g) => g.items.flatMap((it) => [it.title, it.titleEn, it.group, it.developer, it.edition, it.part, ...it.vids]);
   return archiveGroups().filter((g) => (!archiveFilter.show || (archiveFilter.show === 'list' ? g.onList : g.gameIds.length < g.items.length))
-    && (!q || q.split(/\s+/).every((w) => hay(g).includes(w))));
+    && (!q || vnsSearch.matches(fields(g), q)));
 }
 
 function drawArchiveGrid(pre) {
@@ -1395,7 +1394,7 @@ function listOnlyBelow(q) {
   const cat = filter.category && filter.category.toLowerCase();
   const list = (listOnlyView.entries || []).filter((e) => (!filter.status || (e.statuses || []).includes(filter.status))
     && (!cat || (e.categories || []).some((c) => c.toLowerCase() === cat))
-    && (!q || q.split(/\s+/).every((w) => [e.title, e.titleAlt, e.developer].join(' ').toLowerCase().includes(w))));
+    && (!q || vnsSearch.matches([e.title, e.titleAlt, e.developer], q)));
   if (!list.length) return null;
   return h('div', { class: 'listonly' },
     h('div', { class: 'listonlyhead' },
@@ -3145,7 +3144,7 @@ async function showSaveOnceResult({ id, candidates = [], registry = [], afterPla
 
 /** What the search box could mean: games, tags, developers and categories that match the text. */
 function suggestionsFor(q) {
-  const has = (x) => String(x || '').toLowerCase().includes(q);
+  const has = (x) => vnsSearch.matches([x], q);
   const out = [];
   const titles = games.filter((g) => has(g.title) || has(g.titleAlt) || (g.vndb && (g.vndb.aliases || []).some(has)));
   for (const g of sortGames(titles, 'title').slice(0, 5)) {

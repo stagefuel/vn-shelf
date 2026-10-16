@@ -322,4 +322,11 @@ async function suggest(game, installDir, { roots, platform = process.platform, v
   return { engine: engineName, engineFromVndb: engineHint, candidates: out };
 }
 
-module.exports = { suggest, detectEngine, engineFromVndb, ENGINES, normName, namesMatch };
+/**
+ * Program names many different games share (an engine's own exe, a generic launcher name): two
+ * games with one of these aren't the same game.
+ */
+const SHARED_EXE = /^(game|game_?x64|start|startup|launcher|play|run|main|app|bgi|siglusengine|reallive|advhd|nscr|nscripter|nscr_en|krkr|krkrz|tvpwin32|tvpwin64|malie|cs2|catsystem2|artemis|yuris|yu-ris|rpg_rt|nw|ethornell)\.exe$/i;
+
+module.exports = {
+  SHARED_EXE, suggest, detectEngine, engineFromVndb, ENGINES, normName, namesMatch };

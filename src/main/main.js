@@ -1236,7 +1236,7 @@ const api = {
       const exeName = path.basename(exePath).toLowerCase();
       const folderTitle = detect.normName(path.basename(dir));
       const games = await library.list({ maxAge: STATUS_MAX_AGE });
-      const other = games.find((g) => !local(g.id).exePath && ((g.exe && g.exe.toLowerCase() === exeName && !/^(game|start|launcher)\.exe$/i.test(exeName))
+      const other = games.find((g) => !local(g.id).exePath && ((g.exe && g.exe.toLowerCase() === exeName && !detect.SHARED_EXE.test(exeName))
         || (folderTitle.length >= 3 && [g.title, g.titleAlt].some((x) => detect.normName(x) === folderTitle))));
       if (other) return { existing: { id: other.id, title: other.title }, file };
     }
