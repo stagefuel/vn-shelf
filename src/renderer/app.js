@@ -37,6 +37,9 @@ async function call(method, ...args) {
 function toast(text, kind = '') {
   const el = h('div', { class: `toast ${kind}` }, text);
   $('#toasts').append(el);
+  // At most three at a time (the oldest goes first), so they never cover the page.
+  const plain = () => [...$('#toasts').children].filter((x) => !x.classList.contains('sticky'));
+  while (plain().length > 3) plain()[0].remove();
   setTimeout(() => el.remove(), kind === 'bad' ? 7000 : 4000);
 }
 
@@ -1315,7 +1318,7 @@ function vndbSyncIfStale() {
 /** A card for a VN on the VNDB list that isn't in the library: + Add, or Link to a game with the same name. */
 function listCard(e, after) {
   const art = h('div', { class: 'art' },
-    e.image ? h('img', { src: e.image, alt: '', loading: 'lazy', draggable: 'false', class: e.imageSexual >= 1.5 ? 'nsfw' : null }) : h('div', { class: 'placeholder' }, shownTitle(e)));
+    e.image ? h('img', { src: e.image, alt: '', loading: 'lazy', draggable: 'false' }) : h('div', { class: 'placeholder' }, shownTitle(e)));
   const add = h('button', { class: 'small primary', onclick: async (ev) => {
     ev.stopPropagation();
     add.disabled = true;
@@ -1737,7 +1740,7 @@ async function addGameFlow() {
 
 function vndbResult(v, onclick) {
   return h('div', { class: 'vnres', onclick },
-    v.image ? h('img', { src: v.image, alt: '', class: v.imageSexual >= 1.5 ? 'nsfw' : null }) : h('div', { class: 'noimg' }),
+    v.image ? h('img', { src: v.image, alt: '' }) : h('div', { class: 'noimg' }),
     h('div', {}, h('div', { class: 't' }, v.title), h('div', { class: 's' }, [v.titleAlt, v.developer, (v.released || '').slice(0, 4)].filter(Boolean).join(' · '))));
 }
 
@@ -1861,7 +1864,7 @@ async function importFolderFlow() {
   if (!ok) return;
   const chosen = rows.filter((r) => r.on).map((r) => ({ exe: r.exe, dir: r.dir, title: r.title, match: r.match || null }));
   if (!chosen.length) return;
-  const prog = h('div', { class: 'toast' }, t('Importing…'));
+  const prog = h('div', { class: 'toast sticky' }, t('Importing…'));
   $('#toasts').append(prog);
   const off = vns.on('import-progress', (p) => {
     if (p.phase === 'add') prog.textContent = t('Importing {n} of {total}: {title}', { n: p.done + 1, total: p.total, title: p.title });
@@ -2533,7 +2536,7 @@ async function updateDialog(u) {
     buttons: [{ label: t('Later'), value: null, cls: 'ghost' }, { label: canInstall ? t('Update and restart') : t('Open download page'), value: 'go', cls: 'primary' }],
   });
   if (v !== 'go') return;
-  const prog = h('div', { class: 'toast' }, t('Downloading update…'));
+  const prog = h('div', { class: 'toast sticky' }, t('Downloading update…'));
   if (canInstall) $('#toasts').append(prog);
   const off = vns.on('update-progress', (p) => {
     if (p.total) prog.textContent = t('Downloading update… {pct}%', { pct: Math.floor((p.received / p.total) * 100) });

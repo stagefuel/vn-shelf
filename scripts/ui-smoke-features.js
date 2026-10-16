@@ -77,7 +77,7 @@ const zipOut = path.join(base, 'k3-saves.zip');
   });
   const page = await app.firstWindow();
   lastPage = page;
-  await page.setViewportSize({ width: 1280, height: 820 });
+  await page.setViewportSize(process.env.VNS_VIEWPORT ? { width: +process.env.VNS_VIEWPORT.split('x')[0], height: +process.env.VNS_VIEWPORT.split('x')[1] } : { width: 1280, height: 820 });
   page.on('pageerror', (e) => console.log('[pageerror]', e.message));
   const mockOpen = (p) => app.evaluate(({ dialog }, f) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [f] }); }, p);
 

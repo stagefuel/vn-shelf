@@ -68,7 +68,7 @@ async function start(pc, fd) {
   });
   const page = await app.firstWindow();
   lastPage = page;
-  await page.setViewportSize({ width: 1280, height: 820 });
+  await page.setViewportSize(process.env.VNS_VIEWPORT ? { width: +process.env.VNS_VIEWPORT.split('x')[0], height: +process.env.VNS_VIEWPORT.split('x')[1] } : { width: 1280, height: 820 });
   page.on('pageerror', (e) => console.log(`[${pc.name} pageerror]`, e.message));
   return { app, page };
 }

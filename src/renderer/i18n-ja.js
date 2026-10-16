@@ -769,4 +769,5 @@ Object.assign(JA, {
   'disc image, install it yourself': 'ディスクイメージ（手動でインストール）',
   '{n} in library': 'ライブラリに {n}',
   'New in the archive': 'アーカイブの新着',
+  'Unpacking was interrupted.': '展開が中断されました。',
 });

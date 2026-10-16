@@ -108,7 +108,7 @@ async function until(what, fn, ms = 30000) {
       })(),
     });
     const page = await app.firstWindow();
-    await page.setViewportSize({ width: 1280, height: 820 });
+    await page.setViewportSize(process.env.VNS_VIEWPORT ? { width: +process.env.VNS_VIEWPORT.split('x')[0], height: +process.env.VNS_VIEWPORT.split('x')[1] } : { width: 1280, height: 820 });
     await page.waitForSelector('#sidebar .navitem');
 
     // ---- before signing in, nothing about the archive shows
@@ -198,7 +198,7 @@ async function until(what, fn, ms = 30000) {
     result.partInLibrary = await page.textContent('#dlg[open] .chooserow:has-text("前編")').then((x) => /In library/.test(x));
     await page.click('#dlg[open] .chooserow:has-text("後編") button');
     await page.keyboard.press('Escape');
-    await until('part 2 installed', () => page.evaluate(() => vns.call('listGames')).then((gs) => gs.filter((x) => x.vndbId === 'v503').length === 2), 60000);
+    await until('part 2 installed and named', () => page.evaluate(() => vns.call('listGames')).then((gs) => gs.filter((x) => x.vndbId === 'v503' && /編$/.test(x.title)).length === 2), 60000);
     result.partTitles = await page.evaluate(() => vns.call('listGames')).then((gs) => gs.filter((x) => x.vndbId === 'v503').map((x) => x.title).sort());
     if (JSON.stringify(result.partTitles) !== JSON.stringify(['Big Game 前編', 'Big Game 後編'])) result.partTitles = false;
 

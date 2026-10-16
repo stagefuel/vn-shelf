@@ -181,7 +181,11 @@ class DownloadQueue {
 
   async load() {
     try { this.jobs = JSON.parse(await fsp.readFile(this.file, 'utf8')); } catch { this.jobs = []; }
-    for (const j of this.jobs) if (j.state === 'downloading') j.state = 'paused';
+    for (const j of this.jobs) {
+      if (j.state === 'downloading') j.state = 'paused';
+      // Closed in the middle of unpacking: ▶ unpacks it again.
+      if (j.state === 'unpacking') { j.state = 'install-error'; j.error = 'Unpacking was interrupted.'; }
+    }
     return this;
   }
 

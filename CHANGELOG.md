@@ -4,6 +4,29 @@ All notable changes to VN Shelf. Download any version from the
 [Releases page](https://github.com/stagefuel/vn-shelf/releases). From 0.3.0 on, VN Shelf can
 update itself (Settings → Updates).
 
+## Unreleased
+
+### Fixed
+- **Saves can no longer go missing on your other PC when a file can't be read.** If a save file
+  couldn't be read (the game still had it open, a disk error), VN Shelf left it out and uploaded the
+  rest, and the other PC then deleted its copy of that file (it went to History first). Now the sync
+  stops with a message instead, and runs normally once the file can be read.
+- If the storage was unreachable for a moment just as a game closed, the saves weren't uploaded and
+  the other PC kept seeing the game as running. Now they upload and the game is released.
+- "Install updates automatically" no longer restarts in the middle of an archive download or unpack.
+- An archive download that was unpacking when VN Shelf closed no longer stays stuck on
+  "Unpacking": it comes back with ▶ to unpack it again.
+- The Archive page shows the copy of the archive saved on this PC when the server can't be reached,
+  instead of "Couldn't load the archive".
+- Covers are no longer blurred in My List and in Find on VNDB (they aren't anywhere else).
+- Game pages in a narrower window: your rating and dates move under the title instead of squeezing it.
+- Settings → Look: colour codes line up in their columns.
+- My List: the buttons line up across cards.
+- Links use the theme's colour everywhere (some were browser purple).
+- No white frame around the first-run setup when it opens.
+- At most three messages show at once in the corner, so they don't cover the page.
+- "New in the archive" on Home: the Archive link sits at the right of the heading.
+
 ## 0.14.3
 
 Archive versions and parts on one card, new archive VNs on Home, and more precise search.

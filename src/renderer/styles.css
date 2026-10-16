@@ -322,6 +322,7 @@ button.chip { cursor: pointer; }
 }
 .hero .meta .tag { font-size: 11.5px; }
 .desc { padding: 14px; white-space: pre-wrap; line-height: 1.6; color: var(--text); user-select: text; max-height: 360px; overflow-y: auto; }
+a { color: var(--accent); } /* every link in the theme's colour (browser purple otherwise) */
 .desc a { color: var(--accent); }
 .spoiler { background: var(--text-faint); color: transparent; border-radius: 3px; cursor: pointer; }
 .spoiler a { color: transparent; }
@@ -341,7 +342,6 @@ textarea.notes {
 }
 textarea.notes:focus { border-color: var(--accent); }
 .notes-view { white-space: pre-wrap; font-size: 13px; color: var(--text-dim); max-height: 50vh; overflow-y: auto; user-select: text; }
-.vnres img.nsfw { filter: blur(6px); }
 
 /* ---------- import ---------- */
 .importlist { display: grid; gap: 8px; }
@@ -482,11 +482,13 @@ body.has-bg .homehero .bgfade { background: linear-gradient(180deg, color-mix(in
 .fontrow { display: flex; gap: 8px; align-items: center; }
 .fontrow select { flex: 1; }
 .dbody { overflow-x: hidden; }
+.dbody:focus { outline: none; } /* the dialog focuses its scrolling body on open; no white frame */
 .bgedit .field { padding: 6px 0; border-top: 0; }
 .swatches { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
-.swatch .grow { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.swatch .grow { flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } /* codes line up per column */
 
 /* ---------- VNDB list ---------- */
+.listcard .sub { min-height: 1.3em; } /* so the buttons line up across cards */
 .listcard .listbtns { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
 .listcard .listbtns button { padding: 4px 10px; max-width: 100%; }
 .listcard .listbtns .linkbtn { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -494,7 +496,6 @@ body.has-bg .homehero .bgfade { background: linear-gradient(180deg, color-mix(in
 .listonly .grid { padding: 6px 0 60px; }
 .listonlyhead { display: flex; align-items: baseline; gap: 10px; margin: 12px 0 14px; }
 .listonlyhead h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--text-faint); font-weight: 600; margin: 0; }
-.listcard img.nsfw { filter: blur(10px); }
 .listfields { display: flex; gap: 14px; flex-wrap: wrap; padding: 12px 14px 4px; }
 .listfields .field { padding: 0; border: 0; }
 .listnote { padding: 0 14px 12px; }
@@ -558,7 +559,9 @@ body.has-bg .homehero .bgfade { background: linear-gradient(180deg, color-mix(in
 .hero .herolist .listfields .field { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .hero .herolist .listfields .lbl { margin: 0; }
 .hero .herolist .listfields input[type=date], .hero .herolist .listfields select { width: 150px; }
-@media (max-width: 980px) { .hero .inner { flex-wrap: wrap; } .hero .herolist { margin-left: 0; } }
+/* Cover + title column + the rating box need ~960px beside the sidebar; narrower, the box goes under the title. */
+@media (max-width: 1240px) { .hero .inner { flex-wrap: wrap; } .hero .herolist { margin-left: 250px; } }
+@media (max-width: 760px) { .hero .herolist { margin-left: 0; } }
 /* Both columns end at the same height: the last box in each grows to fill. */
 .panel { display: flex; flex-direction: column; }
 .panel > .box.notesbox { flex: 1; display: flex; flex-direction: column; }
@@ -660,4 +663,5 @@ body.has-bg .homehero .bgfade { background: linear-gradient(180deg, color-mix(in
 .chooserow:first-child { border-top: 0; }
 .chooselabel { min-width: 0; overflow-wrap: anywhere; }
 .chooserow .good { color: var(--play); }
-.hometitle .small { margin-left: 10px; vertical-align: middle; }
+.hometitle:has(button) { display: flex; align-items: center; gap: 10px; }
+.hometitle button { margin-left: auto; text-transform: none; letter-spacing: 0; font-weight: 500; }

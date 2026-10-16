@@ -215,7 +215,11 @@ class SyncEngine {
           hashes[key] = await this.hashCache.hash(p, { size, mtimeNs });
           files[key] = p;
           sizes[key] = size;
-        } catch { /* file vanished mid-scan; ignore */ }
+        } catch (e) {
+          // A file deleted mid-scan is gone. One we can't read (the game has it locked) must not be
+          // left out: the next upload would then delete it on the other PC.
+          if (e.code !== 'ENOENT') throw new SyncError('busy', `Couldn't read ${rel} (${e.code || e.message}). If the game is still open, close it and sync again.`, { rule: rule.id });
+        }
       }
     }
     return { files, hashes, sizes };
@@ -362,8 +366,21 @@ class SyncEngine {
       try {
         await fsu.copyFile(src, dest);
         hashes[key] = await fsu.hashFile(dest);
-      } catch { /* vanished; skip */ }
+      } catch (e) {
+        // A file deleted since the scan is simply gone. Any other failure (the game has it locked,
+        // a disk error) stops the upload: an upload missing files would delete them on the other PC.
+        if (e.code !== 'ENOENT') {
+          await fsu.rmrf(tmp).catch(() => {});
+          throw new SyncError('busy', `Couldn't read ${path.basename(src)} (${e.code || e.message}). If the game is still open, close it and sync again.`);
+        }
+      }
       progress.step(local.sizes && local.sizes[key]);
+    }
+    if (!Object.keys(hashes).length) {
+      // Every file vanished between the scan and the copy: nothing to upload, and an empty upload
+      // would clear the other PC's saves.
+      await fsu.rmrf(tmp).catch(() => {});
+      throw new SyncError('busy', 'The save files disappeared while uploading. Try again in a moment.');
     }
 
     // Each upload gets its own folder, named after it, so two PCs uploading at the same moment through

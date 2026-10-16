@@ -99,7 +99,7 @@ async function until(what, fn, ms = 20000) {
       })(),
     });
     const page = await app.firstWindow();
-    await page.setViewportSize({ width: 1280, height: 820 });
+    await page.setViewportSize(process.env.VNS_VIEWPORT ? { width: +process.env.VNS_VIEWPORT.split('x')[0], height: +process.env.VNS_VIEWPORT.split('x')[1] } : { width: 1280, height: 820 });
     await page.waitForSelector('.card, .homehero h1');
 
     // ---- connect: a wrong token is refused, the right one connects and the first sync pulls
@@ -292,8 +292,9 @@ async function until(what, fn, ms = 20000) {
     const L = result.layout;
     if (!L.listInHero || !/categories/i.test(L.firstRight) || !L.notesRight || !L.shotsInAbout || !L.shotsBeforeFacts || !L.staffAfterTags) throw new Error(`layout wrong: ${JSON.stringify(L)}`);
     // The right column fills down to the left one when the left is taller (Save locations is never stretched).
-    if (L.panelHeights[2] > L.panelHeights[3] + 2) throw new Error(`gap under the right column: ${L.panelHeights}`);
-    if (L.cols.length !== 2 || L.cols[0][1] >= L.cols[1][1] || !/characters/i.test(L.cols[0][0]) || !/related/i.test(L.cols[1][0])) throw new Error(`characters should be left, related right: ${JSON.stringify(L.cols)}`);
+    if ((page.viewportSize() || {}).width >= 1200 && L.panelHeights[2] > L.panelHeights[3] + 2) throw new Error(`gap under the right column: ${L.panelHeights}`);
+    // (Two columns only when the window is wide enough; narrower, the panels stack.)
+    if ((page.viewportSize() || {}).width >= 1200 && (L.cols.length !== 2 || L.cols[0][1] >= L.cols[1][1] || !/characters/i.test(L.cols[0][0]) || !/related/i.test(L.cols[1][0]))) throw new Error(`characters should be left, related right: ${JSON.stringify(L.cols)}`);
     if (!(L.relatedShown < L.relatedAll) || !L.moreBtn) throw new Error(`related not limited: ${JSON.stringify(L)}`);
     await page.click('.xcol:has-text("Related") .morebtn');
     result.layout.relatedAfterMore = await page.locator('.xcol:has-text("Related") .card.mini:visible').count();

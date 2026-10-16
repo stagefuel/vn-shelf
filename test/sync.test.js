@@ -414,3 +414,21 @@ test('two PCs uploading at the same moment through a slow sync app: no mixed fil
   const replaced = (await a.engine.listHistory(game.id)).find((h) => h.kind === 'replaced');
   assert.ok(replaced && replaced.deviceName === 'PC', 'kept as a restorable backup from PC');
 });
+
+test('an unreadable save file stops the sync instead of being left out (it would be deleted on the other PC)', { skip: process.getuid && process.getuid() === 0 }, async () => {
+  const { game, a, b } = await setup();
+  a.save('s1.dat', '1'); a.save('s2.dat', '2');
+  await sync(a, game); await sync(b, game);
+  a.save('s1.dat', '1 changed');
+  const locked = path.join(a.roots['<appdata>'], 'Nitroplus', 'Muramasa', 's2.dat');
+  a.save('s2.dat', '2 changed'); // changed, so it has to be read again
+  fs.chmodSync(locked, 0o000); // like a file the game holds open
+  try {
+    await assert.rejects(sync(a, game), { code: 'busy' });
+    assert.strictEqual(await sync(b, game), 'nothing', 'nothing was uploaded');
+    assert.ok(b.hasSave('s2.dat'));
+  } finally { fs.chmodSync(locked, 0o644); }
+  assert.strictEqual(await sync(a, game), 'push');
+  assert.strictEqual(await sync(b, game), 'pull');
+  assert.strictEqual(b.readSave('s2.dat'), '2 changed');
+});

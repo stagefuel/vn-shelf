@@ -971,6 +971,7 @@ async function archiveIndex({ fresh = false } = {}) {
   const a = config.data.archive;
   let where = a.index;
   let index;
+  const saved = archiveIndexCache;
   try {
     if (!where) throw Object.assign(new Error('find'), { code: 'find' });
     index = await client.fetchIndex(where);
@@ -980,7 +981,9 @@ async function archiveIndex({ fresh = false } = {}) {
       where = await client.findIndex(); // moved, or not looked up yet
       index = await client.fetchIndex(where);
     } catch (e2) {
-      if (e2.code === 'denied') await archiveSignedOut();
+      if (e2.code === 'denied') { await archiveSignedOut(); throw e2; }
+      // Offline or the server is down: browse the copy saved on this PC (downloads wait).
+      if (saved && saved.index) return saved.index;
       throw e2;
     }
     await config.set({ archive: { ...config.data.archive, index: where } });
@@ -1566,7 +1569,8 @@ const api = {
       }
       setState(id, 'syncing', { message: 'Saving to the cloud…' });
       await new Promise((r) => setTimeout(r, 2000)); // let the game finish writing
-      const fresh = await library.get(id);
+      // The storage can blink (Drive offline for a moment): still upload, and always free the lock.
+      const fresh = await library.get(id).catch(() => game) || game;
       const r = await runSync(fresh).catch((e) => ({ error: e.message }));
       await engine.releaseLock(id).catch(() => {});
       reportSync(id, fresh.title, r);
@@ -2293,6 +2297,8 @@ async function swapToUpdate(info, { hidden = false } = {}) {
 /** A good moment to restart: no game running or starting, no saves copying, and nobody using the window. */
 function quietMoment() {
   if (running.size || starting.size || busyGames().length) return false;
+  // Nor while an archive download or unpack is going (a restart would interrupt it).
+  if (archiveQueue && (archiveQueue.active || archiveQueue.jobs.some((j) => j.state === 'unpacking'))) return false;
   const away = !win || win.isDestroyed() || !win.isVisible() || win.isMinimized();
   let idle = 0;
   try { idle = powerMonitor.getSystemIdleTime(); } catch { /* not available */ }

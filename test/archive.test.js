@@ -156,3 +156,12 @@ test('unpack: extracts with 7-Zip and removes the archive set afterwards', { ski
   await unpack.removeArchives(dir, ['x.part1.rar']);
   assert.ok(!fs.existsSync(path.join(dir, 'x.part1.rar')) && !fs.existsSync(path.join(dir, 'x.part2.rar')));
 });
+
+test('archive: a job closed mid-unpack comes back ready to unpack again, a download comes back paused', async () => {
+  const dir = tmp();
+  const file = path.join(dir, 'downloads.json');
+  fs.writeFileSync(file, JSON.stringify([{ key: 'a', state: 'unpacking', files: [], done: [] }, { key: 'b', state: 'downloading', files: [], done: [] }]));
+  const q = await new archive.DownloadQueue({ client: null, file }).load();
+  assert.deepStrictEqual(q.list().map((j) => j.state), ['install-error', 'paused']);
+  assert.match(q.list()[0].error, /interrupted/);
+});
