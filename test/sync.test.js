@@ -415,7 +415,7 @@ test('two PCs uploading at the same moment through a slow sync app: no mixed fil
   assert.ok(replaced && replaced.deviceName === 'PC', 'kept as a restorable backup from PC');
 });
 
-test('an unreadable save file stops the sync instead of being left out (it would be deleted on the other PC)', { skip: process.getuid && process.getuid() === 0 }, async () => {
+test('an unreadable save file stops the sync instead of being left out (it would be deleted on the other PC)', { skip: process.platform === 'win32' || (process.getuid && process.getuid() === 0) } /* chmod can't lock a file on Windows; runs on Linux CI */, async () => {
   const { game, a, b } = await setup();
   a.save('s1.dat', '1'); a.save('s2.dat', '2');
   await sync(a, game); await sync(b, game);
