@@ -4,7 +4,9 @@ All notable changes to VN Shelf. Download any version from the
 [Releases page](https://github.com/stagefuel/vn-shelf/releases). From 0.3.0 on, VN Shelf can
 update itself (Settings → Updates).
 
-## Unreleased
+## 0.15.0
+
+Upload games to the archive, pinned to their VNDB release.
 
 ### New
 - **Upload to the archive** (for archive accounts that are allowed to upload; nobody else sees it):
