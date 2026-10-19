@@ -4,6 +4,21 @@ All notable changes to VN Shelf. Download any version from the
 [Releases page](https://github.com/stagefuel/vn-shelf/releases). From 0.3.0 on, VN Shelf can
 update itself (Settings → Updates).
 
+## Unreleased
+
+### New
+- **Upload to the archive** (for archive accounts that are allowed to upload; nobody else sees it):
+  - **↑ Upload to the archive…** on a game's page uploads that game. **↑ Upload** on the Archive
+    page uploads any folder or file (an installer, a disc image, an archive).
+  - Pin it to its VNDB entry (filled in from the game) and, if you like, the exact VNDB release, a
+    part and an edition. The archive's index uses what you chose instead of guessing.
+  - Pick the group folder (the developer's is suggested). The preview shows exactly where it
+    goes; next to a copy that's already there, it gets its edition or part in the name.
+  - A folder is packed into one .zip with 7-Zip first. **Leave out save folders** (on by default)
+    keeps your own saves out of it.
+  - Uploads run one at a time beside downloads, with pause and resume: a stopped upload carries on
+    from where it stopped, even after a restart.
+
 ## 0.14.5
 
 The Archive page shows new uploads without a restart.

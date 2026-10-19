@@ -665,3 +665,16 @@ body.has-bg .homehero .bgfade { background: linear-gradient(180deg, color-mix(in
 .chooserow .good { color: var(--play); }
 .hometitle:has(button) { display: flex; align-items: center; gap: 10px; }
 .hometitle button { margin-left: auto; text-transform: none; letter-spacing: 0; font-weight: 500; }
+
+/* Upload to the archive */
+.upform { display: grid; gap: 4px; }
+.upform .val { display: flex; gap: 8px; align-items: center; }
+.upform .val input, .upform .val select { flex: 1; min-width: 0; }
+.upresults { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.upresults .upres.on { border-color: var(--accent); color: var(--text); }
+.uprow { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.mono { font-family: var(--mono); overflow-wrap: anywhere; }
+#upDest { margin-top: 6px; }
+/* Part / Edition side by side: one separator above the row, none between them */
+.uprow { border-top: 1px solid var(--line); }
+.uprow > .field { border-top: 0; }

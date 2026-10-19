@@ -102,6 +102,19 @@ async function fetchBriefs(ids, { fetchImpl = fetch } = {}) {
   return out;
 }
 
+/** A VN's Windows releases, newest first, for pinning an upload to one. */
+async function fetchReleases(vndbId, { fetchImpl = fetch } = {}) {
+  const id = idFilter(vndbId);
+  if (!id) return [];
+  const data = await post({ filters: ['vn', '=', ['id', '=', id]], fields: 'title, alttitle, released, languages.lang, platforms, patch, official, vns.id, vns.rtype', results: 100, sort: 'released', reverse: true }, fetchImpl, 'release');
+  return (data.results || []).filter((r) => !r.patch && (!r.platforms || !r.platforms.length || r.platforms.includes('win')))
+    .map((r) => ({
+      id: r.id, title: r.alttitle || r.title, titleEn: r.title, released: r.released || '',
+      languages: (r.languages || []).map((l) => l.lang), official: r.official !== false,
+      type: ((r.vns || []).find((v) => v.id === id) || {}).rtype || 'complete',
+    }));
+}
+
 /** Full info for one VN id. */
 async function fetchInfo(vndbId, { fetchImpl = fetch } = {}) {
   const id = idFilter(vndbId);
@@ -327,6 +340,6 @@ async function fetchCovers(vndbId, { fetchImpl = fetch } = {}) {
 }
 
 module.exports = {
-  search, bestMatch, fetchInfo, fetchBriefs, downloadImage, parseDescription, info, LENGTHS,
+  search, bestMatch, fetchInfo, fetchBriefs, fetchReleases, downloadImage, parseDescription, info, LENGTHS,
   fetchExtras, fetchCharacters, fetchWorks, fetchName, fetchEngines, fetchCovers, pickScreenshots, RELATIONS,
 };

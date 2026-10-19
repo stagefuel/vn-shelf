@@ -946,7 +946,23 @@ async function archiveState() {
     sevenZip: await unpack.find7z(a && a.sevenZip).catch(() => null),
     keepArchives: !!(a && a.keepArchives),
     connectedAt: (a && a.connectedAt) || null,
+    canUpload: !!(connected && a && a.canUpload),
   };
+}
+
+/** Whether this account may upload, from the server (kept in config so the window knows at once). */
+async function archiveCheckUpload() {
+  const client = archiveClient();
+  if (!client) return false;
+  const acct = await client.account();
+  const index = archiveIndexCache && archiveIndexCache.index;
+  const src = (acct.sources || []).find((x) => !index || x.name === index.source) || null;
+  const canUpload = !!(src && src.canUpload);
+  if (canUpload !== !!(config.data.archive || {}).canUpload) {
+    await config.set({ archive: { ...config.data.archive, canUpload } });
+    send('archive-state', { connected: true, canUpload });
+  }
+  return canUpload;
 }
 
 /**
@@ -958,9 +974,10 @@ async function archiveSignedOut() {
   archiveToken.clear();
   archiveIndexCache = null;
   await fs.promises.rm(archiveFile('archive-index.json'), { force: true }).catch(() => {});
-  await config.set({ archive: { ...(config.data.archive || {}), index: null, count: 0 } });
+  await config.set({ archive: { ...(config.data.archive || {}), index: null, count: 0, canUpload: false } });
   archiveQueue = null;
-  send('archive-state', { connected: false, count: 0 });
+  uploadQueue = null;
+  send('archive-state', { connected: false, count: 0, canUpload: false });
 }
 
 async function archiveIndex({ fresh = false } = {}) {
@@ -1046,11 +1063,40 @@ async function installDownloaded(job) {
   return jobChanged(job);
 }
 
+let uploadQueue = null;
+
+/** Where an upload goes: <base>/<group>/<title>, or "<title> (<label>)" beside one already there. */
+async function uploadDir(client, source, base, group, title, label) {
+  let dir = `${base}/${group}/${title}`;
+  if (await client.exists(source, dir)) {
+    const alt = label ? `${title} (${label})` : `${title} (${new Date().toISOString().slice(0, 10)})`;
+    dir = `${base}/${group}/${alt}`;
+    for (let n = 2; await client.exists(source, dir); n++) dir = `${base}/${group}/${alt} ${n}`;
+  }
+  return dir;
+}
+
 async function setUpArchiveQueue() {
   const client = archiveClient();
   if (archiveQueue) { for (const j of archiveQueue.jobs) if (j.abort) j.abort.abort(); }
+  if (uploadQueue) { for (const j of uploadQueue.jobs) if (j.abort) j.abort.abort(); }
   archiveQueue = null;
+  uploadQueue = null;
   if (!client) return;
+  uploadQueue = await new archive.UploadQueue({
+    client, file: archiveFile('archive-uploads.json'),
+    onChange: (list) => send('archive-uploads', list),
+    pack: async (job, onPct, signal) => {
+      const sz = await unpack.find7z((config.data.archive || {}).sevenZip);
+      if (!sz) throw new Error('7-Zip is needed to pack the folder. Install it, or choose it in Settings → Archive.');
+      const out = path.join(archiveDownloadDir(), '.uploads', `${job.id}.zip`);
+      // Room for the packed copy (about the folder's size) on the drive it's made on.
+      const need = job.estimate || 0;
+      const st = await fs.promises.statfs(path.dirname(archiveDownloadDir())).catch(() => null);
+      if (st && need && st.bavail * st.bsize < need * 1.05) throw new Error(`Not enough free space to pack it (${Math.ceil(need / 1e9)} GB needed near ${archiveDownloadDir()}).`);
+      return (await unpack.pack(sz, job.from, out, { skip: job.skip || [], onProgress: onPct, signal })).file;
+    },
+  }).load();
   archiveQueue = await new archive.DownloadQueue({
     client, file: archiveFile('archive-downloads.json'),
     onChange: (list) => send('archive-downloads', list),
@@ -1067,7 +1113,7 @@ const api = {
       driveAvailable: !!googleAuth,
       googleSignedIn: !!(googleAuth && googleAuth.signedIn()),
       googleEmail: config.data.googleEmail || null,
-      archive: { connected: !!archiveClient(), count: (config.data.archive || {}).count || 0, connectedAt: (config.data.archive || {}).connectedAt || null, maxAgeMs: ARCHIVE_INDEX_MAX_AGE },
+      archive: { connected: !!archiveClient(), count: (config.data.archive || {}).count || 0, connectedAt: (config.data.archive || {}).connectedAt || null, maxAgeMs: ARCHIVE_INDEX_MAX_AGE, canUpload: !!(archiveClient() && (config.data.archive || {}).canUpload) },
       settings: {
         cloudDir: config.data.cloudDir,
         deviceName: config.data.deviceName || os.hostname(),
@@ -1925,6 +1971,7 @@ const api = {
       throw e;
     }
     await setUpArchiveQueue();
+    await archiveCheckUpload().catch(() => {});
     return archiveState();
   },
 
@@ -1936,7 +1983,7 @@ const api = {
     archiveToken.clear();
     archiveIndexCache = null;
     await fs.promises.rm(archiveFile('archive-index.json'), { force: true }).catch(() => {});
-    await config.set({ archive: { ...(config.data.archive || {}), index: null, count: 0 } });
+    await config.set({ archive: { ...(config.data.archive || {}), index: null, count: 0, canUpload: false } });
     await setUpArchiveQueue();
     return archiveState();
   },
@@ -1999,6 +2046,84 @@ const api = {
     archiveQueue.add(it, { source: index.source, dest });
     return archiveQueue.list();
   },
+
+  // ---- uploading to the archive (accounts allowed to upload only)
+
+  /** What the upload dialog needs: where it would go, the archive's groups, the game's VNDB/IGDB link. */
+  async archiveUploadOptions({ gameId = null, from = null } = {}) {
+    if (!archiveClient() || !(await archiveCheckUpload())) throw new Error('This account can\'t upload to the archive.');
+    const index = await archiveIndex();
+    const base = path.posix.dirname(config.data.archive.index.path);
+    const client = archiveClient();
+    let game = null;
+    if (gameId) {
+      game = await library.get(gameId);
+      from = installDir(gameId);
+      if (!from) throw new Error('This game isn\'t set up on this PC.');
+    }
+    if (!from) throw new Error('Choose what to upload.');
+    const st = await fs.promises.stat(from);
+    const isDir = st.isDirectory();
+    let size = st.size;
+    if (isDir) {
+      size = 0;
+      const walk = async (d) => { for (const e of await fs.promises.readdir(d, { withFileTypes: true })) { const p = path.join(d, e.name); if (e.isDirectory()) await walk(p); else if (e.isFile()) size += (await fs.promises.stat(p)).size; } };
+      await walk(from);
+    }
+    const groups = await client.folders(index.source, base);
+    const dev = game && game.developer ? game.developer.split(',')[0].trim() : '';
+    const norm = (x) => detect.normName(x || '');
+    const suggested = groups.find((g) => dev && norm(g) === norm(dev)) || groups.find((g) => dev && norm(g).length >= 3 && (norm(dev).includes(norm(g)) || norm(g).includes(norm(dev)))) || '';
+    return {
+      from, isDir, size, base, groups, suggestedGroup: suggested, developer: dev,
+      title: game ? (game.titleAlt || game.title) : path.basename(from).replace(/\.[^.]+$/, ''),
+      vndbId: game && game.vndbId, igdb: game && game.igdb ? game.igdb.id || null : null,
+      skip: game ? (game.saves || []).filter((r) => r.path && r.path.startsWith('<game>/')).map((r) => r.path.slice('<game>/'.length)) : [],
+    };
+  },
+
+  async archiveReleases(vid) { return vndb.fetchReleases(vid); },
+
+  /** The folder an upload would go to now (for the dialog's preview). */
+  async archiveUploadDest({ group, title, label }) {
+    const index = await archiveIndex();
+    const base = path.posix.dirname(config.data.archive.index.path);
+    if (!safeName(group || '').trim()) return null;
+    return (await uploadDir(archiveClient(), index.source, base, safeName(group).trim(), safeName(title || ''), safeName(label || '').trim())).replace(/^\//, '');
+  },
+
+  /**
+   * Start an upload. spec: { from, isDir, group, title, vids, igdb, release, part, edition, skip, size }.
+   * It goes to <index folder>/<group>/<title>; if that already holds something, to "<title> (<label>)".
+   */
+  async archiveUpload(spec) {
+    if (!uploadQueue) await setUpArchiveQueue();
+    if (!uploadQueue || !(await archiveCheckUpload())) throw new Error('This account can\'t upload to the archive.');
+    const index = await archiveIndex();
+    const client = archiveClient();
+    const base = path.posix.dirname(config.data.archive.index.path);
+    const group = safeName(spec.group || '').trim();
+    if (!group) throw new Error('Choose a group folder.');
+    const title = safeName(spec.title || '');
+    if (!spec.vids || !spec.vids.length) { if (!spec.igdb) throw new Error('Pin it to a VNDB entry (or IGDB) first.'); }
+    const label = safeName(spec.part || spec.edition || (spec.releaseTitle || '') || '').trim();
+    const dir = await uploadDir(client, index.source, base, group, title, label);
+    const name = spec.isDir ? `${safeName(`${title}${label ? ` ${label}` : ''}`)}.zip` : path.basename(spec.from);
+    const acct = await client.account().catch(() => ({}));
+    const meta = {
+      vids: spec.vids || [], igdb: spec.igdb || null, release: spec.release || null,
+      part: spec.part || null, edition: spec.edition || null, title: spec.title,
+      uploader: acct.username || (config.data.archive || {}).username, app: `VN Shelf ${app.getVersion()}`,
+    };
+    uploadQueue.add({ from: spec.from, isDir: !!spec.isDir, source: index.source, dir, name, meta, title: spec.title, skip: spec.skip || [], estimate: spec.size || 0 });
+    return uploadQueue.list();
+  },
+
+  async archiveUploads() { return uploadQueue ? uploadQueue.list() : []; },
+  async archiveUploadPause(id) { if (uploadQueue) uploadQueue.pause(id); return api.archiveUploads(); },
+  async archiveUploadResume(id) { if (uploadQueue) uploadQueue.resume(id); return api.archiveUploads(); },
+  async archiveUploadCancel(id) { if (uploadQueue) await uploadQueue.cancel(id); return api.archiveUploads(); },
+  async archiveUploadsClear() { if (uploadQueue) uploadQueue.clearFinished(); return api.archiveUploads(); },
 
   async archiveDownloads() { return archiveQueue ? archiveQueue.list() : []; },
   async archivePause(key) { if (archiveQueue) archiveQueue.pause(key); return api.archiveDownloads(); },
@@ -2243,7 +2368,7 @@ app.whenReady().then(async () => {
   if (config.data.startWithSystem) applyStartWithSystem(true).catch(() => {});
   await createWindow();
   setUpArchiveQueue().catch(() => {});
-  setTimeout(() => { if (archiveClient()) archiveIndex({ fresh: true }).catch(() => {}); }, 5000);
+  setTimeout(() => { if (archiveClient()) archiveIndex({ fresh: true }).then(() => archiveCheckUpload()).catch(() => {}); }, 5000);
   setTimeout(() => autoUpload().catch(() => {}), 4000);
   setTimeout(() => publishSettings().catch(() => {}), 8000);
   setInterval(() => autoUpload().catch(() => {}), 5 * 60 * 1000);
@@ -2299,6 +2424,7 @@ function quietMoment() {
   if (running.size || starting.size || busyGames().length) return false;
   // Nor while an archive download or unpack is going (a restart would interrupt it).
   if (archiveQueue && (archiveQueue.active || archiveQueue.jobs.some((j) => j.state === 'unpacking'))) return false;
+  if (uploadQueue && uploadQueue.active) return false;
   const away = !win || win.isDestroyed() || !win.isVisible() || win.isMinimized();
   let idle = 0;
   try { idle = powerMonitor.getSystemIdleTime(); } catch { /* not available */ }

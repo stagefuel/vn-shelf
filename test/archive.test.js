@@ -165,3 +165,51 @@ test('archive: a job closed mid-unpack comes back ready to unpack again, a downl
   assert.deepStrictEqual(q.list().map((j) => j.state), ['install-error', 'paused']);
   assert.match(q.list()[0].error, /interrupted/);
 });
+
+test('archive: uploading in chunks carries on from where it stopped, and needs upload permission', async () => {
+  const fake = sampleServer();
+  fake.users.up = { password: 'u', api: true, upload: true };
+  const srv = await fake.listen();
+  const dir = tmp();
+  try {
+    const reader = new archive.ArchiveClient({ server: srv.url, token: (await archive.connect(srv.url, 'reader', 'p@ss wörd')).token });
+    assert.deepStrictEqual((await reader.account()).sources, [{ name: 'Home', canUpload: false }]);
+    const client = new archive.ArchiveClient({ server: srv.url, token: (await archive.connect(srv.url, 'up', 'u')).token });
+    assert.deepStrictEqual((await client.account()).sources, [{ name: 'Home', canUpload: true }]);
+    const file = path.join(dir, 'game.zip');
+    const data = Buffer.from(big(300000, 'up'));
+    fs.writeFileSync(file, data);
+    await client.mkdirs('Home', '/vns/New/Game');
+    assert.ok(fake.dirs.has('/vns/New') && fake.dirs.has('/vns/New/Game'));
+    const job = {};
+    fake.failChunkAt = 150000; // the connection drops part-way
+    await assert.rejects(client.uploadFile({ source: 'Home', remote: '/vns/New/Game/game.zip', file, size: data.length }, job, { chunkSize: 64 * 1024 }));
+    assert.ok(job.offset > 0 && job.offset < data.length && job.session, `stopped at ${job.offset}`);
+    const resumedFrom = job.offset;
+    await client.uploadFile({ source: 'Home', remote: '/vns/New/Game/game.zip', file, size: data.length }, job, { chunkSize: 64 * 1024 });
+    assert.ok(Buffer.compare(fake.files.get('/vns/New/Game/game.zip'), data) === 0, 'arrived intact');
+    assert.ok(fake.chunks.some((c) => c.offset === resumedFrom), 'carried on from the last good chunk');
+    assert.strictEqual(fake.uploads.pop().token, 'VN Shelf');
+    // A second upload to the same name is refused, not overwritten.
+    await assert.rejects(client.uploadFile({ source: 'Home', remote: '/vns/New/Game/game.zip', file, size: data.length }, {}, {}), { code: 'exists' });
+    await assert.rejects(reader.uploadFile({ source: 'Home', remote: '/vns/x.zip', file, size: data.length }, {}, {}), { code: 'denied' });
+  } finally { await srv.close(); }
+});
+
+test('unpack: pack zips a folder without its save folders', { skip: !fs.existsSync('/usr/bin/7z') && process.platform !== 'win32' }, async () => {
+  const dir = tmp();
+  const g = path.join(dir, 'Game');
+  for (const f of ['game.exe', 'data/a.xp3', 'savedata/s1.dat', 'savedata/sub/s2.dat', 'saves2/x.sav']) {
+    fs.mkdirSync(path.dirname(path.join(g, f)), { recursive: true });
+    fs.writeFileSync(path.join(g, f), f);
+  }
+  const sz = await unpack.find7z();
+  const out = path.join(dir, 'out', 'Game.zip');
+  const r = await unpack.pack(sz, g, out, { skip: ['savedata', 'saves2'] });
+  assert.strictEqual(r.files, 2);
+  const listing = execFileSync(sz, ['l', '-ba', out], { encoding: 'utf8' });
+  assert.match(listing, /game\.exe/);
+  assert.match(listing, /a\.xp3/);
+  assert.doesNotMatch(listing, /s1\.dat|s2\.dat|x\.sav/);
+  assert.ok(!fs.existsSync(`${out}.list`));
+});

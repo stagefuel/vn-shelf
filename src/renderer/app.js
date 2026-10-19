@@ -1106,12 +1106,13 @@ async function startArchiveDownload(it) {
 }
 
 function downloadsPanel() {
-  if (!archiveJobs.length) return null;
+  if (!archiveJobs.length && !uploadJobs.length) return null;
   const act = (name, key) => async () => { archiveJobs = await call(name, key).catch(() => archiveJobs); drawArchive(); };
-  const finished = archiveJobs.some((j) => ['done', 'installed'].includes(j.state));
+  const finished = archiveJobs.some((j) => ['done', 'installed'].includes(j.state)) || uploadJobs.some((j) => j.state === 'done');
   return h('div', { class: 'downloads' },
     h('div', { class: 'dlhead' }, h('h2', {}, t('Downloads')), h('div', { class: 'spacer' }),
-      finished ? h('button', { class: 'small ghost', onclick: act('archiveClearFinished') }, t('Clear finished')) : null),
+      finished ? h('button', { class: 'small ghost', onclick: async () => { await act('archiveClearFinished')(); uploadJobs = await call('archiveUploadsClear').catch(() => uploadJobs); drawArchive(); } }, t('Clear finished')) : null),
+    uploadRows(),
     archiveJobs.map((j) => {
       const pct = j.state === 'unpacking' ? (j.unpacked || 0) : j.total ? Math.floor((j.received / j.total) * 100) : 0;
       const busy = ['queued', 'downloading'].includes(j.state);
@@ -1209,6 +1210,7 @@ function drawArchive() {
     h('div', { class: 'libtoolbar' },
       h('h1', {}, t('Archive')), h('span', { class: 'dim', id: 'archiveCount' }, String(list.length)),
       h('div', { class: 'spacer' }), search, show,
+      canUpload() ? h('button', { class: 'small', id: 'archiveUpload', title: t('Upload to the archive'), onclick: () => uploadPick() }, `↑ ${t('Upload')}`) : null,
       h('button', { class: 'small ghost', title: t('Refresh'), onclick: () => renderArchive({ fresh: true }) }, '⟳')),
     downloadsPanel(),
     h('div', { id: 'archiveGrid' }));
@@ -1247,15 +1249,159 @@ vns.on('archive-downloads', (list) => {
 
 // Signed out by the server (token revoked or refused): hide everything about the archive.
 vns.on('archive-state', (st) => {
+  const couldUpload = canUpload();
   setup.archive = { ...setup.archive, ...st };
-  if (st.connected) return;
+  if (st.connected) {
+    // Upload rights changed: show or hide the upload buttons.
+    if (couldUpload !== canUpload()) {
+      if (view === 'archive') drawArchive();
+      else if (view === 'detail' && currentId) renderDetail(currentId, { noAuto: true });
+    }
+    return;
+  }
   archiveData = null;
   archiveJobs = [];
+  uploadJobs = [];
   replaceKids($('#archiveView'));
   if (view === 'archive' || view === 'home') showHome();
   else if (view === 'vndb') renderVndbList({ fresh: false });
   else if (view === 'library') renderGrid();
   renderSidebar();
+});
+
+// ---- uploading to the archive (only for accounts allowed to upload)
+
+let uploadJobs = [];
+const canUpload = () => !!(setup.archive && setup.archive.connected && setup.archive.canUpload);
+
+const UP_TEXT = () => ({
+  queued: t('Waiting'), packing: t('Packing'), uploading: t('Uploading'), paused: t('Paused'), error: t('Stopped'), done: t('In the archive'),
+});
+
+/** Upload a game folder (packed into one .zip) or a file, pinned to a VNDB entry and release. */
+async function uploadDialog(opts) {
+  let o;
+  try { o = await call('archiveUploadOptions', opts); } catch { return; }
+  let pick = o.vndbId ? { vndbId: o.vndbId, title: o.title } : null;
+  const vnq = h('input', { type: 'text', id: 'upVnq', value: o.vndbId || o.title, spellcheck: 'false' });
+  const results = h('div', { class: 'upresults' });
+  const chosen = h('div', { class: 'small', id: 'upChosen' });
+  const rel = h('select', { id: 'upRelease' }, h('option', { value: '' }, '—'));
+  const part = h('input', { type: 'text', id: 'upPart', placeholder: t('Part (optional)') });
+  const edition = h('input', { type: 'text', id: 'upEdition', placeholder: t('Edition (optional)') });
+  const groupSel = h('select', { id: 'upGroup' },
+    o.groups.map((g) => h('option', { value: g, selected: g === o.suggestedGroup }, g)),
+    h('option', { value: '__new', selected: !o.suggestedGroup }, t('New folder…')));
+  const newGroup = h('input', { type: 'text', id: 'upNewGroup', value: o.developer || '', placeholder: t('Folder name') });
+  const dest = h('div', { class: 'faint small mono', id: 'upDest' });
+  const noSaves = h('input', { type: 'checkbox', id: 'upNoSaves', checked: true });
+  let destSeq = 0;
+  const drawDest = () => {
+    const g = groupSel.value === '__new' ? newGroup.value.trim() : groupSel.value;
+    newGroup.hidden = groupSel.value !== '__new';
+    const title = (pick && pick.title) || o.title;
+    dest.textContent = `${o.base.replace(/^\//, '')}/${g || '…'}/${title}`;
+    // The real folder: beside an existing one it gets the part/edition in its name.
+    const seq = ++destSeq;
+    const label = part.value.trim() || edition.value.trim() || (rel.value && rel.selectedOptions[0] ? rel.selectedOptions[0].dataset.title : '');
+    if (g) call('archiveUploadDest', { group: g, title, label }).then((d) => { if (d && seq === destSeq) dest.textContent = d; }).catch(() => {});
+  };
+  const drawChosen = () => {
+    replaceKids(chosen, pick ? [h('strong', {}, pick.title), ` · ${pick.vndbId}`] : o.igdb ? `IGDB ${o.igdb}` : h('span', { class: 'warn' }, t('Pick the VNDB entry')));
+    drawDest();
+  };
+  const loadReleases = async () => {
+    replaceKids(rel, h('option', { value: '' }, '—'));
+    if (!pick) return;
+    const rs = await call('archiveReleases', pick.vndbId).catch(() => []);
+    for (const r of rs) rel.append(h('option', { value: r.id, 'data-title': r.title }, `${r.title} · ${r.released || '?'}${r.languages.length ? ` · ${r.languages.join(', ')}` : ''}`));
+  };
+  const search = async () => {
+    const list = await call('searchVndb', vnq.value).catch(() => []);
+    replaceKids(results, list.slice(0, 6).map((v) => h('button', { type: 'button', class: `small ghost upres${pick && pick.vndbId === v.vndbId ? ' on' : ''}`, onclick: () => {
+      pick = { vndbId: v.vndbId, title: v.titleAlt || v.title };
+      drawChosen(); loadReleases(); search();
+    } }, `${v.titleAlt || v.title} · ${(v.released || '').slice(0, 4)} · ${v.vndbId}`)));
+  };
+  vnq.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); search(); } });
+  groupSel.addEventListener('change', drawDest);
+  newGroup.addEventListener('input', drawDest);
+  for (const el of [part, edition]) el.addEventListener('input', drawDest);
+  rel.addEventListener('change', drawDest);
+  const field = (label, ...kids) => h('div', { class: 'field' }, h('div', { class: 'lbl' }, label), ...kids);
+  drawChosen();
+  if (pick) loadReleases();
+  const v = await dialog({
+    title: t('Upload to the archive'),
+    text: `${o.from} · ${sizeText(o.size)}${o.isDir ? ` → .zip` : ''}`,
+    wide: true,
+    body: h('div', { class: 'upform' },
+      field('VNDB', h('div', { class: 'val' }, vnq, h('button', { type: 'button', class: 'small', onclick: search }, t('Search'))), chosen, results),
+      field(t('Release'), rel),
+      h('div', { class: 'uprow' }, field(t('Part'), part), field(t('Edition'), edition)),
+      field(t('Group'), h('div', { class: 'val' }, groupSel, newGroup), dest),
+      o.isDir ? field(null, h('label', { class: 'check' }, noSaves, t('Leave out save folders'))) : null),
+    buttons: [{ label: t('Cancel'), value: null, cls: 'ghost' }, { label: `↑ ${t('Upload')}`, value: 'go', cls: 'primary', validate: () => {
+      if (!pick && !o.igdb) { toast(t('Pick the VNDB entry'), 'bad'); return false; }
+      if (groupSel.value === '__new' && !newGroup.value.trim()) { toast(t('Name the folder'), 'bad'); return false; }
+      return true;
+    } }],
+  });
+  if (v !== 'go') return;
+  const opt = rel.selectedOptions[0];
+  try {
+    uploadJobs = await call('archiveUpload', {
+      from: o.from, isDir: o.isDir, size: o.size,
+      // The game's own save folders (known from its save locations), plus the usual names.
+      skip: noSaves.checked ? [...new Set([...o.skip, 'save', 'saves', 'savedata', 'Save', 'SaveData'])] : [],
+      group: groupSel.value === '__new' ? newGroup.value.trim() : groupSel.value,
+      title: (pick && pick.title) || o.title, vids: pick ? [pick.vndbId] : [], igdb: pick ? null : o.igdb,
+      release: rel.value || null, releaseTitle: rel.value && opt ? opt.dataset.title : null,
+      part: part.value.trim() || null, edition: edition.value.trim() || null,
+    });
+    toast(t('Uploading {title}', { title: (pick && pick.title) || o.title }), 'good');
+    if (view === 'archive') drawArchive();
+  } catch { /* toasted */ }
+}
+
+/** Archive toolbar ↑: a folder (packed) or a file (installer, disc image, archive). */
+async function uploadPick() {
+  const v = await dialog({ title: t('Upload to the archive'), buttons: [
+    { label: t('Cancel'), value: null, cls: 'ghost' }, { label: t('File…'), value: 'file' }, { label: t('Folder…'), value: 'dir', cls: 'primary' }] });
+  if (!v) return;
+  const from = v === 'dir' ? await vns.call('pickFolder') : await vns.call('pickFile', t('Choose what to upload'), [{ name: t('All files'), extensions: ['*'] }]);
+  if (from) uploadDialog({ from });
+}
+
+function uploadRows() {
+  const act = (name, id) => async () => { uploadJobs = await call(name, id).catch(() => uploadJobs); drawArchive(); };
+  return uploadJobs.map((j) => {
+    const pct = j.state === 'packing' ? (j.packPct || 0) : j.total ? Math.floor((j.sent / j.total) * 100) : 0;
+    return h('div', { class: `dlrow up ${j.state}` },
+      h('div', { class: 'dltitle' }, `↑ ${j.title}`),
+      h('div', { class: 'dlstate small' }, UP_TEXT()[j.state] || j.state,
+        ['uploading', 'paused'].includes(j.state) && j.total ? ` · ${sizeText(j.sent)} / ${sizeText(j.total)}` : '',
+        j.error ? h('span', { class: 'warn' }, ` · ${translateMessage(j.error)}`) : null),
+      ['uploading', 'packing', 'paused', 'error'].includes(j.state) ? h('div', { class: 'syncbar' }, h('div', { style: `width:${pct}%` })) : null,
+      h('div', { class: 'dlbtns' },
+        ['queued', 'uploading', 'packing'].includes(j.state) ? h('button', { class: 'small', title: t('Pause'), onclick: act('archiveUploadPause', j.id) }, '❚❚') : null,
+        ['paused', 'error'].includes(j.state) ? h('button', { class: 'small', title: t('Resume'), onclick: act('archiveUploadResume', j.id) }, '▶') : null,
+        j.state !== 'done' ? h('button', { class: 'small ghost', title: t('Cancel'), onclick: act('archiveUploadCancel', j.id) }, '✕') : null));
+  });
+}
+
+vns.on('archive-uploads', (list) => {
+  const was = uploadJobs;
+  uploadJobs = list;
+  for (const j of list) {
+    const b = was.find((x) => x.id === j.id);
+    if (b && b.state !== 'done' && j.state === 'done') toast(t('{title} is in the archive.', { title: j.title }), 'good');
+  }
+  if (view === 'archive') {
+    const panel = downloadsPanel();
+    const old = $('#archiveView .downloads');
+    if (old && panel) old.replaceWith(panel); else drawArchive();
+  }
 });
 
 /** Settings → Archive: connect with your login (only a token is kept), where downloads go, 7-Zip. */
@@ -1272,7 +1418,7 @@ function archivePane() {
         go.disabled = true;
         try {
           const st = await call('archiveConnect', { server: server.value, username: user.value, password: pass.value });
-          setup.archive = { ...setup.archive, connected: true, connectedAt: st && st.connectedAt };
+          setup.archive = { ...setup.archive, connected: true, connectedAt: st && st.connectedAt, canUpload: !!(st && st.canUpload) };
           archiveData = null;
           await loadArchive();
           renderSidebar();
@@ -2940,6 +3086,8 @@ function paintDetail(g, data, opts = {}) {
       h('h2', {}, t('Launch')), launchBox,
       h('h2', {}, t('Start with this game')), tools,
       h('h2', {}, t('Save backup')), backupBox(g),
+      canUpload() ? [h('h2', {}, t('Archive')), h('div', { class: 'box' }, h('div', { class: 'boxactions' },
+        h('button', { class: 'small', id: 'gameUpload', disabled: !g.installed, onclick: () => uploadDialog({ gameId: g.id }) }, `↑ ${t('Upload to the archive')}…`)))] : null,
       h('h2', {}, t('History')), histBox,
       h('h2', {}, t('Details')), detailsBox)),
     parts ? parts.bottom : null);
@@ -3437,6 +3585,7 @@ window.addEventListener('drop', (e) => {
   for (const g of games) refreshStatus(g.id);
   if (setup.archive && setup.archive.connected) {
     archiveJobs = await vns.call('archiveDownloads').catch(() => []);
+    uploadJobs = await vns.call('archiveUploads').catch(() => []);
     loadArchive().then(() => { renderSidebar(); if (view === 'vndb') renderVndbList({ fresh: false }); else if (view === 'library') renderGrid(); else if (view === 'home') renderHome(); });
   }
 })();

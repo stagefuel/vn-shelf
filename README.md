@@ -50,6 +50,7 @@ You pick one on first run, and the same one on every PC:
 - **Archive downloads:** connect to a Filebrowser Quantum server that keeps a VN index, browse it
   with covers, and download one VN at a time (pause/resume). Archives are unpacked with 7-Zip and
   the game is added already linked to VNDB. Only an API token is kept, on that PC.
+  Accounts allowed to upload can also upload games, pinned to their VNDB entry and release.
 - **Search:** matches titles, aliases, developers, categories and VNDB tags, and suggests matching
   games, tags, developers and categories as you type. Click a tag on any game to list every game
   with it.

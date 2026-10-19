@@ -8,6 +8,7 @@
 const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
+const crypto = require('crypto');
 
 const INDEX_NAME = 'vnshelf-index.json';
 const UA = 'VN-Shelf';
@@ -161,6 +162,199 @@ class ArchiveClient {
     await fsp.rename(part, dest);
     return { bytes: got };
   }
+  /** This account's sources and whether it may upload (create) in each. */
+  async account() {
+    const me = await (await this.get('/api/users', {})).json();
+    const u = Array.isArray(me) ? me[0] : me;
+    return {
+      username: u && u.username,
+      sources: ((u && u.scopes) || []).map((sc) => ({ name: sc.name, canUpload: !!(sc.permissions && sc.permissions.create) })),
+    };
+  }
+
+  /** Sub-folder names of a folder ([] when it doesn't exist). */
+  async folders(source, dir) {
+    const res = await this.fetch(`${this.base}/api/resources/items?${new URLSearchParams({ source, path: dir, only: 'folders' })}`, { headers: this.headers() });
+    if (res.status === 404) return [];
+    if (!res.ok) throw await failure(res, 'The archive');
+    return ((await res.json()).folders || []).sort();
+  }
+
+  async exists(source, p) {
+    const res = await this.fetch(`${this.base}/api/resources?${new URLSearchParams({ source, path: p })}`, { headers: this.headers() });
+    if (res.status === 401) throw await failure(res, 'The archive');
+    return res.ok;
+  }
+
+  /** Make a folder (and its parents). */
+  async mkdirs(source, dir) {
+    const parts = dir.split('/').filter(Boolean);
+    let at = '';
+    for (const part of parts) {
+      at += `/${part}`;
+      if (await this.exists(source, at)) continue;
+      const res = await this.fetch(`${this.base}/api/resources?${new URLSearchParams({ source, path: `${at}/`, isDir: 'true' })}`, { method: 'POST', headers: this.headers() });
+      if (!res.ok && res.status !== 409) throw await failure(res, `Making ${part}`);
+    }
+  }
+
+  /**
+   * Upload `file` to `remote` in chunks (Filebrowser Quantum's chunked upload: offset, total size and
+   * a session id per request; the server keeps the partial file under that session). `job` holds
+   * { session, offset } and is updated after every chunk, so a stopped upload carries on from there.
+   */
+  async uploadFile({ source, remote, file, size }, job, { signal, onProgress, chunkSize = 8 * 1024 * 1024 } = {}) {
+    if (!job.session) job.session = `vns-${crypto.randomBytes(12).toString('hex')}`;
+    if (!job.offset || job.offset > size) job.offset = 0;
+    const fh = await fsp.open(file, 'r');
+    try {
+      do {
+        const n = Math.min(chunkSize, size - job.offset);
+        const buf = Buffer.alloc(n);
+        if (n) await fh.read(buf, 0, n, job.offset);
+        const res = await this.fetch(`${this.base}/api/resources?${new URLSearchParams({ source, path: remote })}`, {
+          method: 'POST', signal, body: buf,
+          headers: this.headers({ 'X-File-Chunk-Offset': String(job.offset), 'X-File-Total-Size': String(size), 'X-File-Upload-Session': job.session, 'Content-Type': 'application/octet-stream' }),
+        });
+        if (res.status === 409 && job.offset === 0) throw Object.assign(new Error(`${path.posix.basename(remote)} is already in the archive.`), { code: 'exists' });
+        if (!res.ok) throw await failure(res, `Uploading ${path.posix.basename(remote)}`);
+        const r = await res.json().catch(() => ({}));
+        job.offset = typeof r.offset === 'number' ? r.offset : job.offset + n;
+        if (onProgress) onProgress(job.offset);
+        if (r.complete || job.offset >= size) return;
+      } while (job.offset < size);
+    } finally {
+      await fh.close();
+    }
+  }
+
+  /** Upload a small text file in one go (the vnshelf.json beside an upload). */
+  async putText(source, remote, text) {
+    const res = await this.fetch(`${this.base}/api/resources?${new URLSearchParams({ source, path: remote, override: 'true' })}`, {
+      method: 'POST', body: Buffer.from(text), headers: this.headers({ 'Content-Type': 'application/octet-stream' }),
+    });
+    if (!res.ok) throw await failure(res, `Uploading ${path.posix.basename(remote)}`);
+  }
+}
+
+/**
+ * Uploads, one at a time: pack (a folder becomes one .zip, without the uploader's save folders),
+ * upload in chunks, then write vnshelf.json beside it (the VNDB entry/release the uploader pinned it
+ * to, which the archive's index uses instead of guessing). Saved, so an upload carries on after a
+ * restart. States: queued, packing, uploading, paused, error, done.
+ */
+class UploadQueue {
+  constructor({ client, file, pack, onChange = () => {} }) {
+    this.client = client;
+    this.file = file;
+    this.pack = pack; // async (job, onPct) => path of the packed file (made at job.packed)
+    this.onChange = onChange;
+    this.jobs = [];
+    this.active = null;
+  }
+
+  async load() {
+    try { this.jobs = JSON.parse(await fsp.readFile(this.file, 'utf8')); } catch { this.jobs = []; }
+    for (const j of this.jobs) if (['uploading', 'packing'].includes(j.state)) j.state = 'paused';
+    return this;
+  }
+
+  async save() {
+    const tmp = `${this.file}.tmp`;
+    await fsp.writeFile(tmp, JSON.stringify(this.jobs.map(({ abort, ...j }) => j)));
+    await fsp.rename(tmp, this.file);
+  }
+
+  list() { return this.jobs.map(({ abort, ...j }) => j); }
+
+  changed() { this.onChange(this.list()); this.save().catch(() => {}); }
+
+  /** spec: { from, isDir, source, dir (remote folder), name (file name there), meta, title } */
+  add(spec) {
+    const job = { id: crypto.randomBytes(6).toString('hex'), ...spec, state: 'queued', sent: 0, total: 0, added: Date.now() };
+    this.jobs.push(job);
+    this.changed();
+    this.pump();
+    return job;
+  }
+
+  pause(id) {
+    const j = this.jobs.find((x) => x.id === id);
+    if (!j) return;
+    if (j.abort) j.abort.abort();
+    if (['queued', 'uploading', 'packing'].includes(j.state)) j.state = 'paused';
+    this.changed();
+  }
+
+  resume(id) {
+    const j = this.jobs.find((x) => x.id === id);
+    if (!j || !['paused', 'error'].includes(j.state)) return;
+    j.state = 'queued';
+    j.error = null;
+    this.changed();
+    this.pump();
+  }
+
+  /** Stop and forget; a packed .zip made for it is deleted. */
+  async cancel(id) {
+    const j = this.jobs.find((x) => x.id === id);
+    if (!j) return;
+    if (j.abort) j.abort.abort();
+    this.jobs = this.jobs.filter((x) => x !== j);
+    if (j.packed) await fsp.rm(j.packed, { force: true }).catch(() => {});
+    this.changed();
+  }
+
+  clearFinished() { this.jobs = this.jobs.filter((j) => j.state !== 'done'); this.changed(); }
+
+  async pump() {
+    if (this.active) return;
+    const j = this.jobs.find((x) => x.state === 'queued');
+    if (!j) return;
+    this.active = j;
+    j.abort = new AbortController();
+    try {
+      let file = j.from;
+      if (j.isDir) {
+        if (!j.packedDone) {
+          j.state = 'packing';
+          j.packPct = 0;
+          this.changed();
+          j.packed = await this.pack(j, (pct) => { j.packPct = pct; this.onChange(this.list()); }, j.abort.signal);
+          j.packedDone = true;
+          j.offset = 0;
+          j.session = null;
+        }
+        file = j.packed;
+      }
+      if (j.state === 'paused') return;
+      const size = (await fsp.stat(file)).size;
+      j.total = size;
+      j.state = 'uploading';
+      this.changed();
+      if (!j.dirMade) { await this.client.mkdirs(j.source, j.dir); j.dirMade = true; }
+      let last = 0;
+      await this.client.uploadFile({ source: j.source, remote: `${j.dir}/${j.name}`, file, size }, j, {
+        signal: j.abort.signal,
+        onProgress: (n) => {
+          j.sent = n;
+          if (Date.now() - last > 250) { last = Date.now(); this.onChange(this.list()); this.save().catch(() => {}); }
+        },
+      });
+      j.sent = size;
+      await this.client.putText(j.source, `${j.dir}/vnshelf.json`, `${JSON.stringify({ ...j.meta, file: j.name, size, uploadedAt: new Date().toISOString() }, null, 1)}\n`);
+      j.state = 'done';
+      j.finished = Date.now();
+      if (j.packed) { await fsp.rm(j.packed, { force: true }).catch(() => {}); j.packed = null; }
+    } catch (e) {
+      if (j.state !== 'paused') { j.state = 'error'; j.error = e.message; }
+    } finally {
+      delete j.abort;
+      this.active = null;
+      this.changed();
+      this.pump();
+    }
+  }
 }
 
 /**
@@ -288,4 +482,4 @@ class DownloadQueue {
   }
 }
 
-module.exports = { connect, revoke, ArchiveClient, DownloadQueue, cleanServer, INDEX_NAME };
+module.exports = { connect, revoke, ArchiveClient, DownloadQueue, UploadQueue, cleanServer, INDEX_NAME };

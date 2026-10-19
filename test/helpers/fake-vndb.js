@@ -62,7 +62,7 @@ class FakeVndb {
       const x = this.extras.get(body.filters[2]);
       return this.json(200, { results: x ? [{ id: body.filters[2], screenshots: [], relations: [], staff: [], developers: [], ...x }] : [], more: false });
     }
-    if (method === 'POST' && p === '/release') return this.json(200, { results: this.releases.get(body.filters[2][2]) || [], more: false });
+    if (method === 'POST' && p === '/release') return this.json(200, { results: (this.releases.get(body.filters[2][2]) || []).map((r, i) => ({ id: `r${i + 1}`, title: `Release ${i + 1}`, released: '2020-01-01', ...r })), more: false });
     if (method === 'POST' && p === '/character') return this.json(200, { results: this.characters.get(body.filters[2][2]) || [], more: false });
     if (method === 'POST' && (p === '/staff' || p === '/producer')) {
       const n = this.names.get(body.filters[2]);

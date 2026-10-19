@@ -94,6 +94,7 @@ async function until(what, fn, ms = 30000) {
   vndbFake.vns.set('v503', { title: 'Big Game', alttitle: 'ビッグゲーム', image: null });
   vndbFake.vns.set('v504', { title: 'Version Game', alttitle: 'バージョンゲーム', image: null });
   vndbFake.vns.set('v505', { title: 'New Game', alttitle: '新作', image: null });
+  vndbFake.releases.set('v501', [{ id: 'r9001', title: 'ゲームA 初回版', released: '2021-03-01', languages: [{ lang: 'ja' }], platforms: ['win'] }]);
   const vndbSrv = await vndbFake.listen();
   const result = {};
   let app;
@@ -159,6 +160,39 @@ async function until(what, fn, ms = 30000) {
     result.zipRemoved = !fs.existsSync(path.join(downloads, 'ゲームA', 'gamea.zip'));
     await until('card says In library', () => page.locator('#archiveView .card:has-text("Game A") .badge').textContent().then((x) => /library/i.test(x)));
     await shot(page, 'a03-installed');
+
+    // ---- uploading: only for accounts allowed to; pinned to the VNDB entry and a release
+    result.noUploadWithoutRights = !(await page.locator('#archiveUpload').count());
+    fbq.users.reader.upload = true; // the admin grants upload
+    await page.evaluate(() => vns.call('listGames').then((gs) => vns.call('archiveUploadOptions', { gameId: gs.find((g) => g.vndbId === 'v501').id })).catch(() => null));
+    await until('upload button appears', () => page.locator('#archiveUpload').count());
+    const gameA = await page.evaluate(() => vns.call('listGames').then((gs) => gs.find((g) => g.vndbId === 'v501').id));
+    write(path.join(downloads, 'ゲームA', 'ゲームA', 'savedata', 'mine.sav'), 'my own save'); // must not be uploaded
+    await page.evaluate((id) => openDetail(id), gameA);
+    await page.click('#gameUpload');
+    await page.waitForSelector('#dlg[open] #upRelease');
+    await until('releases listed', () => page.locator('#dlg[open] #upRelease option').count().then((n) => n === 2));
+    await page.selectOption('#dlg[open] #upRelease', 'r9001');
+    await page.selectOption('#dlg[open] #upGroup', 'Brand');
+    await page.fill('#dlg[open] #upEdition', 'Test');
+    await until('preview shows the real folder', () => page.textContent('#dlg[open] #upDest').then((x) => /ゲームA \(Test\)$/.test(x)));
+    result.uploadDest = await page.textContent('#dlg[open] #upDest');
+    await shot(page, 'a07-upload-dialog');
+    await page.click('#dlg[open] button:has-text("Upload")');
+    await until('uploaded', () => fbq.uploads.some((u) => u.path.endsWith('/vnshelf.json')), 60000);
+    const zipUp = fbq.uploads.find((u) => u.path.endsWith('.zip'));
+    result.uploadPath = zipUp && zipUp.path;
+    const side = JSON.parse(fbq.files.get(fbq.uploads.find((u) => u.path.endsWith('/vnshelf.json')).path));
+    result.uploadPin = { vids: side.vids, release: side.release, edition: side.edition, uploader: side.uploader };
+    if (!(side.vids[0] === 'v501' && side.release === 'r9001' && side.edition === 'Test' && side.uploader === 'reader')) result.uploadPin = false;
+    const upZip = path.join(base, 'uploaded.zip');
+    fs.writeFileSync(upZip, fbq.files.get(zipUp.path));
+    const upList = execFileSync(sevenZip, ['l', '-ba', upZip], { encoding: 'utf8' });
+    result.uploadHasGame = /gamea\.exe/.test(upList);
+    result.uploadLeftOutSaves = !/mine\.sav/.test(upList);
+    result.uploadNextToExisting = /\/vns\/Brand\/ゲームA \(Test\)\//.test(zipUp.path); // ゲームA already exists there
+    result.uploadedViaToken = zipUp.token === 'VN Shelf (PC1)';
+    await page.click('#sidebar .navitem:has-text("Archive")');
 
     // ---- a disc image: downloaded, then waits for you to install it
     await page.click('#archiveView .card:has-text("Disc Game")');

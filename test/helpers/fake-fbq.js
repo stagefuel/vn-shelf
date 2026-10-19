@@ -15,7 +15,12 @@ class FakeFbq {
     this.requests = [];
     this.searchLags = false; // search doesn't know new files yet (like a real server between scans)
     this.slowMs = 0; // delay between chunks, to test pausing
-    this.indexDelayMs = 0; // delay before the index answers, to test a refresh landing mid-use
+    this.indexDelayMs = 0;
+    this.dirs = new Set(); // folders made through the API
+    this.partials = new Map(); // chunked uploads in progress: "path#session" -> bytes so far
+    this.chunks = []; // every chunk received
+    this.uploads = []; // finished uploads
+    this.failChunkAt = null; // fail the chunk that would pass this many bytes (once), keeping what came before // delay before the index answers, to test a refresh landing mid-use
     this.dropAfter = null; // cut a download off after this many bytes (once)
   }
 
@@ -57,16 +62,43 @@ class FakeFbq {
       return send(200, { message: 'here is your token!', token: t });
     }
     if (u.pathname === '/api/users' && req.method === 'GET') { // a member only sees itself
-      return send(200, [{ username: w.user, scopes: [{ name: this.source, scope: '/files' }] }]);
+      const create = !!this.users[w.user].upload;
+      return send(200, [{ username: w.user, scopes: [{ name: this.source, scope: '/files', permissions: { view: true, download: true, create } }] }]);
+    }
+    if (u.pathname === '/api/resources' && req.method === 'POST') { // upload (chunked) or make a folder
+      if (!this.users[w.user].upload) return send(403, { status: 403, message: 'permission denied' });
+      if (q.isDir === 'true') { this.dirs.add(q.path.replace(/\/+$/, '')); return send(201); }
+      const body = await new Promise((resolve) => { const parts = []; req.on('data', (c) => parts.push(c)); req.on('end', () => resolve(Buffer.concat(parts))); });
+      const off = req.headers['x-file-chunk-offset'];
+      if (off === undefined) { // one-shot upload
+        if (this.files.has(q.path) && q.override !== 'true') return send(409);
+        this.files.set(q.path, body);
+        this.uploads.push({ path: q.path, user: w.user, token: w.token && w.token.name });
+        return send(200);
+      }
+      const total = Number(req.headers['x-file-total-size']);
+      const session = req.headers['x-file-upload-session'];
+      if (!session) return send(400, { message: 'missing X-File-Upload-Session' });
+      const key = `${q.path}#${session}`;
+      if (Number(off) === 0 && this.files.has(q.path) && q.override !== 'true') return send(409);
+      let part = this.partials.get(key) || Buffer.alloc(0);
+      part = Buffer.concat([part.subarray(0, Number(off)), body]);
+      if (this.failChunkAt != null && part.length > this.failChunkAt) { this.failChunkAt = null; part = part.subarray(0, Number(off)); this.partials.set(key, part); return send(500, { message: 'could not write chunk' }); }
+      this.partials.set(key, part);
+      this.chunks.push({ path: q.path, offset: Number(off), size: body.length });
+      const done = part.length === total;
+      if (done) { this.files.set(q.path, part); this.partials.delete(key); this.uploads.push({ path: q.path, user: w.user, token: w.token && w.token.name }); }
+      return send(200, { offset: part.length, total, complete: done });
     }
     if (u.pathname === '/api/resources' && req.method === 'GET') { // metadata: exists or not
       if (q.source !== this.source) return send(403, { status: 403, message: 'no source' });
+      if (this.dirs.has(q.path.replace(/\/+$/, '')) || [...this.files.keys()].some((k) => k.startsWith(`${q.path.replace(/\/+$/, '')}/`))) return send(200, { type: 'directory' });
       const f = this.files.get(q.path);
       return f ? send(200, { name: q.path.split('/').pop(), size: f.length, type: 'blob' }) : send(404, { status: 404, message: 'the resource does not exist' });
     }
     if (u.pathname === '/api/resources/items') {
       const dir = q.path.replace(/\/+$/, '');
-      const kids = new Set([...this.files.keys()].filter((k) => k.startsWith(`${dir}/`)).map((k) => k.slice(dir.length + 1).split('/')).filter((x) => x.length > 1).map((x) => x[0]));
+      const kids = new Set([...this.files.keys(), ...[...this.dirs].map((d) => `${d}/.`)].filter((k) => k.startsWith(`${dir}/`)).map((k) => k.slice(dir.length + 1).split('/')).filter((x) => x.length > 1).map((x) => x[0]));
       return send(200, { folders: [...kids] });
     }
     if (u.pathname === '/api/tools/search') {

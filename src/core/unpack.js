@@ -85,4 +85,50 @@ async function removeArchives(dir, extracted) {
   }
 }
 
-module.exports = { find7z, plan, extract, removeArchives, ARCHIVE, DISC };
+/**
+ * Pack a folder into one .zip with 7-Zip, for uploading. `skip`: folders inside it (relative, "/")
+ * to leave out, such as the game's own save folders. Stored without compression: game data is
+ * compressed already, so this is fast and barely bigger. onProgress gets 0–100; aborting stops it.
+ */
+async function pack(sevenZip, dir, outZip, { skip = [], onProgress, signal } = {}) {
+  const skipSet = skip.map((x) => x.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '').toLowerCase()).filter(Boolean);
+  const files = [];
+  const walk = async (rel) => {
+    for (const e of await fsp.readdir(path.join(dir, rel), { withFileTypes: true })) {
+      const r = rel ? `${rel}/${e.name}` : e.name;
+      if (skipSet.some((x) => r.toLowerCase() === x || r.toLowerCase().startsWith(`${x}/`))) continue;
+      if (e.isDirectory()) await walk(r);
+      else if (e.isFile() && !/\.uploading\.tmp$/i.test(e.name)) files.push(r);
+    }
+  };
+  await walk('');
+  if (!files.length) throw new Error('There is nothing to upload in that folder.');
+  await fsp.mkdir(path.dirname(outZip), { recursive: true });
+  await fsp.rm(outZip, { force: true });
+  const list = `${outZip}.list`;
+  await fsp.writeFile(list, `${files.join('\n')}\n`, 'utf8');
+  try {
+    await new Promise((resolve, reject) => {
+      const p = spawn(sevenZip, ['a', '-tzip', '-mx=0', '-mcu=on', '-bsp1', '-bb0', '-scsUTF-8', outZip, `@${list}`], { cwd: dir, windowsHide: true });
+      let err = '';
+      const stop = () => { try { p.kill(); } catch { /* gone */ } };
+      if (signal) { if (signal.aborted) stop(); signal.addEventListener('abort', stop, { once: true }); }
+      p.stdout.on('data', (d) => { const m = /(\d+)%/.exec(String(d)); if (m && onProgress) onProgress(Number(m[1])); });
+      p.stderr.on('data', (d) => { err += String(d); });
+      p.on('error', reject);
+      p.on('close', (code) => {
+        if (signal && signal.aborted) return reject(Object.assign(new Error('Stopped.'), { code: 'aborted' }));
+        if (code === 0) return resolve();
+        reject(new Error(`7-Zip couldn't pack the folder${err.trim() ? `: ${err.trim().split('\n').pop()}` : ''}.`));
+      });
+    });
+  } catch (e) {
+    await fsp.rm(outZip, { force: true }).catch(() => {});
+    throw e;
+  } finally {
+    await fsp.rm(list, { force: true }).catch(() => {});
+  }
+  return { file: outZip, files: files.length };
+}
+
+module.exports = { find7z, plan, extract, removeArchives, pack, ARCHIVE, DISC };
