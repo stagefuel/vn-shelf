@@ -15,6 +15,7 @@ class FakeFbq {
     this.requests = [];
     this.searchLags = false; // search doesn't know new files yet (like a real server between scans)
     this.slowMs = 0; // delay between chunks, to test pausing
+    this.indexDelayMs = 0; // delay before the index answers, to test a refresh landing mid-use
     this.dropAfter = null; // cut a download off after this many bytes (once)
   }
 
@@ -79,6 +80,7 @@ class FakeFbq {
       if (q.source !== this.source) return send(403, { status: 403, message: `source name not found: ${q.source}` });
       const body = this.files.get(q.file);
       if (!body) return send(404, { status: 404, message: 'the resource does not exist' });
+      if (this.indexDelayMs && q.file.endsWith('vnshelf-index.json')) await new Promise((r) => setTimeout(r, this.indexDelayMs));
       let start = 0;
       const m = /^bytes=(\d+)-$/.exec(req.headers.range || '');
       if (m) {

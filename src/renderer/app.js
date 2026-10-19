@@ -560,7 +560,7 @@ function renderHome() {
     played.length ? homeHero(played[0]) : null,
     list.length ? h('h2', { class: 'hometitle' }, played.length ? t('Recently played') : t('Recently added')) : null,
     list.length ? h('div', { class: 'recentrow' }, list.slice(0, 24).map(cardFor)) : null,
-    archiveNewRow());
+    homeArchiveSection());
   if (played.length) updateLive(played[0].id);
 }
 
@@ -576,6 +576,13 @@ function archiveNewRow() {
   return [h('h2', { class: 'hometitle' }, t('New in the archive'),
     h('button', { class: 'small ghost', onclick: () => showArchive() }, t('Archive'))),
   h('div', { class: 'recentrow' }, fresh.slice(0, 24).map(archiveCard))];
+}
+
+function homeArchiveSection() { return h('div', { id: 'homeArchiveNew' }, archiveNewRow()); }
+/** Just the "New in the archive" part of Home, after the archive changed. */
+function replaceHomeArchiveRow() {
+  const old = $('#homeArchiveNew');
+  if (old) old.replaceWith(homeArchiveSection());
 }
 
 // ------------------------------------------------------------------ library grid
@@ -990,17 +997,33 @@ async function loadArchive({ fresh = false } = {}) {
 
 /**
  * The archive as shown can be the one loaded when VN Shelf started: look again (the main process
- * fetches the server's index when its copy is over 10 minutes old) and redraw if it changed.
+ * fetches the server's index when its copy is older than archive.maxAgeMs, 10 minutes) and, if it
+ * changed, update only what shows the list: the Archive cards and count, or Home's "New in the
+ * archive" row. The search box, filter, downloads and scroll position stay as they are, and with a
+ * dialog open (a version chooser, say) the update waits until it's closed.
  */
+let archiveFreshening = false;
 async function archiveFreshen() {
-  if (!setup.archive || !setup.archive.connected || Date.now() - archiveLoadedAt < 10 * 60 * 1000) return;
-  const before = archiveData && archiveData.generated;
-  archiveLoadedAt = Date.now(); // one look at a time
-  await loadArchive();
-  if (!archiveData || archiveData.generated === before) return;
-  if (view === 'archive') drawArchive();
-  else if (view === 'home') renderHome();
-  renderSidebar();
+  const maxAge = (setup.archive && setup.archive.maxAgeMs) || 10 * 60 * 1000;
+  if (!setup.archive || !setup.archive.connected || archiveFreshening || Date.now() - archiveLoadedAt < maxAge) return;
+  archiveFreshening = true;
+  try {
+    const before = archiveData && archiveData.generated;
+    const r = await call('archiveItems', {}).catch(() => null);
+    if (!r) return;
+    archiveLoadedAt = Date.now();
+    if (r.generated === before) { archiveData = r; return; }
+    while ($('#dlg').open) await new Promise((res) => setTimeout(res, 500));
+    archiveData = r;
+    const main = $('main');
+    const top = main.scrollTop;
+    if (view === 'archive' && $('#archiveGrid')) drawArchiveGrid();
+    else if (view === 'home') replaceHomeArchiveRow();
+    main.scrollTop = top;
+    renderSidebar();
+  } finally {
+    archiveFreshening = false;
+  }
 }
 
 /**
@@ -1224,7 +1247,7 @@ vns.on('archive-downloads', (list) => {
 
 // Signed out by the server (token revoked or refused): hide everything about the archive.
 vns.on('archive-state', (st) => {
-  setup.archive = st;
+  setup.archive = { ...setup.archive, ...st };
   if (st.connected) return;
   archiveData = null;
   archiveJobs = [];
@@ -1248,8 +1271,8 @@ function archivePane() {
       const go = h('button', { type: 'button', class: 'small primary', onclick: async () => {
         go.disabled = true;
         try {
-          await call('archiveConnect', { server: server.value, username: user.value, password: pass.value });
-          setup.archive = { connected: true };
+          const st = await call('archiveConnect', { server: server.value, username: user.value, password: pass.value });
+          setup.archive = { ...setup.archive, connected: true, connectedAt: st && st.connectedAt };
           archiveData = null;
           await loadArchive();
           renderSidebar();
@@ -1269,7 +1292,7 @@ function archivePane() {
       field(t('Account'), h('div', { class: 'val wrap' }, h('div', { class: 'grow' }, h('strong', {}, st.username), h('span', { class: 'dim' }, ` · ${st.server}`)),
         h('button', { type: 'button', class: 'small ghost', onclick: async () => {
           await call('archiveDisconnect');
-          setup.archive = { connected: false };
+          setup.archive = { ...setup.archive, connected: false };
           archiveData = null;
           archiveJobs = [];
           replaceKids($('#archiveView'));

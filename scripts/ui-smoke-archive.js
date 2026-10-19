@@ -102,7 +102,7 @@ async function until(what, fn, ms = 30000) {
       executablePath: process.env.VNS_EXE || require('electron'),
       args: process.env.VNS_EXE ? [] : [path.join(__dirname, '..'), '--no-sandbox'],
       env: (() => {
-        const e = { ...process.env, VNS_USER_DATA: userData, VNS_VNDB_API: vndbSrv.url, VNS_NO_UPDATE_CHECK: '1' };
+        const e = { ...process.env, VNS_USER_DATA: userData, VNS_VNDB_API: vndbSrv.url, VNS_NO_UPDATE_CHECK: '1', VNS_ARCHIVE_MAX_AGE_MS: '4000' };
         delete e.ELECTRON_RUN_AS_NODE;
         return e;
       })(),
@@ -230,6 +230,47 @@ async function until(what, fn, ms = 30000) {
     await shot(page, 'a06-home-new');
     if (JSON.stringify(result.homeNew) !== '["New Game"]') result.homeNew = false;
     await page.click('#sidebar .navitem:has-text("Archive")');
+
+    // ---- the list updating in the background while you use it: nothing you're doing is disturbed
+    await page.setViewportSize({ width: 1024, height: 520 }); // so the page scrolls
+    const addItem = (title, vid) => {
+      const ix = JSON.parse(fbq.files.get('/vns/vnshelf-index.json'));
+      ix.items.push(item(`New/${title}`, 'folder', title, [vid], [['New/New Game/new.zip', newZip.length]], { added: new Date().toISOString() }));
+      ix.generated = new Date().toISOString();
+      fbq.files.set('/vns/vnshelf-index.json', Buffer.from(JSON.stringify(ix)));
+    };
+    vndbFake.vns.set('v506', { title: 'Fresh Game', alttitle: 'フレッシュ', image: null });
+    vndbFake.vns.set('v507', { title: 'Later Game', alttitle: 'レイター', image: null });
+    addItem('フレッシュ', 'v506');
+    fbq.indexDelayMs = 6000;
+    await sleep(4200); // the shown list is now older than VNS_ARCHIVE_MAX_AGE_MS
+    await page.click('#sidebar .navitem:has-text("All games")'); // (Home would start the refresh itself)
+    await page.click('#sidebar .navitem:has-text("Archive")'); // shown at once; the refresh is under way
+    await page.click('#archiveSearch');
+    await page.keyboard.type('game');
+    await page.evaluate(() => { const s = document.querySelector('#archiveSearch'); s.setSelectionRange(2, 2); });
+    const before = await page.evaluate(() => { const m = document.querySelector('main'); m.scrollTop = m.scrollHeight; return { top: m.scrollTop, cards: document.querySelectorAll('#archiveView .card').length, freshBefore: [...document.querySelectorAll('#archiveView .card')].some((c) => /Fresh Game/.test(c.textContent)) }; });
+    await until('fresh VN shown', () => page.locator('#archiveView .card:has-text("Fresh Game")').count(), 15000);
+    result.freshenUndisturbed = await page.evaluate((b) => {
+      const s = document.querySelector('#archiveSearch');
+      return { focused: document.activeElement === s, value: s.value, caret: s.selectionStart, topKept: document.querySelector('main').scrollTop === b.top, cardsBefore: b.cards, cardsNow: document.querySelectorAll('#archiveView .card').length, freshBefore: b.freshBefore };
+    }, before);
+    const fu = result.freshenUndisturbed;
+    if (!(fu.focused && fu.value === 'game' && fu.caret === 2 && fu.topKept && !fu.freshBefore && fu.cardsNow === fu.cardsBefore + 1)) { console.error('freshen detail', JSON.stringify(fu)); result.freshenUndisturbed = false; }
+    // With the version chooser open, the update waits until it's closed.
+    await page.fill('#archiveSearch', '');
+    addItem('レイター', 'v507');
+    await sleep(4200);
+    await page.click('#sidebar .navitem:has-text("All games")');
+    await page.click('#sidebar .navitem:has-text("Archive")');
+    await page.click('#archiveView .card:has-text("Big Game")');
+    await page.waitForSelector('#dlg[open] .chooser');
+    await sleep(7000); // the index has answered by now
+    result.waitsForDialog = (await page.locator('#dlg[open] .chooser').count()) === 1 && !(await page.locator('#archiveView .card:has-text("Later Game")').count());
+    await page.keyboard.press('Escape');
+    await until('update lands after closing', () => page.locator('#archiveView .card:has-text("Later Game")').count(), 10000);
+    fbq.indexDelayMs = 0;
+    await page.setViewportSize(process.env.VNS_VIEWPORT ? { width: +process.env.VNS_VIEWPORT.split('x')[0], height: +process.env.VNS_VIEWPORT.split('x')[1] } : { width: 1280, height: 820 });
 
     // ---- disconnect: the entry goes
     await page.click('#settingsBtn');

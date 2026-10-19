@@ -915,7 +915,7 @@ async function vndbMarker() {
 let archiveToken = null; // tokenStore('archive-token.json')
 let archiveQueue = null;
 let archiveIndexCache = null; // { at, index }
-const ARCHIVE_INDEX_MAX_AGE = 10 * 60 * 1000;
+const ARCHIVE_INDEX_MAX_AGE = Number(process.env.VNS_ARCHIVE_MAX_AGE_MS) || 10 * 60 * 1000; // test hook: VNS_ARCHIVE_MAX_AGE_MS
 
 function archiveFile(name) { return path.join(app.getPath('userData'), name); }
 
@@ -1067,7 +1067,7 @@ const api = {
       driveAvailable: !!googleAuth,
       googleSignedIn: !!(googleAuth && googleAuth.signedIn()),
       googleEmail: config.data.googleEmail || null,
-      archive: { connected: !!archiveClient(), count: (config.data.archive || {}).count || 0, connectedAt: (config.data.archive || {}).connectedAt || null },
+      archive: { connected: !!archiveClient(), count: (config.data.archive || {}).count || 0, connectedAt: (config.data.archive || {}).connectedAt || null, maxAgeMs: ARCHIVE_INDEX_MAX_AGE },
       settings: {
         cloudDir: config.data.cloudDir,
         deviceName: config.data.deviceName || os.hostname(),
