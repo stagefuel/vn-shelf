@@ -4,6 +4,14 @@ All notable changes to VN Shelf. Download any version from the
 [Releases page](https://github.com/stagefuel/vn-shelf/releases). From 0.3.0 on, VN Shelf can
 update itself (Settings → Updates).
 
+## Unreleased
+
+### Fixed
+- **The Archive page now shows new uploads without a restart.** It kept the list it loaded when VN
+  Shelf started, so VNs added to the archive later didn't appear (or match a search) until you
+  pressed ⟳ or restarted. Opening Archive or Home now picks up changes when its list is over 10
+  minutes old.
+
 ## 0.14.4
 
 A safer sync when a save file can't be read, plus archive and layout fixes.

@@ -568,6 +568,7 @@ function renderHome() {
 function archiveNewRow() {
   const a = setup.archive;
   if (!a || !a.connected || !archiveData) return null;
+  archiveFreshen().catch(() => {});
   const since = Math.max(Date.parse(a.connectedAt || 0) || 0, Date.now() - 30 * 24 * 3600 * 1000);
   const fresh = archiveGroups().filter((g) => g.gameIds.length < g.items.length && g.items.some((i) => Date.parse(i.added || 0) > since))
     .sort((x, y) => String(y.added).localeCompare(String(x.added)));
@@ -980,10 +981,26 @@ function showArchive() {
   pushNav();
 }
 
+let archiveLoadedAt = 0;
 async function loadArchive({ fresh = false } = {}) {
   const r = await call('archiveItems', { fresh }).catch(() => null);
-  if (r) archiveData = r;
+  if (r) { archiveData = r; archiveLoadedAt = Date.now(); }
   return archiveData;
+}
+
+/**
+ * The archive as shown can be the one loaded when VN Shelf started: look again (the main process
+ * fetches the server's index when its copy is over 10 minutes old) and redraw if it changed.
+ */
+async function archiveFreshen() {
+  if (!setup.archive || !setup.archive.connected || Date.now() - archiveLoadedAt < 10 * 60 * 1000) return;
+  const before = archiveData && archiveData.generated;
+  archiveLoadedAt = Date.now(); // one look at a time
+  await loadArchive();
+  if (!archiveData || archiveData.generated === before) return;
+  if (view === 'archive') drawArchive();
+  else if (view === 'home') renderHome();
+  renderSidebar();
 }
 
 /**
@@ -1148,7 +1165,7 @@ async function renderArchive({ fresh = false } = {}) {
   if (!archiveData || fresh) {
     if (!archiveData) replaceKids($('#archiveView'), h('div', { class: 'empty' }, h('p', {}, t('Loading the archive…'))));
     await loadArchive({ fresh });
-  }
+  } else archiveFreshen().catch(() => {}); // shown at once, updated if the archive changed
   if (seq !== archiveSeq || view !== 'archive') return;
   drawArchive();
   renderSidebar();
