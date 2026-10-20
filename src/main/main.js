@@ -2136,7 +2136,29 @@ const api = {
   },
   async archiveCancel(key) { if (archiveQueue) await archiveQueue.cancel(key); return api.archiveDownloads(); },
   async archiveClearFinished() {
-    if (archiveQueue) { archiveQueue.jobs = archiveQueue.jobs.filter((j) => !['done', 'installed'].includes(j.state)); archiveQueue.changed(); }
+    // Downloaded ones (installed, waiting for you to install, or couldn't be unpacked) leave the list; their files stay.
+    if (archiveQueue) { archiveQueue.jobs = archiveQueue.jobs.filter((j) => !['done', 'installed', 'needs-install'].includes(j.state)); archiveQueue.changed(); }
+    return api.archiveDownloads();
+  },
+
+  /**
+   * Take a downloaded VN off the list, keeping or deleting what was downloaded. Only a folder inside
+   * the download folder is ever deleted, and never one a library game runs from.
+   */
+  async archiveRemove(key, { deleteFiles = false } = {}) {
+    if (!archiveQueue) return [];
+    const j = archiveQueue.jobs.find((x) => x.key === key);
+    if (!j) return api.archiveDownloads();
+    if (j.abort) j.abort.abort();
+    if (deleteFiles && j.dest) {
+      const rel = paths.relativeInside(archiveDownloadDir(), j.dest);
+      const inside = rel !== null && rel !== '';
+      const used = Object.values(config.data.games).some((l) => l.installDir && paths.relativeInside(j.dest, l.installDir) !== null);
+      if (!inside || used) throw new Error('That folder is in use by a game in your library, so it wasn\'t deleted.');
+      await fs.promises.rm(j.dest, { recursive: true, force: true });
+    }
+    archiveQueue.jobs = archiveQueue.jobs.filter((x) => x !== j);
+    archiveQueue.changed();
     return api.archiveDownloads();
   },
 

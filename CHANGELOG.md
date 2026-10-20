@@ -4,6 +4,13 @@ All notable changes to VN Shelf. Download any version from the
 [Releases page](https://github.com/stagefuel/vn-shelf/releases). From 0.3.0 on, VN Shelf can
 update itself (Settings → Updates).
 
+## Unreleased
+
+### New
+- A downloaded VN waiting for you to install it (a disc image or installer), or one that couldn't be
+  unpacked, now has **✕** in Downloads: take it off the list and keep the files, or delete them.
+  **Clear finished** also clears the ones waiting to be installed (their files stay).
+
 ## 0.15.0
 
 Upload games to the archive, pinned to their VNDB release.

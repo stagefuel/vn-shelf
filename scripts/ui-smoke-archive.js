@@ -202,6 +202,13 @@ async function until(what, fn, ms = 30000) {
     await page.click('#dlg button:has-text("Download")');
     await until('needs install', () => page.locator('.dlrow.needs-install').count());
     result.discKept = fs.existsSync(path.join(downloads, 'ディスクゲーム (初回限定版)', 'DISC.ISO'));
+    // Downloaded but not installed: ✕ takes it off the list, here deleting what was downloaded.
+    await page.click('.dlrow.needs-install button[title="Remove"]');
+    await page.waitForSelector('#dlg[open] button:has-text("Delete the files")');
+    await shot(page, 'a04c-remove-download');
+    await page.click('#dlg[open] button:has-text("Delete the files")');
+    await until('row gone', () => page.locator('.dlrow.needs-install').count().then((n) => n === 0));
+    result.removedDownload = !fs.existsSync(path.join(downloads, 'ディスクゲーム (初回限定版)'));
 
     // ---- pause and resume (slow server), carrying on with a byte range
     fbq.slowMs = 40;

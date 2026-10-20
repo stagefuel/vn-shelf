@@ -1108,7 +1108,7 @@ async function startArchiveDownload(it) {
 function downloadsPanel() {
   if (!archiveJobs.length && !uploadJobs.length) return null;
   const act = (name, key) => async () => { archiveJobs = await call(name, key).catch(() => archiveJobs); drawArchive(); };
-  const finished = archiveJobs.some((j) => ['done', 'installed'].includes(j.state)) || uploadJobs.some((j) => j.state === 'done');
+  const finished = archiveJobs.some((j) => ['done', 'installed', 'needs-install'].includes(j.state)) || uploadJobs.some((j) => j.state === 'done');
   return h('div', { class: 'downloads' },
     h('div', { class: 'dlhead' }, h('h2', {}, t('Downloads')), h('div', { class: 'spacer' }),
       finished ? h('button', { class: 'small ghost', onclick: async () => { await act('archiveClearFinished')(); uploadJobs = await call('archiveUploadsClear').catch(() => uploadJobs); drawArchive(); } }, t('Clear finished')) : null),
@@ -1127,8 +1127,23 @@ function downloadsPanel() {
           ['paused', 'error', 'needs-7zip', 'install-error'].includes(j.state) ? h('button', { class: 'small', title: t('Resume'), onclick: act('archiveResume', j.key) }, '▶') : null,
           j.state === 'installed' && j.gameId ? h('button', { class: 'small primary', onclick: () => openDetail(j.gameId) }, t('Open')) : null,
           ['needs-install', 'done', 'install-error', 'needs-7zip'].includes(j.state) ? h('button', { class: 'small', onclick: () => vns.call('openPath', j.dest) }, t('Show folder')) : null,
-          !['installed', 'done', 'needs-install'].includes(j.state) ? h('button', { class: 'small ghost', title: t('Cancel'), onclick: act('archiveCancel', j.key) }, '✕') : null));
+          !['installed', 'done', 'needs-install', 'install-error', 'needs-7zip'].includes(j.state) ? h('button', { class: 'small ghost', title: t('Cancel'), onclick: act('archiveCancel', j.key) }, '✕') : null,
+          ['done', 'needs-install', 'install-error', 'needs-7zip'].includes(j.state) ? h('button', { class: 'small ghost', title: t('Remove'), onclick: () => removeDownload(j) }, '✕') : null));
     }));
+}
+
+/** ✕ on a downloaded VN that isn't in the library: off the list, keeping or deleting its files. */
+async function removeDownload(j) {
+  const v = await dialog({
+    title: t('Remove {title} from downloads?', { title: j.title }),
+    text: j.dest,
+    buttons: [{ label: t('Cancel'), value: null, cls: 'ghost' }, { label: t('Delete the files'), value: 'delete', cls: 'danger' }, { label: t('Keep the files'), value: 'keep', cls: 'primary' }],
+  });
+  if (!v) return;
+  try {
+    archiveJobs = await call('archiveRemove', j.key, { deleteFiles: v === 'delete' });
+    drawArchive();
+  } catch { /* toasted */ }
 }
 
 function archiveCard(g) {

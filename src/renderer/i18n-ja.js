@@ -796,4 +796,8 @@ Object.assign(JA, {
   '7-Zip is needed to pack the folder. Install it, or choose it in Settings → Archive.': 'フォルダーの圧縮には 7-Zip が必要です。インストールするか、設定 → アーカイブで指定してください。',
   'There is nothing to upload in that folder.': 'そのフォルダーにはアップロードするものがありません。',
   'Leave out save folders': 'セーブフォルダーを除く',
+  'Remove {title} from downloads?': '{title} をダウンロードから外しますか？',
+  'Delete the files': 'ファイルを削除',
+  'Keep the files': 'ファイルを残す',
+  'That folder is in use by a game in your library, so it wasn\'t deleted.': 'そのフォルダーはライブラリのゲームが使っているため、削除しませんでした。',
 });
