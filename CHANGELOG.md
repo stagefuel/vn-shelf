@@ -4,7 +4,9 @@ All notable changes to VN Shelf. Download any version from the
 [Releases page](https://github.com/stagefuel/vn-shelf/releases). From 0.3.0 on, VN Shelf can
 update itself (Settings → Updates).
 
-## Unreleased
+## 0.15.1
+
+Remove a downloaded VN that's waiting to be installed.
 
 ### New
 - A downloaded VN waiting for you to install it (a disc image or installer), or one that couldn't be
